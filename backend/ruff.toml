@@ -1,0 +1,26 @@
+# Ruff configuration — matches the CI lint job (.github/workflows/ci.yml).
+# Target the same interpreter CI runs so version-specific lints agree.
+target-version = "py310"
+line-length = 100
+
+# Exclude generated / vendored trees that we don't own.
+extend-exclude = [
+    "venv",
+    "models/MuseTalk",
+    "alembic/versions",  # migrations are append-only; don't churn old ones
+]
+
+[lint]
+# Default rule set (pyflakes + pycodestyle errors) plus import sorting.
+select = ["E", "F", "I", "W"]
+# E501 (line length) is handled by the formatter; don't double-report.
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+# Alembic's env.py imports the models purely so SQLAlchemy registers every
+# table on Base.metadata for autogenerate — they're load-bearing, not unused.
+"alembic/env.py" = ["F401"]
+# __init__.py re-exports are intentional.
+"__init__.py" = ["F401"]
+# Tests use fixtures that look unused to static analysis.
+"tests/*" = ["F811"]

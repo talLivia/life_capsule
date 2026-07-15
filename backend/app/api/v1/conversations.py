@@ -1,0 +1,343 @@
+import logging
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1.users import get_current_user
+from app.database import get_db
+from app.models import Conversation, Message, Session, User
+from app.schemas import ConversationResponse
+from app.services.llm import llm_service
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+def _user_id(current_user: Optional[User]) -> str:
+    return current_user.id if current_user else "demo-user"
+
+
+async def _get_owned_session(session_id: str, uid: str, db: AsyncSession) -> Session:
+    result = await db.execute(select(Session).where(Session.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    if session.user_id != uid:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorised")
+    return session
+
+
+async def _attach_live_counts(conversations: list[Conversation], db: AsyncSession) -> None:
+    """
+    Overwrite each conversation's `message_count` with the live count of
+    messages on its session. The stored column is only seeded at creation
+    and never incremented as the chat grows, so reading it raw would always
+    show a stale (≈0) value in the history UI. We compute it at read time in
+    one grouped query and set it on the ORM objects in-memory (no commit).
+    """
+    if not conversations:
+        return
+    session_ids = [c.session_id for c in conversations]
+    result = await db.execute(
+        select(Message.session_id, func.count())
+        .where(Message.session_id.in_(session_ids))
+        .group_by(Message.session_id)
+    )
+    counts = {sid: n for sid, n in result.all()}
+    for c in conversations:
+        c.message_count = counts.get(c.session_id, 0)
+
+
+@router.get("/", response_model=List[ConversationResponse])
+async def list_conversations(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+):
+    """List conversations for the current user (joined via session)."""
+    try:
+        uid = _user_id(current_user)
+        result = await db.execute(
+            select(Conversation)
+            .join(Session, Conversation.session_id == Session.id)
+            .where(Session.user_id == uid)
+            .order_by(Conversation.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+        conversations = list(result.scalars().all())
+        await _attach_live_counts(conversations, db)
+        return conversations
+    except Exception as e:
+        logger.error(f"Failed to list conversations: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list conversations",
+        )
+
+
+@router.get("/{conversation_id}", response_model=ConversationResponse)
+async def get_conversation(
+    conversation_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+):
+    """Get conversation by ID (must own parent session)."""
+    try:
+        result = await db.execute(select(Conversation).where(Conversation.id == conversation_id))
+        conversation = result.scalar_one_or_none()
+        if not conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+            )
+
+        await _get_owned_session(conversation.session_id, _user_id(current_user), db)
+        await _attach_live_counts([conversation], db)
+        return conversation
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get conversation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get conversation",
+        )
+
+
+@router.get("/session/{session_id}", response_model=List[ConversationResponse])
+async def list_session_conversations(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+):
+    """List conversations for a session (must own it)."""
+    try:
+        await _get_owned_session(session_id, _user_id(current_user), db)
+        result = await db.execute(
+            select(Conversation)
+            .where(Conversation.session_id == session_id)
+            .order_by(Conversation.created_at.desc())
+        )
+        conversations = list(result.scalars().all())
+        await _attach_live_counts(conversations, db)
+        return conversations
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list session conversations: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list session conversations",
+        )
+
+
+@router.post(
+    "/session/{session_id}",
+    response_model=ConversationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_conversation(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+):
+    """Create a new conversation for a session."""
+    try:
+        session = await _get_owned_session(session_id, _user_id(current_user), db)
+        if session.status != "active":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Session is not active",
+            )
+
+        conversation = Conversation(
+            session_id=session_id,
+            title="New Conversation",
+            message_count=0,
+        )
+        db.add(conversation)
+        await db.commit()
+        await db.refresh(conversation)
+        logger.info(f"Conversation created: {conversation.id}")
+        return conversation
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Failed to create conversation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create conversation",
+        )
+
+
+class ConversationRenamePayload(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+
+
+@router.patch("/{conversation_id}/rename", response_model=ConversationResponse)
+async def rename_conversation(
+    conversation_id: str,
+    payload: ConversationRenamePayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+):
+    """Rename a conversation."""
+    try:
+        result = await db.execute(select(Conversation).where(Conversation.id == conversation_id))
+        conversation = result.scalar_one_or_none()
+        if not conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+            )
+
+        await _get_owned_session(conversation.session_id, _user_id(current_user), db)
+        conversation.title = payload.title.strip()
+        await db.commit()
+        await db.refresh(conversation)
+        return conversation
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Failed to rename conversation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to rename conversation",
+        )
+
+
+# Cap raw input length to keep the summary call cheap and within token budget.
+# At ~4 chars/token, 32 kB ≈ 8k input tokens — plenty for a chat summary.
+_SUMMARY_MAX_INPUT_CHARS = 32_000
+
+
+@router.post("/{conversation_id}/summarize", response_model=ConversationResponse)
+async def summarize_conversation(
+    conversation_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+):
+    """
+    Generate a short LLM summary of the conversation and persist it to
+    `Conversation.summary`. Idempotent — calling twice just refreshes.
+    """
+    try:
+        result = await db.execute(select(Conversation).where(Conversation.id == conversation_id))
+        conversation = result.scalar_one_or_none()
+        if not conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+            )
+
+        await _get_owned_session(conversation.session_id, _user_id(current_user), db)
+
+        # Fetch the conversation's messages
+        msgs_result = await db.execute(
+            select(Message)
+            .where(Message.session_id == conversation.session_id)
+            .where(Message.role.in_(("user", "assistant")))
+            .order_by(Message.created_at)
+        )
+        messages = msgs_result.scalars().all()
+        if not messages:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Nothing to summarize — conversation has no messages yet",
+            )
+
+        # Render as a plain transcript. Keep within input cap to avoid runaway token cost.
+        lines: list[str] = []
+        for m in messages:
+            speaker = "User" if m.role == "user" else "Assistant"
+            lines.append(f"{speaker}: {m.content}")
+        transcript = "\n".join(lines)
+        if len(transcript) > _SUMMARY_MAX_INPUT_CHARS:
+            transcript = transcript[-_SUMMARY_MAX_INPUT_CHARS:]
+            transcript = "[…earlier turns truncated…]\n" + transcript
+
+        summary_prompt = (
+            "Summarize the conversation below in 2–3 short sentences. "
+            "Focus on what was discussed and any conclusions or decisions. "
+            "Write in third person. Do not start with 'This conversation' "
+            "or 'The user'. No preamble.\n\n"
+            f"{transcript}"
+        )
+        from app.services.llm import LLMAuthError, LLMError, LLMRateLimited, LLMUnavailable
+
+        try:
+            summary = await llm_service.generate_response(
+                messages=[{"role": "user", "content": summary_prompt}],
+                system_prompt="You write concise neutral summaries.",
+            )
+        except LLMRateLimited:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Summary service rate-limited — try again in a moment",
+            )
+        except LLMAuthError:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Summary service is misconfigured",
+            )
+        except LLMUnavailable:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Summary service unavailable",
+            )
+        except LLMError as e:
+            logger.error("summarize_failed", extra={"reason": str(e)})
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Summary service error",
+            )
+
+        conversation.summary = (summary or "").strip()
+        await db.commit()
+        await db.refresh(conversation)
+        logger.info(f"Conversation {conversation_id} summarized ({len(messages)} msgs)")
+        return conversation
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Failed to summarize conversation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to summarize conversation",
+        )
+
+
+@router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    conversation_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+):
+    """Delete a conversation (must own parent session)."""
+    try:
+        result = await db.execute(select(Conversation).where(Conversation.id == conversation_id))
+        conversation = result.scalar_one_or_none()
+        if not conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+            )
+
+        await _get_owned_session(conversation.session_id, _user_id(current_user), db)
+        await db.delete(conversation)
+        await db.commit()
+        logger.info(f"Conversation deleted: {conversation_id}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Failed to delete conversation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete conversation",
+        )

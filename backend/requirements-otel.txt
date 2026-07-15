@@ -1,0 +1,9 @@
+# Optional OpenTelemetry distributed tracing.
+# Install ONLY when running with OTEL_ENABLED=true:
+#     pip install -r requirements-otel.txt
+# The application runs fine without these — app/telemetry.py degrades to
+# no-op spans when the packages are absent or OTEL_ENABLED is false.
+opentelemetry-sdk>=1.27.0
+opentelemetry-exporter-otlp-proto-grpc>=1.27.0
+opentelemetry-instrumentation-fastapi>=0.48b0
+opentelemetry-instrumentation-sqlalchemy>=0.48b0

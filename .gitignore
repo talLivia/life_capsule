@@ -1,0 +1,104 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+.venv/
+venv/
+env/
+
+# Environment
+.env
+.env.local
+.env.prod
+.env.*.local
+
+# Next.js
+.next/
+frontend/.next/
+out/
+frontend/out/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.so
+*.dylib
+*.egg
+*.egg-info/
+.eggs/
+
+# Build
+dist/
+build/
+*.tsbuildinfo
+
+# Lock files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Local setup sentinels
+.musetalk_ready
+
+# ML models & media
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.onnx
+*.safetensors
+models/
+uploads/
+outputs/
+voice_profiles/
+backend/voice_profiles/
+backend/uploads/
+**/voice_profiles/*.wav
+**/voice_profiles/*.webm
+**/voice_profiles/*.mp3
+
+# Temp inference outputs
+*.tmp.mp4
+*_frames/
+
+# Database
+*.db
+*.sqlite
+postgres_data/
+redis_data/
+
+# Terraform
+infrastructure/.terraform/
+infrastructure/*.tfstate
+infrastructure/*.tfstate.backup
+infrastructure/*.tfvars
+infrastructure/.terraform.lock.hcl
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+*.log
+logs/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# SSL / secrets
+*.pem
+*.key
+*.crt
+nginx/ssl/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+*~
+.vscode/
+.idea/
+*.swp
+*.swo
