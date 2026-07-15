@@ -1,0 +1,53 @@
+# Fly.io app config for the FastAPI backend.
+#
+# Deploy from this directory (backend/):
+#   fly launch --no-deploy --copy-config --name <your-app-name>   # first time only
+#   fly deploy
+#
+# Secrets (DATABASE_URL, NEO4J_*, R2_*, ANTHROPIC_API_KEY, SECRET_KEY,
+# JWT_SECRET_KEY, ...) are NOT set here — see docs/deployment.md for the
+# `fly secrets set` commands. Never commit secrets into this file.
+#
+# GPU note: this container still bundles the full STT/TTS/lip-sync stack
+# (Whisper, Chatterbox, MuseTalk) from the base project, including
+# CUDA-linked torch wheels. Deployed here on a standard (non-GPU) Fly
+# machine, that inference code runs in CPU fallback mode — slow, but
+# functional for exercising the API/WebSocket/health-check surface this
+# prompt is scoped to. Prompt 9 splits GPU inference out to a persistent
+# Runpod pod and wires this backend to it over the network instead of
+# running inference in-process; until then, expect STT/TTS/animate calls
+# against this deployment to be slow (CPU Whisper/Chatterbox/MuseTalk).
+
+app = "life-capsule-backend" # override with your own globally-unique name
+primary_region = "iad" # pick the region closest to your Neon/AuraDB instances
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  ENVIRONMENT = "production"
+  DEBUG = "false"
+  LOG_LEVEL = "INFO"
+  USE_LOCAL_STORAGE = "false"
+  STORAGE_PROVIDER = "r2"
+  LLM_PROVIDER = "anthropic"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # A WebSocket backend shouldn't cold-start mid-conversation, and this
+  # image's first-boot model warmup (Whisper/Chatterbox) is slow — keep at
+  # least one machine warm rather than scaling to zero.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "120s" # first-boot model loading
+    interval = "30s"
+    timeout = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "performance-2x" # 2 vCPU / 4GB — CPU-mode STT/TTS is heavy; bump if /health reports it's struggling

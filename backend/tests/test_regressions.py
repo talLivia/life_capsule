@@ -151,9 +151,14 @@ async def test_avatar_metadata_patch_actually_persists(
     await db_session.commit()
     await db_session.refresh(avatar)
 
+    # NOTE: originally exercised with `system_prompt` — that field (and
+    # `personality`) was removed from AvatarMetadataUpdate in Prompt 1 along
+    # with the rest of the free-chat LLM layer. `background_color` is a
+    # visual-only field that still exists and exercises the same
+    # merge-and-persist code path.
     resp = await client.patch(
         f"/api/v1/avatars/{avatar.id}/metadata",
-        json={"system_prompt": "You are a pirate."},
+        json={"background_color": "#1a1a2e"},
         headers=auth_headers,
     )
     assert resp.status_code == 200
@@ -164,7 +169,7 @@ async def test_avatar_metadata_patch_actually_persists(
     db_session.expire_all()
     result = await db_session.execute(select(Avatar).where(Avatar.id == avatar_id))
     fresh = result.scalar_one()
-    assert (fresh.avatar_metadata or {}).get("system_prompt") == "You are a pirate."
+    assert (fresh.avatar_metadata or {}).get("background_color") == "#1a1a2e"
     # And the pre-existing keys were merged, not clobbered
     assert (fresh.avatar_metadata or {}).get("face_detected") is True
 

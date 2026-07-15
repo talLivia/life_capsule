@@ -91,6 +91,43 @@ class CacheService:
             logger.warning(f"Cache increment error for key={key}: {e}")
             return None
 
+    # ── Retrieval visited-set (Prompts 6-7 loop prevention) ──────────────────
+    # Keyed per conversation session so the graph-expansion step never
+    # re-surfaces a segment already used earlier in the same conversation.
+    # A TTL bounds memory for abandoned sessions instead of relying on an
+    # explicit end-of-conversation cleanup call that might never arrive.
+    _VISITED_SET_TTL = 6 * 3600  # 6h — comfortably longer than any single conversation
+
+    def _visited_key(self, session_id: str) -> str:
+        return f"visited:{session_id}"
+
+    async def add_visited(self, session_id: str, segment_ids: list) -> bool:
+        """Mark segment_ids as already surfaced in this conversation session."""
+        if not self.redis or not segment_ids:
+            return False
+        try:
+            key = self._visited_key(session_id)
+            await self.redis.sadd(key, *segment_ids)
+            await self.redis.expire(key, self._VISITED_SET_TTL)
+            return True
+        except Exception as e:
+            logger.warning(f"Visited-set add error for session={session_id}: {e}")
+            return False
+
+    async def get_visited(self, session_id: str) -> set:
+        """All segment ids already surfaced in this conversation session."""
+        if not self.redis:
+            return set()
+        try:
+            return await self.redis.smembers(self._visited_key(session_id))
+        except Exception as e:
+            logger.warning(f"Visited-set get error for session={session_id}: {e}")
+            return set()
+
+    async def clear_visited(self, session_id: str) -> bool:
+        """Reset the visited-set, e.g. when a conversation session ends."""
+        return await self.delete(self._visited_key(session_id))
+
     async def cleanup(self):
         """Close Redis connection."""
         if self.redis:

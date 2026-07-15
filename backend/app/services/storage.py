@@ -1,9 +1,10 @@
 """
-Storage service — local filesystem (default) or AWS S3.
+Storage service — local filesystem (default), Cloudflare R2, or AWS S3.
 
-Set USE_LOCAL_STORAGE=false and provide AWS credentials to switch to S3.
-In local mode files are saved under LOCAL_STORAGE_PATH and served via
-FastAPI StaticFiles at /uploads/...
+Set USE_LOCAL_STORAGE=false to switch to a remote provider, selected via
+STORAGE_PROVIDER ("r2", the default, or "s3" for the base project's
+original AWS path). In local mode files are saved under
+LOCAL_STORAGE_PATH and served via FastAPI StaticFiles at /uploads/...
 """
 
 import logging
@@ -178,6 +179,130 @@ class S3StorageService:
         logger.info("S3 storage cleanup complete")
 
 
+# ── R2 storage ────────────────────────────────────────────────────────────────
+
+
+class R2StorageService:
+    """
+    Cloudflare R2 storage (S3-compatible API) — this project's object store
+    for raw interview video/audio. Used when USE_LOCAL_STORAGE=false and
+    STORAGE_PROVIDER=r2 (the default). See S3StorageService above for the
+    base project's original AWS path, kept only for its optional
+    Terraform/EC2 deploy route.
+
+    R2 has no AWS-style regions and (unlike S3) no egress fees, which is
+    why raw video — much larger than the base project's avatar images —
+    targets it instead.
+    """
+
+    def __init__(self):
+        import aioboto3
+        import boto3
+
+        self.bucket_name = settings.R2_BUCKET_NAME
+        self.endpoint_url = settings.R2_ENDPOINT
+        self.public_url = settings.R2_PUBLIC_URL
+
+        self._client_kwargs = dict(
+            endpoint_url=self.endpoint_url,
+            aws_access_key_id=settings.R2_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
+            # R2 only has one (virtual) region; boto3 still requires some
+            # value to be set for SigV4 signing.
+            region_name="auto",
+        )
+        self.s3_client = boto3.client("s3", **self._client_kwargs)
+        self.session = aioboto3.Session()
+
+    async def initialize(self):
+        from botocore.exceptions import ClientError
+
+        try:
+            async with self.session.client("s3", **self._client_kwargs) as s3:
+                try:
+                    await s3.head_bucket(Bucket=self.bucket_name)
+                    logger.info(f"R2 bucket {self.bucket_name} exists")
+                except ClientError:
+                    logger.info(f"Creating R2 bucket {self.bucket_name}")
+                    # R2 rejects AWS's CreateBucketConfiguration/
+                    # LocationConstraint param — omit it entirely.
+                    await s3.create_bucket(Bucket=self.bucket_name)
+        except Exception as e:
+            logger.error(f"Failed to initialise R2: {e}")
+            raise
+
+    async def upload_file(
+        self,
+        file_data: bytes,
+        key: str,
+        content_type: str = "application/octet-stream",
+        metadata: Optional[dict] = None,
+    ) -> str:
+        async with self.session.client("s3", **self._client_kwargs) as s3:
+            extra: dict = {"ContentType": content_type}
+            if metadata:
+                extra["Metadata"] = metadata
+            await s3.put_object(Bucket=self.bucket_name, Key=key, Body=file_data, **extra)
+        return self.get_url(key)
+
+    async def presigned_upload_url(
+        self,
+        key: str,
+        content_type: str = "application/octet-stream",
+        ttl_seconds: int = 3600,
+    ) -> str:
+        """
+        Presigned PUT URL so the browser can upload raw interview video
+        straight to R2 without it passing through the FastAPI backend
+        (Prompt 4's `/record` upload flow). The caller must PUT with the
+        exact same Content-Type used here — R2 (like S3) includes it in
+        the signature.
+        """
+        return self.s3_client.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": self.bucket_name, "Key": key, "ContentType": content_type},
+            ExpiresIn=ttl_seconds,
+        )
+
+    async def presigned_url(self, key: str, ttl_seconds: int = 3600) -> str:
+        """Presigned GET URL — mirrors S3StorageService.presigned_url."""
+        return self.s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self.bucket_name, "Key": key},
+            ExpiresIn=ttl_seconds,
+        )
+
+    async def download_file(self, key: str) -> bytes:
+        async with self.session.client("s3", **self._client_kwargs) as s3:
+            resp = await s3.get_object(Bucket=self.bucket_name, Key=key)
+            async with resp["Body"] as stream:
+                return await stream.read()
+
+    def get_local_path(self, key: str) -> str:
+        raise NotImplementedError("R2 has no local path; use download_file()")
+
+    async def delete_file(self, key: str):
+        async with self.session.client("s3", **self._client_kwargs) as s3:
+            await s3.delete_object(Bucket=self.bucket_name, Key=key)
+
+    def get_url(self, key: str) -> str:
+        if self.public_url:
+            return f"{self.public_url.rstrip('/')}/{key}"
+        # No custom domain configured — the raw R2 endpoint isn't
+        # browser-readable without a presigned URL, so this is only a
+        # reference key, not something to hand to a client directly.
+        return f"{self.endpoint_url}/{self.bucket_name}/{key}"
+
+    async def serving_url(self, key: str, ttl_seconds: int = 3600) -> str:
+        """URL the browser can actually fetch."""
+        if self.public_url:
+            return f"{self.public_url.rstrip('/')}/{key}"
+        return await self.presigned_url(key, ttl_seconds)
+
+    async def cleanup(self):
+        logger.info("R2 storage cleanup complete")
+
+
 # ── Factory ───────────────────────────────────────────────────────────────────
 
 
@@ -185,6 +310,10 @@ def _build_storage_service():
     if getattr(settings, "USE_LOCAL_STORAGE", True):
         logger.info("Using LOCAL filesystem storage")
         return LocalStorageService()
+    provider = getattr(settings, "STORAGE_PROVIDER", "r2")
+    if provider == "r2":
+        logger.info("Using Cloudflare R2 storage")
+        return R2StorageService()
     logger.info("Using AWS S3 storage")
     return S3StorageService()
 

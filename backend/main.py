@@ -21,6 +21,7 @@ from app.middleware.security import RequestLoggingMiddleware, SecurityHeadersMid
 from app.models import Session as SessionModel
 from app.models import User
 from app.services.cache import cache_service
+from app.services.neo4j_client import neo4j_client
 from app.services.storage import storage_service
 from app.telemetry import init_telemetry
 from app.websocket import websocket_manager
@@ -78,6 +79,10 @@ async def lifespan(app: FastAPI):
         await cache_service.initialize()
     except Exception as e:
         logger.warning(f"Cache service init failed: {e}")
+    try:
+        await neo4j_client.initialize()
+    except Exception as e:
+        logger.warning(f"Neo4j client init failed: {e}")
 
     # Seed demo user ONLY in DEBUG/development mode. An empty-password user
     # in production would be a critical auth bypass.
@@ -117,6 +122,7 @@ async def lifespan(app: FastAPI):
     await websocket_manager.stop_cleanup_task()
     await storage_service.cleanup()
     await cache_service.cleanup()
+    await neo4j_client.cleanup()
     logger.info("Shutdown complete")
 
 
@@ -207,6 +213,19 @@ async def health_check():
             services["redis"] = "not configured"
     except Exception:
         services["redis"] = "disconnected"
+        health["status"] = "degraded"
+
+    # Check Neo4j (AuraDB) — the Graphiti backend, wired up in Prompt 3
+    if neo4j_client.driver is None:
+        if settings.NEO4J_URI and settings.NEO4J_PASSWORD:
+            services["neo4j"] = "disconnected"
+            health["status"] = "degraded"
+        else:
+            services["neo4j"] = "not configured"
+    elif await neo4j_client.ping():
+        services["neo4j"] = "connected"
+    else:
+        services["neo4j"] = "disconnected"
         health["status"] = "degraded"
 
     # GPU / avatar engine info

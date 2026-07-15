@@ -15,6 +15,11 @@ asyncpg==0.29.0
 alembic==1.13.1
 psycopg2-binary==2.9.9
 
+# Graph / associative memory (Neo4j AuraDB via Graphiti — graphiti-core
+# itself is added in Prompt 3; the plain driver here backs the standalone
+# connection check in app/services/neo4j_client.py and /health)
+neo4j==5.17.0
+
 # Redis & Caching
 redis==5.0.1
 hiredis==2.3.2

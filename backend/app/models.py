@@ -38,6 +38,9 @@ class User(Base):
     # Relationships
     avatars = relationship("Avatar", back_populates="user", cascade="all, delete-orphan")
     sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
+    interview_sessions = relationship(
+        "InterviewSession", back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class Avatar(Base):
@@ -147,3 +150,70 @@ class Conversation(Base):
 
     # Relationships
     session = relationship("Session", back_populates="conversations")
+
+
+class InterviewSession(Base):
+    """
+    One producer's pass through the fixed guided-interview question
+    sequence (`/record`, Prompt 4) — distinct from `Session`, which is a
+    family member's conversation with the finished avatar (`/talk`).
+    """
+
+    __tablename__ = "interview_sessions"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String, default="active", index=True)  # active/completed/abandoned
+    # Tracks position in the fixed question sequence so a browser refresh or
+    # dropped connection mid-interview resumes at the right question instead
+    # of restarting (Prompt 4's resumability requirement).
+    current_question_index = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", back_populates="interview_sessions")
+    segments = relationship(
+        "RawSegment", back_populates="interview_session", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (Index("ix_interview_sessions_user_created", "user_id", "created_at"),)
+
+
+class RawSegment(Base):
+    """
+    One recorded answer to one guided-interview question. Starts as just
+    the raw upload; `status` tracks it through the Prompt 5 analysis
+    pipeline (transcription -> entity resolution -> importance scoring ->
+    Graphiti ingest).
+    """
+
+    __tablename__ = "raw_segments"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    interview_session_id = Column(
+        String,
+        ForeignKey("interview_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    question_asked = Column(Text, nullable=False)
+    # Position in the fixed question sequence (config.json in Prompt 4) —
+    # lets a re-record replace the right segment instead of appending.
+    question_index = Column(Integer, nullable=False)
+    video_url = Column(String, nullable=True)  # set once the R2 upload completes
+    transcript = Column(Text, nullable=True)  # set by Prompt 5's transcribe step
+    # pending_upload -> pending_transcription -> pending_analysis ->
+    # pending_confirmation -> ready | failed. Prompt 5 owns the full
+    # lifecycle; this column just needs to exist and be indexed for the
+    # polling queries Prompts 4-5 run against it.
+    status = Column(String, default="pending_upload", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    interview_session = relationship("InterviewSession", back_populates="segments")
+
+    __table_args__ = (
+        Index("ix_raw_segments_session_created", "interview_session_id", "created_at"),
+    )

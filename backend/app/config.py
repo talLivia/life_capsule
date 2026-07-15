@@ -42,8 +42,11 @@ class Settings(BaseSettings):
     NEO4J_USER: str = "neo4j"
     NEO4J_PASSWORD: str = ""
 
-    # Storage — local by default; set USE_LOCAL_STORAGE=false to use R2
+    # Storage — local by default; set USE_LOCAL_STORAGE=false to use a
+    # remote provider, selected by STORAGE_PROVIDER ("r2", the default
+    # for this project, or "s3" for the base project's original AWS path).
     USE_LOCAL_STORAGE: bool = True
+    STORAGE_PROVIDER: str = "r2"  # r2 | s3
     LOCAL_STORAGE_PATH: str = "uploads"
 
     # AWS (retained for the base project's Terraform/EC2 GPU deploy path —
