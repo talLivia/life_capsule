@@ -41,6 +41,34 @@ class Settings(BaseSettings):
     NEO4J_URI: str = "bolt://localhost:7687"
     NEO4J_USER: str = "neo4j"
     NEO4J_PASSWORD: str = ""
+    # Some AuraDB instances use a non-default database name (matching the
+    # instance id rather than the usual "neo4j") — check your AuraDB
+    # connection details before assuming the default is correct.
+    NEO4J_DATABASE: str = "neo4j"
+
+    # Graphiti's OWN internal LLM (entity/relationship extraction) and
+    # embedder — independent of LLM_PROVIDER above, which is the main
+    # app's topic-classification/importance-scoring model (Prompts 5-7).
+    # The project plan calls for Claude here; "gemini" is a fully
+    # cloud-based, cheaper default for iteration (no local model to run —
+    # swap to "anthropic" before relying on real ingestion quality, since
+    # Claude's extraction is more reliable).
+    # "gemini-2.0-flash"/"text-embedding-001" (Graphiti's own docs example)
+    # turned out to be unavailable to new API keys — verified against a
+    # live key which google.genai's models.list() only actually serves
+    # for these two rolling-alias / current names.
+    GRAPHITI_LLM_PROVIDER: str = "gemini"  # anthropic | gemini
+    GRAPHITI_LLM_MODEL: str = "gemini-flash-latest"
+    # graphiti-core's GeminiClient uses a separate, cheaper "small_model"
+    # for some internal calls, defaulting to "gemini-2.5-flash-lite" if
+    # unset — also unavailable to new API keys, so set explicitly.
+    GRAPHITI_LLM_SMALL_MODEL: str = "gemini-flash-lite-latest"
+    GRAPHITI_EMBEDDER_PROVIDER: str = "gemini"  # openai | gemini
+    GRAPHITI_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    GRAPHITI_EMBEDDING_DIM: int = 3072
+    # Used by both GRAPHITI_LLM_PROVIDER=gemini and
+    # GRAPHITI_EMBEDDER_PROVIDER=gemini — one key covers both.
+    GEMINI_API_KEY: str = ""
 
     # Storage — local by default; set USE_LOCAL_STORAGE=false to use a
     # remote provider, selected by STORAGE_PROVIDER ("r2", the default
