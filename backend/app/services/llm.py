@@ -10,8 +10,11 @@ narrowly-scoped `system_prompt`; there is no default "helpful assistant"
 persona, on purpose, so a call site can never silently fall back to
 unconstrained general-knowledge answering.
 
-Provider-agnostic interface that currently supports Anthropic (default) and
-OpenAI. The Anthropic path takes advantage of:
+Provider-agnostic interface that currently supports Anthropic (default),
+OpenAI, and Gemini — LLM_PROVIDER=gemini reuses GEMINI_API_KEY (the same key
+already used for Graphiti's own extraction, see graph_memory.py) instead of
+requiring a separate Anthropic/OpenAI account. The Anthropic path takes
+advantage of:
 
   * **Prompt caching** — the system prompt is wrapped in a content block
     with `cache_control={"type": "ephemeral"}`. Cached reads cost ~10% of
@@ -35,6 +38,9 @@ from typing import AsyncGenerator, Dict, List, Optional
 
 import anthropic
 import openai
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 
 from app.config import settings
 
@@ -109,6 +115,21 @@ def _map_openai_exception(exc: Exception) -> LLMError:
     return LLMError(str(exc))
 
 
+def _map_gemini_exception(exc: Exception) -> LLMError:
+    """google-genai raises APIError (ClientError=4xx, ServerError=5xx) with a
+    `.code` carrying the HTTP status — no separate exception classes per
+    status the way anthropic/openai have, so branch on the code instead."""
+    if isinstance(exc, genai_errors.APIError):
+        code = getattr(exc, "code", None)
+        if code == 429:
+            return LLMRateLimited(str(exc))
+        if code in (401, 403):
+            return LLMAuthError(str(exc))
+        if isinstance(exc, genai_errors.ServerError) or (code and code >= 500):
+            return LLMUnavailable(str(exc))
+    return LLMError(str(exc))
+
+
 class LLMService:
     """LLM Service for AI responses."""
 
@@ -137,6 +158,8 @@ class LLMService:
                 api_key=settings.OPENAI_API_KEY,
                 base_url=settings.OPENAI_BASE_URL,  # None → api.openai.com
             )
+        elif self.provider == "gemini":
+            self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
     # ── non-streaming ────────────────────────────────────────────────────────
 
@@ -150,6 +173,8 @@ class LLMService:
             return await self._generate_anthropic(messages, system_prompt, thinking)
         if self.provider == "openai":
             return await self._generate_openai(messages, system_prompt)
+        if self.provider == "gemini":
+            return await self._generate_gemini(messages, system_prompt)
         raise LLMError(f"Unsupported LLM provider: {self.provider}")
 
     async def _generate_anthropic(
@@ -215,6 +240,53 @@ class LLMService:
 
         return response.choices[0].message.content or ""
 
+    def _gemini_contents(self, messages: List[Dict[str, str]]) -> list:
+        # Gemini's roles are "user"/"model" (not "assistant") — our own
+        # call sites never put "system" in the messages list (it's always
+        # the separate system_prompt param, same convention as the
+        # anthropic/openai paths above), so anything else safely passes
+        # through as "user".
+        return [
+            genai_types.Content(
+                role="model" if m.get("role") == "assistant" else "user",
+                parts=[genai_types.Part.from_text(text=m["content"])],
+            )
+            for m in messages
+        ]
+
+    async def _generate_gemini(
+        self,
+        messages: List[Dict[str, str]],
+        system_prompt: Optional[str] = None,
+    ) -> str:
+        if not system_prompt:
+            raise LLMError("system_prompt is required — see module docstring")
+
+        config = genai_types.GenerateContentConfig(
+            temperature=self.temperature,
+            max_output_tokens=self.max_tokens,
+            system_instruction=system_prompt,
+        )
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=self.model,
+                contents=self._gemini_contents(messages),
+                config=config,
+            )
+        except Exception as e:
+            mapped = _map_gemini_exception(e)
+            logger.error(
+                "gemini_call_failed",
+                extra={"error_type": type(e).__name__, "mapped": type(mapped).__name__},
+            )
+            raise mapped from e
+
+        text = getattr(response, "text", None)
+        if not text:
+            raise LLMError("Gemini response contained no text")
+        self._log_gemini_usage(getattr(response, "usage_metadata", None))
+        return text
+
     # ── streaming ────────────────────────────────────────────────────────────
 
     async def stream_response(
@@ -227,6 +299,9 @@ class LLMService:
                 yield chunk
         elif self.provider == "openai":
             async for chunk in self._stream_openai(messages, system_prompt):
+                yield chunk
+        elif self.provider == "gemini":
+            async for chunk in self._stream_gemini(messages, system_prompt):
                 yield chunk
         else:
             raise LLMError(f"Unsupported LLM provider: {self.provider}")
@@ -277,6 +352,33 @@ class LLMService:
             logger.error("openai_stream_failed", extra={"error_type": type(e).__name__})
             raise mapped from e
 
+    async def _stream_gemini(
+        self,
+        messages: List[Dict[str, str]],
+        system_prompt: Optional[str] = None,
+    ) -> AsyncGenerator[str, None]:
+        if not system_prompt:
+            raise LLMError("system_prompt is required — see module docstring")
+
+        config = genai_types.GenerateContentConfig(
+            temperature=self.temperature,
+            max_output_tokens=self.max_tokens,
+            system_instruction=system_prompt,
+        )
+        try:
+            stream = await self.client.aio.models.generate_content_stream(
+                model=self.model,
+                contents=self._gemini_contents(messages),
+                config=config,
+            )
+            async for chunk in stream:
+                if chunk.text:
+                    yield chunk.text
+        except Exception as e:
+            mapped = _map_gemini_exception(e)
+            logger.error("gemini_stream_failed", extra={"error_type": type(e).__name__})
+            raise mapped from e
+
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def _log_usage(self, usage, thinking: bool) -> None:
@@ -291,6 +393,21 @@ class LLMService:
                     "cache_create_tokens": getattr(usage, "cache_creation_input_tokens", 0),
                     "cache_read_tokens": getattr(usage, "cache_read_input_tokens", 0),
                     "thinking": thinking,
+                },
+            )
+        except Exception:
+            pass
+
+    def _log_gemini_usage(self, usage_metadata) -> None:
+        if usage_metadata is None:
+            return
+        try:
+            logger.info(
+                "llm_usage",
+                extra={
+                    "in_tokens": getattr(usage_metadata, "prompt_token_count", 0) or 0,
+                    "out_tokens": getattr(usage_metadata, "candidates_token_count", 0) or 0,
+                    "provider": "gemini",
                 },
             )
         except Exception:

@@ -78,3 +78,59 @@ def test_llm_openai_provider_respects_custom_base_url(monkeypatch):
 
     service = llm_module.LLMService()
     assert "vllm:8001" in str(service.client.base_url)
+
+
+def test_llm_gemini_provider_builds_client(monkeypatch):
+    """LLM_PROVIDER=gemini reuses GEMINI_API_KEY — no separate Anthropic/
+    OpenAI account needed for analysis_graph.py's own topic/entity/importance
+    calls (as distinct from Graphiti's own GRAPHITI_LLM_PROVIDER)."""
+    from app.services import llm as llm_module
+
+    monkeypatch.setattr(llm_module.settings, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(llm_module.settings, "LLM_MODEL", "gemini-flash-latest")
+    monkeypatch.setattr(llm_module.settings, "GEMINI_API_KEY", "test-key")
+
+    service = llm_module.LLMService()
+    assert service.provider == "gemini"
+    assert service.model == "gemini-flash-latest"
+
+
+def test_map_gemini_exception_rate_limit():
+    from google.genai import errors as genai_errors
+
+    from app.services.llm import LLMRateLimited, _map_gemini_exception
+
+    exc = genai_errors.ClientError(429, {"message": "rate limited"})
+    assert isinstance(_map_gemini_exception(exc), LLMRateLimited)
+
+
+def test_map_gemini_exception_auth():
+    from google.genai import errors as genai_errors
+
+    from app.services.llm import LLMAuthError, _map_gemini_exception
+
+    exc = genai_errors.ClientError(403, {"message": "forbidden"})
+    assert isinstance(_map_gemini_exception(exc), LLMAuthError)
+
+
+def test_map_gemini_exception_server_error():
+    from google.genai import errors as genai_errors
+
+    from app.services.llm import LLMUnavailable, _map_gemini_exception
+
+    exc = genai_errors.ServerError(500, {"message": "oops"})
+    assert isinstance(_map_gemini_exception(exc), LLMUnavailable)
+
+
+def test_gemini_contents_maps_assistant_role_to_model(monkeypatch):
+    from app.services import llm as llm_module
+
+    monkeypatch.setattr(llm_module.settings, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(llm_module.settings, "GEMINI_API_KEY", "test-key")
+    service = llm_module.LLMService()
+
+    contents = service._gemini_contents(
+        [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+    )
+    assert contents[0].role == "user"
+    assert contents[1].role == "model"

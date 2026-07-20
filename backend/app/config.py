@@ -99,12 +99,16 @@ class Settings(BaseSettings):
     R2_PUBLIC_URL: Optional[str] = None
 
     # API Keys
-    # Anthropic is the ONLY model used for anything that touches the
-    # storyteller's actual content — Graphiti's entity extraction (Prompt 3),
-    # topic/importance classification (Prompt 5), and retrieval-time topic
+    # Whichever of Anthropic/OpenAI/Gemini LLM_PROVIDER selects below is the
+    # ONLY model used for anything that touches the storyteller's actual
+    # content — Graphiti's entity extraction (Prompt 3), topic/importance
+    # classification and entity-name NER (Prompt 5), and retrieval-time topic
     # matching (Prompt 6). Every one of those calls passes an explicit,
     # narrowly-scoped system prompt (see services/llm.py) — never a general
-    # chat persona.
+    # chat persona. Anthropic was the original project-plan default; Gemini
+    # (LLM_PROVIDER=gemini, reusing GEMINI_API_KEY below) is a fully
+    # supported cheaper alternative for deployments that want a single paid
+    # provider instead of separately funding Anthropic too.
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     ELEVENLABS_API_KEY: Optional[str] = None
@@ -120,7 +124,11 @@ class Settings(BaseSettings):
     # should override LLM_MODEL via .env (e.g. gpt-4o, gpt-4o-mini).
     # "ollama" runs fully local & free: set LLM_MODEL to e.g. llama3.1 and
     # optionally OPENAI_BASE_URL (defaults to http://localhost:11434/v1).
-    LLM_PROVIDER: str = "anthropic"  # anthropic, openai, ollama
+    # "gemini" needs GEMINI_API_KEY set and LLM_MODEL overridden to a real
+    # Gemini model name (e.g. gemini-flash-latest — see GRAPHITI_LLM_MODEL's
+    # comment above for why the "gemini-2.0-flash" docs example doesn't work
+    # on new API keys).
+    LLM_PROVIDER: str = "anthropic"  # anthropic, openai, ollama, gemini
     LLM_MODEL: str = "claude-sonnet-4-6"
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 2000
