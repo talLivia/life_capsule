@@ -10,12 +10,17 @@ resolved) -> score_importance -> finalize_ingest. Any node that hits an
 unrecoverable error routes to `fail` instead of continuing.
 
 Ambiguity heuristic (check_entities): `graph_memory.get_entity_candidates`
-returns candidates ranked by relevance but WITHOUT a similarity score (that's
-its public contract, from Prompt 3) — so "confident" here means an exact
-case-insensitive name match to an existing entity (auto-resolved, no
-interrupt), and "ambiguous" means a same-ish-but-not-identical fuzzy match
-(interrupt and ask). A name with zero candidates is treated as brand new and
-never interrupts — Graphiti will just create it during finalize_ingest.
+returns candidates ranked by relevance but WITHOUT a similarity score or a
+minimum-relevance floor (that's its public contract, from Prompt 3 —
+filtering is deliberately left to the caller). Confirmed live against a
+real graph: querying a single-node graph for a totally unrelated name still
+returns that node as a "candidate", so a lexical-similarity gate
+(`_names_are_similar`) runs first — only a name that's actually similar to
+a candidate's name (substring or a high SequenceMatcher ratio) counts as a
+real match at all. Among real matches, an exact case-insensitive name match
+auto-resolves (no interrupt); a same-ish-but-not-identical one is ambiguous
+(interrupt and ask). A name with zero real matches is brand new and never
+interrupts — Graphiti will just create it during finalize_ingest.
 
 Entity name extraction here is our OWN lightweight Claude call (see
 _ENTITY_NAME_SYSTEM_PROMPT below), not graphiti_core's internal
@@ -40,6 +45,7 @@ import json
 import logging
 import re
 from contextlib import asynccontextmanager
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -97,6 +103,44 @@ and 10 is a major, life-altering event (e.g. a marriage, a birth, a \
 death, a life-changing decision), rate how significant and memorable \
 the event described in this transcript is. Output ONLY a single \
 integer from 0 to 10, with no other text."""
+
+
+_TOKEN_SIMILARITY_THRESHOLD = 0.75
+
+
+def _names_are_similar(a: str, b: str) -> bool:
+    """
+    Lexical-similarity gate for check_entities_node — see the module
+    docstring's Ambiguity heuristic section for why this exists.
+
+    Deliberately token-aware rather than a single whole-string similarity
+    ratio: comparing full strings character-by-character rewards a shared
+    surname as heavily as a shared full name — confirmed live that "גילה
+    כהן" (Gila Cohen) vs "דן כהן" (Dan Cohen) scores *higher* (0.57) via
+    SequenceMatcher than the genuinely-unrelated pair should, while two
+    different Cohens are obviously not the same person. Two people sharing
+    one surname must NOT count as similar; one name being a more/less
+    specific version of the other (e.g. "Gila" vs "Gila Cohen" — the same
+    person named with different specificity) should.
+    """
+    a_norm, b_norm = a.strip().lower(), b.strip().lower()
+    if not a_norm or not b_norm:
+        return False
+    if a_norm == b_norm:
+        return True
+
+    a_tokens, b_tokens = set(a_norm.split()), set(b_norm.split())
+    if a_tokens and b_tokens and (a_tokens <= b_tokens or b_tokens <= a_tokens):
+        return True
+
+    # Single-token names only: a strict character-similarity fallback for
+    # spelling/transliteration variants (e.g. "גילה" vs "גליה"). Never
+    # applied to multi-token names — that's exactly the shared-surname trap
+    # above.
+    if len(a_tokens) == 1 and len(b_tokens) == 1:
+        return SequenceMatcher(None, a_norm, b_norm).ratio() >= _TOKEN_SIMILARITY_THRESHOLD
+
+    return False
 
 
 def _parse_json_array(text: str) -> List[str]:
@@ -238,11 +282,20 @@ async def check_entities_node(state: AnalysisState) -> dict:
         seen.add(key)
 
         candidates = await graph_memory.get_entity_candidates(name, group_id=group_id)
-        if not candidates:
+        # get_entity_candidates has no minimum-relevance floor by design
+        # (Prompt 3: "deliberately NOT a single 'best' match" — filtering is
+        # the caller's job) — confirmed live that it returns a small graph's
+        # only node as a "candidate" even for a completely unrelated query
+        # (e.g. "דן כהן" against a graph containing only "גילה"). Gate on
+        # actual lexical similarity before treating anything as ambiguous,
+        # or every new name in a growing archive would spuriously pause for
+        # confirmation against whatever's already there.
+        relevant = [c for c in candidates if _names_are_similar(name, c["name"])]
+        if not relevant:
             continue  # brand-new entity — Graphiti will just create it
 
         exact = next(
-            (c for c in candidates if c["name"].strip().lower() == key), None
+            (c for c in relevant if c["name"].strip().lower() == key), None
         )
         if exact:
             # Same name already in the graph verbatim — confident enough to
@@ -251,7 +304,7 @@ async def check_entities_node(state: AnalysisState) -> dict:
             auto_resolutions[name] = {"same_as_uuid": exact["uuid"]}
             continue
 
-        top = candidates[0]
+        top = relevant[0]
         to_check.append(
             {
                 "name": name,

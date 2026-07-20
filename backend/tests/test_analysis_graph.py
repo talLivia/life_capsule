@@ -87,6 +87,32 @@ def test_parse_json_array_returns_empty_on_garbage():
     assert ag._parse_json_array("not json at all") == []
 
 
+def test_names_are_similar_token_subset_match():
+    assert ag._names_are_similar("Gila", "Gila Cohen")
+    assert ag._names_are_similar("גילה", "גילה כהן")
+
+
+def test_names_are_similar_rejects_unrelated_names():
+    assert not ag._names_are_similar("Dan Cohen", "Gila")
+    assert not ag._names_are_similar("דן כהן", "גילה")
+    assert not ag._names_are_similar("Tel Aviv", "Gila")
+
+
+def test_names_are_similar_rejects_shared_surname_only():
+    """Regression test for a second live-smoke-test bug: two different
+    people sharing only a surname must NOT count as similar, even though a
+    whole-string SequenceMatcher ratio scores this pair (0.57) higher than
+    the legitimate "Gila"/"Gila Cohen" match."""
+    assert not ag._names_are_similar("Dan Cohen", "Gila Cohen")
+    assert not ag._names_are_similar("דן כהן", "גילה כהן")
+
+
+def test_names_are_similar_single_token_typo_variant():
+    """Single-token spelling/transliteration variants still match via the
+    strict character-similarity fallback."""
+    assert ag._names_are_similar("גילה", "גליה")
+
+
 def test_parse_importance_score_clamps_range():
     assert ag._parse_importance_score("15") == 10
     assert ag._parse_importance_score("-3") == 0
@@ -201,6 +227,50 @@ async def test_check_entities_node_flags_fuzzy_match(segment, monkeypatch):
 async def test_check_entities_node_no_candidates_means_new_entity(segment, monkeypatch):
     monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value='["Gila"]'))
     monkeypatch.setattr(ag.graph_memory, "get_entity_candidates", AsyncMock(return_value=[]))
+
+    result = await ag.check_entities_node(
+        {"segment_id": segment.id, "group_id": "g1", "transcript": segment.transcript}
+    )
+
+    assert result["names_to_check"] == []
+    assert result["entity_resolutions"] == {}
+
+
+async def test_check_entities_node_ignores_unrelated_candidate(segment, monkeypatch):
+    """Regression test for a bug the live smoke test caught:
+    get_entity_candidates has no minimum-relevance floor and returns a small
+    graph's only node even for a completely unrelated query (confirmed live:
+    querying "דן כהן" against a graph containing only "גילה" still returned
+    "גילה" as a "candidate"). A brand-new, lexically unrelated name must NOT
+    spuriously pause for human confirmation."""
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value='["Dan Cohen"]'))
+    monkeypatch.setattr(
+        ag.graph_memory,
+        "get_entity_candidates",
+        AsyncMock(return_value=[{"uuid": "u1", "name": "Gila", "summary": "a commander"}]),
+    )
+
+    result = await ag.check_entities_node(
+        {"segment_id": segment.id, "group_id": "g1", "transcript": segment.transcript}
+    )
+
+    assert result["names_to_check"] == []
+    assert result["entity_resolutions"] == {}
+
+
+async def test_check_entities_node_ignores_shared_surname_candidate(segment, monkeypatch):
+    """Regression test for a second live-smoke-test bug: "Gila Cohen" (a new
+    name) fuzzy-matched an existing "Dan Cohen" node purely on the shared
+    surname "Cohen" — two different people, not the same one referred to
+    with different specificity, so this must not pause for confirmation."""
+    monkeypatch.setattr(
+        ag.llm_service, "generate_response", AsyncMock(return_value='["Gila Cohen"]')
+    )
+    monkeypatch.setattr(
+        ag.graph_memory,
+        "get_entity_candidates",
+        AsyncMock(return_value=[{"uuid": "u1", "name": "Dan Cohen", "summary": "an engineer"}]),
+    )
 
     result = await ag.check_entities_node(
         {"segment_id": segment.id, "group_id": "g1", "transcript": segment.transcript}
