@@ -168,13 +168,17 @@ class LLMService:
         messages: List[Dict[str, str]],
         system_prompt: Optional[str] = None,
         thinking: bool = False,
+        temperature: Optional[float] = None,
     ) -> str:
+        """`temperature` overrides settings.LLM_TEMPERATURE for this call only
+        — e.g. Prompt 6's topic classifier wants temperature=0 (deterministic)
+        regardless of the app-wide default used for conversational replies."""
         if self.provider == "anthropic":
-            return await self._generate_anthropic(messages, system_prompt, thinking)
+            return await self._generate_anthropic(messages, system_prompt, thinking, temperature)
         if self.provider == "openai":
-            return await self._generate_openai(messages, system_prompt)
+            return await self._generate_openai(messages, system_prompt, temperature)
         if self.provider == "gemini":
-            return await self._generate_gemini(messages, system_prompt)
+            return await self._generate_gemini(messages, system_prompt, temperature)
         raise LLMError(f"Unsupported LLM provider: {self.provider}")
 
     async def _generate_anthropic(
@@ -182,18 +186,20 @@ class LLMService:
         messages: List[Dict[str, str]],
         system_prompt: Optional[str],
         thinking: bool,
+        temperature: Optional[float] = None,
     ) -> str:
         kwargs: dict = {
             "model": self.model,
             "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
+            "temperature": temperature if temperature is not None else self.temperature,
             "system": _cacheable_system(system_prompt),
             "messages": messages,
         }
         # Extended thinking — model "thinks" privately before answering. The
         # thinking tokens still count against output budget so we widen
         # max_tokens to cover both. Per Anthropic docs, temperature must be 1
-        # when extended thinking is enabled.
+        # when extended thinking is enabled — this is a hard API requirement,
+        # so it overrides any explicit `temperature` argument too.
         if thinking:
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": _DEFAULT_THINKING_BUDGET}
             kwargs["max_tokens"] = max(self.max_tokens + _DEFAULT_THINKING_BUDGET, self.max_tokens)
@@ -221,6 +227,7 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
     ) -> str:
         if not system_prompt:
             raise LLMError("system_prompt is required — see module docstring")
@@ -230,7 +237,7 @@ class LLMService:
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                temperature=self.temperature,
+                temperature=temperature if temperature is not None else self.temperature,
                 max_tokens=self.max_tokens,
             )
         except Exception as e:
@@ -258,12 +265,13 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
     ) -> str:
         if not system_prompt:
             raise LLMError("system_prompt is required — see module docstring")
 
         config = genai_types.GenerateContentConfig(
-            temperature=self.temperature,
+            temperature=temperature if temperature is not None else self.temperature,
             max_output_tokens=self.max_tokens,
             system_instruction=system_prompt,
         )

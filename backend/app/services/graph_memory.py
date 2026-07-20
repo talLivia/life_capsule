@@ -311,6 +311,96 @@ async def find_related_episodes(
     return segment_ids[:limit]
 
 
+async def get_episode_entity_names(
+    segment_id: str, group_id: str = DEFAULT_GROUP_ID
+) -> list[str]:
+    """
+    Entity names Graphiti recorded as mentioned by a specific segment's
+    episode — the bridge Prompt 6's retrieval pipeline needs between
+    `primary_match`'s Postgres segment_ids and `expand_graph`'s entity-based
+    graph traversal (the doc's "entities from the primary segment(s)").
+    Never returns transcript content, only entity names already public via
+    get_entity_candidates.
+    """
+    graphiti = get_graphiti()
+    query = """
+        MATCH (ep:Episodic {name: $name})-[:MENTIONS]->(e:Entity)
+        WHERE ep.group_id = $group_id
+        RETURN DISTINCT e.name AS name
+    """
+    result = await graphiti.driver.execute_query(
+        query, name=f"segment-{segment_id}", group_id=group_id
+    )
+    return [record["name"] for record in result.records]
+
+
+async def find_related_episodes_scored(
+    entity_names: list[str],
+    exclude_ids: list[str],
+    max_hops: int = 1,
+    group_id: str = DEFAULT_GROUP_ID,
+    limit: int = 10,
+) -> list[dict]:
+    """
+    Like `find_related_episodes`, but also reports how many of the origin
+    entities each candidate episode shares — Prompt 6's retrieval pipeline
+    uses this count as its "edge-weight/confidence" proxy. Graphiti's
+    MENTIONS-based expansion (see `find_related_episodes`'s docstring for
+    why it goes through MENTIONS rather than RELATES_TO) doesn't carry a
+    numeric edge weight the way a single fact-edge would, so "how many of
+    the entities this conversation cares about does this episode actually
+    mention" is the honest, computable substitute rather than a fabricated
+    score.
+
+    Returns [{"segment_id": str, "shared_entity_count": int}, ...], sorted
+    by shared_entity_count descending. Never returns transcript content.
+    """
+    if not entity_names or max_hops < 1:
+        return []
+
+    graphiti = get_graphiti()
+
+    origin_uuids: list[str] = []
+    for name in entity_names:
+        nodes = await _search_nodes(name, group_id=group_id, limit=5)
+        origin_uuids.extend(
+            n.uuid for n in nodes if n.name.strip().lower() == name.strip().lower()
+        )
+
+    if not origin_uuids:
+        return []
+
+    extra_hops = max_hops - 1
+    query = f"""
+        MATCH (origin:Entity)
+        WHERE origin.uuid IN $origin_uuids AND origin.group_id = $group_id
+        MATCH (origin)-[:RELATES_TO*0..{extra_hops}]-(related:Entity)
+        MATCH (related)<-[:MENTIONS]-(ep:Episodic)
+        WHERE ep.group_id = $group_id
+        WITH ep, collect(DISTINCT origin.uuid) AS matched_origins
+        RETURN ep.name AS name, size(matched_origins) AS shared_entity_count
+        ORDER BY shared_entity_count DESC
+        LIMIT $limit
+    """
+    result = await graphiti.driver.execute_query(
+        query, origin_uuids=origin_uuids, group_id=group_id, limit=limit * 4
+    )
+
+    excluded = set(exclude_ids)
+    seen: set[str] = set()
+    scored: list[dict] = []
+    for record in result.records:
+        segment_id = record["name"].removeprefix("segment-")
+        if segment_id in excluded or segment_id in seen:
+            continue
+        seen.add(segment_id)
+        scored.append(
+            {"segment_id": segment_id, "shared_entity_count": record["shared_entity_count"]}
+        )
+
+    return scored[:limit]
+
+
 async def get_entity_candidates(
     name: str, group_id: str = DEFAULT_GROUP_ID, limit: int = 5
 ) -> list[dict]:
