@@ -48,6 +48,31 @@ module.exports = {
           cyan: '#06b6d4',
           pink: '#ec4899',
         },
+        // Calm palette — used only by /record (the guided-interview
+        // recording flow). Deliberately un-neon: the storyteller may be
+        // recording emotionally difficult content, so this page trades the
+        // rest of the app's glowing dark theme for a quiet, warm, low-
+        // contrast one instead.
+        calm: {
+          paper: '#f7f4ee',
+          card: '#fffdf9',
+          ink: '#2f3430',
+          inkmuted: '#6b6f68',
+          border: '#e5e0d4',
+          sage: {
+            50: '#f1f5f1',
+            100: '#dfe8e0',
+            300: '#a9c2ac',
+            500: '#6f8f74',
+            600: '#5a7a5f',
+            700: '#48624c',
+          },
+          paperDark: '#161b17',
+          cardDark: '#1d2420',
+          inkDark: '#e8ece8',
+          inkmutedDark: '#9aa39c',
+          borderDark: '#2a332c',
+        },
       },
       backgroundImage: {
         'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',

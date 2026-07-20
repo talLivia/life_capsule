@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -25,6 +25,8 @@ class UserUpdate(BaseModel):
 class UserResponse(UserBase):
     id: str
     is_active: bool
+    role: str
+    recording_language: str
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -132,3 +134,71 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     user_id: Optional[str] = None
+
+
+# Interview Schemas (Prompt 4 — guided-interview recording flow)
+class InterviewQuestion(BaseModel):
+    id: str
+    category: str
+    category_label: str
+    text: str
+    index: int
+
+
+class InterviewSessionResponse(BaseModel):
+    id: str
+    user_id: str
+    status: str
+    current_question_index: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class RawSegmentResponse(BaseModel):
+    id: str
+    interview_session_id: str
+    question_asked: str
+    question_index: int
+    video_url: Optional[str] = None
+    video_key: Optional[str] = None
+    transcript: Optional[str] = None
+    status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class InterviewSessionState(BaseModel):
+    """Everything the /record page needs to render or resume: the session,
+    the fixed question list for the producer's recording_language, and any
+    segments already recorded this session (so already-answered questions
+    show as complete and can be re-recorded instead of re-asked blank)."""
+
+    session: InterviewSessionResponse
+    questions: List[InterviewQuestion]
+    segments: List[RawSegmentResponse]
+
+
+class InterviewSessionUpdate(BaseModel):
+    current_question_index: int = Field(..., ge=0)
+
+
+class SegmentPresignRequest(BaseModel):
+    question_index: int = Field(..., ge=0)
+    content_type: str = Field(default="video/webm", max_length=100)
+
+
+class SegmentPresignResponse(BaseModel):
+    upload_url: str
+    video_key: str
+    method: str = "PUT"
+    content_type: str
+
+
+class SegmentIngestRequest(BaseModel):
+    interview_session_id: str
+    question_index: int = Field(..., ge=0)
+    question_asked: str = Field(..., min_length=1, max_length=2000)
+    video_key: str = Field(..., min_length=1)

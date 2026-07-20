@@ -227,6 +227,25 @@
     box-shadow: 0 0 8px rgba(168,85,247,0.3), inset 0 0 8px rgba(168,85,247,0.05);
   }
 
+  /* ── Calm theme (/record only) — quiet, warm, low-contrast; deliberately
+     distinct from the rest of the app's neon dark theme since the
+     storyteller may be recording emotionally difficult content. ── */
+  .calm-btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-semibold
+           bg-calm-sage-600 hover:bg-calm-sage-700 text-white
+           transition-all duration-200 active:scale-95
+           disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  .calm-btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-medium
+           bg-transparent hover:bg-calm-sage-50 dark:hover:bg-white/5
+           border border-calm-border dark:border-calm-borderDark
+           text-calm-ink dark:text-calm-inkDark
+           transition-all duration-200 active:scale-95
+           disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
   /* ── Status dot ── */
   .status-dot {
     @apply w-2.5 h-2.5 rounded-full;

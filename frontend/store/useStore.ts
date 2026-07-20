@@ -6,6 +6,8 @@ interface User {
   email: string
   username: string
   full_name?: string
+  role?: 'producer' | 'family'
+  recording_language?: string
 }
 
 interface AppState {

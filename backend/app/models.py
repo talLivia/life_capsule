@@ -32,6 +32,18 @@ class User(Base):
     full_name = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
     is_superuser = Column(Boolean, default=False)
+    # producer: owns a story archive, records segments via /record.
+    # family: invited viewer, /talk-only, scoped to a producer's archive
+    # (real invite/scoping lands in Prompt 9 — every account is "producer"
+    # by default since this POC has one storyteller per deployment).
+    role = Column(String, nullable=False, default="producer", server_default="producer")
+    # The language the storyteller records in (BCP-47-ish short code, e.g.
+    # "he", "en"). Stamped onto segments/transcripts at ingest time so
+    # entity extraction and storage always stay in the storyteller's own
+    # language — never translated. A future retrieval-time translation
+    # layer (Prompt 9+) uses this to know what it's translating *from* when
+    # a viewer's preferred language differs.
+    recording_language = Column(String, nullable=False, default="he", server_default="he")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -202,6 +214,10 @@ class RawSegment(Base):
     # lets a re-record replace the right segment instead of appending.
     question_index = Column(Integer, nullable=False)
     video_url = Column(String, nullable=True)  # set once the R2 upload completes
+    # Raw storage key (e.g. "segments/{user_id}/{session_id}/{q_index}/{uuid}.webm"),
+    # kept alongside video_url so the transcription task can fetch the object
+    # directly instead of reverse-parsing a key out of a public/CDN URL.
+    video_key = Column(String, nullable=True)
     transcript = Column(Text, nullable=True)  # set by Prompt 5's transcribe step
     # pending_upload -> pending_transcription -> pending_analysis ->
     # pending_confirmation -> ready | failed. Prompt 5 owns the full

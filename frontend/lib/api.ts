@@ -274,6 +274,84 @@ export const api = {
     const response = await apiClient.get('/health')
     return response.data
   },
+
+  // Interview / /record (Prompt 4)
+  getInterviewQuestions: async () => {
+    const response = await apiClient.get('/api/v1/interview/questions')
+    return response.data
+  },
+
+  getInterviewSession: async () => {
+    const response = await apiClient.get('/api/v1/interview/session')
+    return response.data
+  },
+
+  updateInterviewSession: async (sessionId: string, currentQuestionIndex: number) => {
+    const response = await apiClient.patch(`/api/v1/interview/session/${sessionId}`, {
+      current_question_index: currentQuestionIndex,
+    })
+    return response.data
+  },
+
+  presignSegmentUpload: async (questionIndex: number, contentType: string = 'video/webm') => {
+    const response = await apiClient.post('/api/v1/interview/segments/presign', {
+      question_index: questionIndex,
+      content_type: contentType,
+    })
+    return response.data
+  },
+
+  ingestSegment: async (params: {
+    interview_session_id: string
+    question_index: number
+    question_asked: string
+    video_key: string
+  }) => {
+    const response = await apiClient.post('/api/v1/interview/segments/ingest', params)
+    return response.data
+  },
+}
+
+/**
+ * Upload a recorded take to a presigned (or local-dev) PUT URL, reporting
+ * progress. Deliberately bypasses the shared axios instance — in production
+ * this goes straight to object storage (R2) via a presigned URL, which must
+ * NOT receive this app's auth cookie/bearer token. We only attach those when
+ * the upload target is our own backend (the local-storage dev fallback,
+ * which needs auth like any other endpoint).
+ */
+export function uploadSegmentBlob(
+  uploadUrl: string,
+  blob: Blob,
+  contentType: string,
+  onProgress?: (fraction: number) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let sameOrigin = false
+    try {
+      sameOrigin = new URL(uploadUrl, API_URL).origin === new URL(API_URL).origin
+    } catch {
+      /* malformed URL — treat as cross-origin (no credentials) */
+    }
+
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', uploadUrl, true)
+    xhr.setRequestHeader('Content-Type', contentType)
+    if (sameOrigin) {
+      xhr.withCredentials = true
+      const token = readToken()
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    }
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total)
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve()
+      else reject(new Error(`Upload failed with status ${xhr.status}`))
+    }
+    xhr.onerror = () => reject(new Error('Upload failed (network error)'))
+    xhr.send(blob)
+  })
 }
 
 /**

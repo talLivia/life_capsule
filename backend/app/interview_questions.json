@@ -1,0 +1,30 @@
+{
+  "he": [
+    { "id": "childhood_home", "category": "childhood", "category_label": "ילדות", "text": "ספר לי על הבית שבו גדלת. איך הוא נראה, ומי היה שם איתך?" },
+    { "id": "childhood_memory", "category": "childhood", "category_label": "ילדות", "text": "מהו הזיכרון הכי מוקדם שיש לך מהילדות שלך?" },
+    { "id": "childhood_influence", "category": "childhood", "category_label": "ילדות", "text": "מי היה הדמות שהכי השפיעה עליך כשהיית ילד או ילדה?" },
+    { "id": "military_service", "category": "military_service", "category_label": "שירות צבאי", "text": "ספר לי על השירות הצבאי שלך. איפה שירתת, ובאיזה תפקיד?" },
+    { "id": "military_moment", "category": "military_service", "category_label": "שירות צבאי", "text": "מהו הרגע הכי בלתי נשכח שהיה לך בתקופת השירות?" },
+    { "id": "post_military_next", "category": "post_military", "category_label": "אחרי הצבא", "text": "מה עשית מיד אחרי השחרור מהצבא?" },
+    { "id": "post_military_discovery", "category": "post_military", "category_label": "אחרי הצבא", "text": "היה משהו שגילית על עצמך בתקופה שאחרי הצבא?" },
+    { "id": "relationships_meeting", "category": "relationships", "category_label": "זוגיות ומשפחה", "text": "איך הכרת את בן/בת הזוג שלך?" },
+    { "id": "relationships_knew", "category": "relationships", "category_label": "זוגיות ומשפחה", "text": "ספר לי על הרגע שבו ידעת שמצאת את האדם הנכון." },
+    { "id": "relationships_family_wish", "category": "relationships", "category_label": "זוגיות ומשפחה", "text": "מה היית רוצה שהילדים והנכדים שלך ידעו על המשפחה שהקמת?" },
+    { "id": "career_start", "category": "career", "category_label": "קריירה", "text": "איך התחלת את הדרך המקצועית שלך?" },
+    { "id": "career_proud", "category": "career", "category_label": "קריירה", "text": "מה ההישג המקצועי שהכי גאה בו?" }
+  ],
+  "en": [
+    { "id": "childhood_home", "category": "childhood", "category_label": "Childhood", "text": "Tell me about the home you grew up in. What did it look like, and who was there with you?" },
+    { "id": "childhood_memory", "category": "childhood", "category_label": "Childhood", "text": "What is your earliest memory from childhood?" },
+    { "id": "childhood_influence", "category": "childhood", "category_label": "Childhood", "text": "Who influenced you the most as a child?" },
+    { "id": "military_service", "category": "military_service", "category_label": "Military Service", "text": "Tell me about your military service. Where did you serve, and in what role?" },
+    { "id": "military_moment", "category": "military_service", "category_label": "Military Service", "text": "What is the most unforgettable moment from your time in service?" },
+    { "id": "post_military_next", "category": "post_military", "category_label": "After the Military", "text": "What did you do right after you were discharged?" },
+    { "id": "post_military_discovery", "category": "post_military", "category_label": "After the Military", "text": "Did you discover something about yourself in the period after the military?" },
+    { "id": "relationships_meeting", "category": "relationships", "category_label": "Relationships & Family", "text": "How did you meet your partner?" },
+    { "id": "relationships_knew", "category": "relationships", "category_label": "Relationships & Family", "text": "Tell me about the moment you knew you'd found the right person." },
+    { "id": "relationships_family_wish", "category": "relationships", "category_label": "Relationships & Family", "text": "What would you want your children and grandchildren to know about the family you built?" },
+    { "id": "career_start", "category": "career", "category_label": "Career", "text": "How did you begin your professional path?" },
+    { "id": "career_proud", "category": "career", "category_label": "Career", "text": "What professional achievement are you most proud of?" }
+  ]
+}

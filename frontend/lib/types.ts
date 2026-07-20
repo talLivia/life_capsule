@@ -65,6 +65,49 @@ export interface VoiceApiResponse {
   created_at?: string
 }
 
+// Interview / /record (Prompt 4)
+export interface InterviewQuestion {
+  id: string
+  category: string
+  category_label: string
+  text: string
+  index: number
+}
+
+export interface InterviewSession {
+  id: string
+  user_id: string
+  status: 'active' | 'completed' | 'abandoned'
+  current_question_index: number
+  created_at: string
+  updated_at?: string | null
+}
+
+export interface RawSegment {
+  id: string
+  interview_session_id: string
+  question_asked: string
+  question_index: number
+  video_url?: string | null
+  video_key?: string | null
+  transcript?: string | null
+  status: string
+  created_at: string
+}
+
+export interface InterviewSessionState {
+  session: InterviewSession
+  questions: InterviewQuestion[]
+  segments: RawSegment[]
+}
+
+export interface SegmentPresign {
+  upload_url: string
+  video_key: string
+  method: string
+  content_type: string
+}
+
 export interface ApiError {
   response?: {
     data?: {

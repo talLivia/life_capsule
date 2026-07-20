@@ -106,6 +106,72 @@ def generate_video_task(self, session_id: str, text: str, avatar_image_path: str
         raise self.retry(exc=e, countdown=30 * (self.request.retries + 1))
 
 
+@celery_app.task(name="transcribe_segment", bind=True, max_retries=3)
+def transcribe_segment_task(self, segment_id: str):
+    """
+    Prompt 4/5 pipeline, stage 1: run Whisper on a recorded interview
+    segment, in the storyteller's own recording_language (never translated
+    at this stage — see User.recording_language's docstring in models.py).
+
+    Advances status: 'pending_transcription' -> 'pending_analysis' (Prompt
+    5's analysis_graph.py picks up the rest of the pipeline from there), or
+    -> 'failed' on error.
+    """
+    import asyncio
+
+    from sqlalchemy import select
+
+    from app.database import AsyncSessionLocal
+    from app.models import InterviewSession, RawSegment, User
+    from app.services.storage import storage_service
+    from app.services.stt import stt_service
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(RawSegment, User)
+                .join(InterviewSession, RawSegment.interview_session_id == InterviewSession.id)
+                .join(User, InterviewSession.user_id == User.id)
+                .where(RawSegment.id == segment_id)
+            )
+            row = result.first()
+            if row is None:
+                logger.warning(f"transcribe_segment_task: segment {segment_id} not found")
+                return
+            segment, user = row
+
+            if not segment.video_key:
+                logger.warning(f"transcribe_segment_task: segment {segment_id} has no video_key")
+                segment.status = "failed"
+                await db.commit()
+                return
+
+            try:
+                video_bytes = await storage_service.download_file(segment.video_key)
+                transcript = await stt_service.transcribe(
+                    video_bytes, language=user.recording_language
+                )
+            except Exception as e:
+                logger.error(f"Transcription failed for segment {segment_id}: {e}")
+                segment.status = "failed"
+                await db.commit()
+                return
+
+            segment.transcript = transcript
+            segment.status = "pending_analysis"
+            await db.commit()
+            logger.info(f"Segment {segment_id} transcribed ({len(transcript)} chars)")
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_run())
+    except Exception as e:
+        loop.close()
+        raise self.retry(exc=e, countdown=30 * (self.request.retries + 1))
+    loop.close()
+
+
 @celery_app.task(name="cleanup_old_files")
 def cleanup_old_files_task():
     """Reap temp media older than 24h that a dropped/abandoned session left behind.

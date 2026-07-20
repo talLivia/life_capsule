@@ -7,6 +7,7 @@ import { AvatarList } from '@/components/AvatarList'
 import { ConnectionStatus } from '@/components/ui/ConnectionStatus'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
 import { AuthModal } from '@/components/AuthModal'
+import Link from 'next/link'
 import { api } from '@/lib/api'
 import { toast } from 'react-hot-toast'
 import { useStore } from '@/store/useStore'
@@ -55,6 +56,7 @@ import {
   AudioWaveform,
   History,
   Settings,
+  Feather,
 } from 'lucide-react'
 
 const FEATURES = [
@@ -197,6 +199,17 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-3">
+            {user?.role === 'producer' && (
+              <Link
+                href="/record"
+                className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium
+                           text-gray-400 hover:text-white hover:bg-white/5 transition-all duration-200"
+                title="Record your life story"
+              >
+                <Feather size={14} />
+                Record
+              </Link>
+            )}
             <ConnectionStatus />
             <ThemeToggle />
             {user && (
