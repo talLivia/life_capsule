@@ -219,6 +219,18 @@ class RawSegment(Base):
     # directly instead of reverse-parsing a key out of a public/CDN URL.
     video_key = Column(String, nullable=True)
     transcript = Column(Text, nullable=True)  # set by Prompt 5's transcribe step
+    # Set by extract_topics (Prompt 5) — actual-content classification,
+    # independent of question_asked. Prompt 6's primary_match queries this.
+    topic_tags = Column(JSON, nullable=True)
+    # Set by score_importance (Prompt 5), 0-10, Generative Agents style.
+    # Reused at retrieval time (Prompt 7) with no additional LLM call.
+    importance_score = Column(Float, nullable=True)
+    # The live human_confirm interrupt payload while status='pending_confirmation'
+    # ({"entity_name", "candidate_uuid", "candidate_name", "candidate_summary",
+    # "question"}) — mirrors analysis_graph.py's LangGraph checkpoint so the
+    # polling endpoint doesn't need to touch the checkpointer on every request.
+    # Cleared once the pipeline moves past confirmation.
+    pending_confirmation = Column(JSON, nullable=True)
     # pending_upload -> pending_transcription -> pending_analysis ->
     # pending_confirmation -> ready | failed. Prompt 5 owns the full
     # lifecycle; this column just needs to exist and be indexed for the

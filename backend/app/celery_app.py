@@ -106,68 +106,32 @@ def generate_video_task(self, session_id: str, text: str, avatar_image_path: str
         raise self.retry(exc=e, countdown=30 * (self.request.retries + 1))
 
 
-@celery_app.task(name="transcribe_segment", bind=True, max_retries=3)
-def transcribe_segment_task(self, segment_id: str):
+@celery_app.task(name="analyze_segment", bind=True, max_retries=3)
+def analyze_segment_task(self, segment_id: str):
     """
-    Prompt 4/5 pipeline, stage 1: run Whisper on a recorded interview
-    segment, in the storyteller's own recording_language (never translated
-    at this stage — see User.recording_language's docstring in models.py).
+    Prompt 4/5 entry point: enqueued by `/segments/ingest` once a take is
+    uploaded. Runs the full analysis_graph.py LangGraph pipeline —
+    transcribe -> extract_topics -> check_entities -> human_confirm (pauses
+    here if an entity name is ambiguous; resumed later by
+    `/segments/{id}/confirm-entity`) -> score_importance -> finalize_ingest.
 
-    Advances status: 'pending_transcription' -> 'pending_analysis' (Prompt
-    5's analysis_graph.py picks up the rest of the pipeline from there), or
-    -> 'failed' on error.
+    A human_confirm pause is NOT an error — the graph's own checkpoint
+    (Postgres-backed) holds state until the pending confirmation is
+    answered, so this task simply returns once ainvoke comes back, whether
+    that's because the pipeline finished or because it's now waiting on a
+    human. Only an actual exception here triggers a Celery retry.
     """
     import asyncio
 
-    from sqlalchemy import select
-
-    from app.database import AsyncSessionLocal
-    from app.models import InterviewSession, RawSegment, User
-    from app.services.storage import storage_service
-    from app.services.stt import stt_service
-
-    async def _run():
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(RawSegment, User)
-                .join(InterviewSession, RawSegment.interview_session_id == InterviewSession.id)
-                .join(User, InterviewSession.user_id == User.id)
-                .where(RawSegment.id == segment_id)
-            )
-            row = result.first()
-            if row is None:
-                logger.warning(f"transcribe_segment_task: segment {segment_id} not found")
-                return
-            segment, user = row
-
-            if not segment.video_key:
-                logger.warning(f"transcribe_segment_task: segment {segment_id} has no video_key")
-                segment.status = "failed"
-                await db.commit()
-                return
-
-            try:
-                video_bytes = await storage_service.download_file(segment.video_key)
-                transcript = await stt_service.transcribe(
-                    video_bytes, language=user.recording_language
-                )
-            except Exception as e:
-                logger.error(f"Transcription failed for segment {segment_id}: {e}")
-                segment.status = "failed"
-                await db.commit()
-                return
-
-            segment.transcript = transcript
-            segment.status = "pending_analysis"
-            await db.commit()
-            logger.info(f"Segment {segment_id} transcribed ({len(transcript)} chars)")
+    from app.analysis_graph import run_segment_analysis
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(_run())
+        loop.run_until_complete(run_segment_analysis(segment_id))
     except Exception as e:
         loop.close()
+        logger.error(f"analyze_segment_task failed for segment {segment_id}: {e}")
         raise self.retry(exc=e, countdown=30 * (self.request.retries + 1))
     loop.close()
 

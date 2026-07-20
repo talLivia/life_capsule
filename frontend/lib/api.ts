@@ -310,6 +310,22 @@ export const api = {
     const response = await apiClient.post('/api/v1/interview/segments/ingest', params)
     return response.data
   },
+
+  getPendingConfirmations: async () => {
+    const response = await apiClient.get('/api/v1/interview/segments/pending-confirmations')
+    return response.data
+  },
+
+  confirmEntity: async (
+    segmentId: string,
+    params: { entity_name: string; same_as_existing: boolean; candidate_uuid?: string },
+  ) => {
+    const response = await apiClient.post(
+      `/api/v1/interview/segments/${segmentId}/confirm-entity`,
+      params,
+    )
+    return response.data
+  },
 }
 
 /**

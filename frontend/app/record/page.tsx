@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { ChevronLeft, ChevronRight, Feather, Loader2, ShieldOff, PartyPopper } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { AuthModal } from '@/components/AuthModal'
+import { EntityConfirmModal } from '@/components/record/EntityConfirmModal'
 import { VideoRecorder } from '@/components/record/VideoRecorder'
 import { api } from '@/lib/api'
 import { useStore } from '@/store/useStore'
@@ -121,6 +122,7 @@ export default function RecordPage() {
 
   return (
     <div className="min-h-screen bg-calm-paper dark:bg-calm-paperDark text-calm-ink dark:text-calm-inkDark">
+      <EntityConfirmModal />
       <header className="max-w-3xl mx-auto px-6 pt-10 pb-6">
         <div className="flex items-center gap-2 text-calm-sage-600 dark:text-calm-sage-300 mb-3">
           <Feather size={16} />

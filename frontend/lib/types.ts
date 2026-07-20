@@ -108,6 +108,19 @@ export interface SegmentPresign {
   content_type: string
 }
 
+export interface PendingConfirmation {
+  segment_id: string
+  interview_session_id: string
+  question_asked: string
+  pending_confirmation: {
+    entity_name: string
+    candidate_uuid: string
+    candidate_name: string
+    candidate_summary: string
+    question: string
+  }
+}
+
 export interface ApiError {
   response?: {
     data?: {

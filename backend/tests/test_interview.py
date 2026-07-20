@@ -8,11 +8,11 @@ from app.models import User
 @pytest.fixture(autouse=True)
 def no_celery_broker(monkeypatch):
     """Never let a test touch a real Redis broker — the ingest endpoint
-    enqueues transcription as a side effect we don't want network-dependent
+    enqueues analysis as a side effect we don't want network-dependent
     or slow in the unit-test suite."""
-    from app.celery_app import transcribe_segment_task
+    from app.celery_app import analyze_segment_task
 
-    monkeypatch.setattr(transcribe_segment_task, "delay", lambda *a, **kw: None)
+    monkeypatch.setattr(analyze_segment_task, "delay", lambda *a, **kw: None)
 
 
 @pytest.fixture

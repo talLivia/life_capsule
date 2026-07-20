@@ -175,11 +175,21 @@ async def add_episode(
     topic_tags: list[str],
     timestamp: datetime,
     group_id: str = DEFAULT_GROUP_ID,
+    custom_extraction_instructions: Optional[str] = None,
 ) -> AddEpisodeResults:
     """
     Ingest a story segment into Graphiti as an episode. Graphiti's own LLM
     extraction (Claude) pulls entities and relationships out of the
     transcript automatically — we don't hand-parse anything here.
+
+    `custom_extraction_instructions` is Prompt 5's human-in-the-loop entity
+    resolution hook: once a human confirms (or rejects) that a name in this
+    segment is the same real-world entity as one already in the graph,
+    analysis_graph.py's finalize_ingest node builds a natural-language
+    instruction here (e.g. "treat 'Gila' as entity <uuid>, don't duplicate
+    it"). This is Graphiti's *public* add_episode parameter for steering its
+    own extraction/dedup — not a private API — so the human's answer has a
+    real effect on the resulting graph rather than being purely cosmetic.
 
     NOTE: Graphiti's `add_episode(uuid=...)` param is for RE-processing an
     already-existing episode (it fetches-by-uuid internally and raises
@@ -203,6 +213,7 @@ async def add_episode(
         reference_time=timestamp,
         source=EpisodeType.text,
         group_id=group_id,
+        custom_extraction_instructions=custom_extraction_instructions,
     )
     logger.info(
         "graphiti_episode_added",

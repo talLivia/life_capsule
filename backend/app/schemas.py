@@ -164,10 +164,31 @@ class RawSegmentResponse(BaseModel):
     video_url: Optional[str] = None
     video_key: Optional[str] = None
     transcript: Optional[str] = None
+    topic_tags: Optional[List[str]] = None
+    importance_score: Optional[float] = None
+    pending_confirmation: Optional[Dict[str, Any]] = None
     status: str
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class EntityConfirmRequest(BaseModel):
+    """Answer to the currently-pending human_confirm question for a segment.
+    `entity_name` must match the segment's live pending_confirmation payload —
+    a safety check against confirming a stale/wrong question if the pipeline
+    already advanced to the next ambiguous name."""
+
+    entity_name: str = Field(..., min_length=1)
+    same_as_existing: bool
+    candidate_uuid: Optional[str] = None
+
+
+class PendingConfirmationResponse(BaseModel):
+    segment_id: str
+    interview_session_id: str
+    question_asked: str
+    pending_confirmation: Dict[str, Any]
 
 
 class InterviewSessionState(BaseModel):

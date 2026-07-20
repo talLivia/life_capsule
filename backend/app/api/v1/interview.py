@@ -12,10 +12,12 @@ from app.database import get_db
 from app.interview_config import get_questions
 from app.models import InterviewSession, RawSegment, User
 from app.schemas import (
+    EntityConfirmRequest,
     InterviewQuestion,
     InterviewSessionResponse,
     InterviewSessionState,
     InterviewSessionUpdate,
+    PendingConfirmationResponse,
     RawSegmentResponse,
     SegmentIngestRequest,
     SegmentPresignRequest,
@@ -231,6 +233,9 @@ async def ingest_segment(
         segment.video_key = payload.video_key
         segment.question_asked = payload.question_asked
         segment.transcript = None
+        segment.topic_tags = None
+        segment.importance_score = None
+        segment.pending_confirmation = None
         segment.status = "pending_transcription"
     else:
         segment = RawSegment(
@@ -247,13 +252,13 @@ async def ingest_segment(
     await db.refresh(segment)
 
     try:
-        from app.celery_app import transcribe_segment_task
+        from app.celery_app import analyze_segment_task
 
-        transcribe_segment_task.delay(segment.id)
+        analyze_segment_task.delay(segment.id)
     except Exception as e:
         # Segment is safely persisted either way; a down broker just means
-        # transcription is delayed rather than the upload failing outright.
-        logger.warning(f"Could not enqueue transcription for segment {segment.id}: {e}")
+        # analysis is delayed rather than the upload failing outright.
+        logger.warning(f"Could not enqueue analysis for segment {segment.id}: {e}")
 
     logger.info(f"Segment ingested: {segment.id} (session={session.id}, q={payload.question_index})")
     return segment
@@ -280,3 +285,78 @@ async def list_session_segments(
         .order_by(RawSegment.question_index)
     )
     return result.scalars().all()
+
+
+@router.get("/segments/pending-confirmations", response_model=List[PendingConfirmationResponse])
+async def list_pending_confirmations(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """
+    Segments currently paused on a human_confirm question (Prompt 5), for
+    this producer only. Reads the lightweight copy of the live LangGraph
+    interrupt payload that analysis_graph.py mirrors onto the segment row
+    itself, so polling this never has to touch the checkpointer.
+    """
+    result = await db.execute(
+        select(RawSegment, InterviewSession)
+        .join(InterviewSession, RawSegment.interview_session_id == InterviewSession.id)
+        .where(InterviewSession.user_id == user.id, RawSegment.status == "pending_confirmation")
+        .order_by(RawSegment.updated_at)
+    )
+    return [
+        PendingConfirmationResponse(
+            segment_id=segment.id,
+            interview_session_id=segment.interview_session_id,
+            question_asked=segment.question_asked,
+            pending_confirmation=segment.pending_confirmation or {},
+        )
+        for segment, _session in result.all()
+    ]
+
+
+@router.post("/segments/{segment_id}/confirm-entity", response_model=RawSegmentResponse)
+async def confirm_entity(
+    segment_id: str,
+    payload: EntityConfirmRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """
+    Answer the currently-pending human_confirm question for a segment,
+    resuming analysis_graph.py exactly where it paused (LangGraph's
+    Postgres-backed checkpoint). If the segment has more than one ambiguous
+    entity, resuming answers only the CURRENT one — the graph will pause
+    again with the next question, and the frontend's poll of
+    pending-confirmations will pick that up.
+    """
+    result = await db.execute(
+        select(RawSegment, InterviewSession)
+        .join(InterviewSession, RawSegment.interview_session_id == InterviewSession.id)
+        .where(RawSegment.id == segment_id)
+    )
+    row = result.first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    segment, session = row
+    if session.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Not authorised to confirm this segment")
+    if segment.status != "pending_confirmation" or not segment.pending_confirmation:
+        raise HTTPException(status_code=409, detail="This segment has no pending confirmation")
+    if segment.pending_confirmation.get("entity_name") != payload.entity_name:
+        raise HTTPException(
+            status_code=409,
+            detail="The pending question has moved on — refresh pending-confirmations",
+        )
+
+    candidate_uuid = payload.candidate_uuid or segment.pending_confirmation.get("candidate_uuid")
+
+    from app.analysis_graph import resume_segment_analysis
+
+    await resume_segment_analysis(
+        segment_id,
+        {"same_as_existing": payload.same_as_existing, "candidate_uuid": candidate_uuid},
+    )
+
+    await db.refresh(segment)
+    return segment

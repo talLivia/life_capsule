@@ -34,6 +34,15 @@ psycopg2-binary==2.9.9
 neo4j==5.17.0
 graphiti-core[anthropic,google-genai]==0.29.2
 
+# Orchestration (Prompt 5) — analysis_graph.py's transcribe/extract_topics/
+# check_entities/human_confirm/score_importance/finalize_ingest pipeline.
+# langgraph-checkpoint-postgres uses psycopg3 (NOT psycopg2-binary above,
+# which stays for its own separate use) to persist graph checkpoints across
+# the human_confirm interrupt() pause.
+langgraph==1.2.9
+langgraph-checkpoint-postgres==3.1.0
+psycopg[binary,pool]==3.3.4
+
 # Redis & Caching
 redis==5.0.1
 hiredis==2.3.2
