@@ -97,31 +97,35 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
         const id = `stream-${Date.now()}`
         streamingIdRef.current = id
         setIsThinking(false)
-        setMessages((prev) => {
-          console.info(
-            `[TalkInterface] TOKEN updater invoked: prev.length=${prev.length} ids=${JSON.stringify(prev.map(m => m.id))} newId=${id}`
-          )
-          return [...prev, { id, role: 'assistant', content: msg.token }]
-        })
+        setMessages((prev) => [...prev, { id, role: 'assistant', content: msg.token }])
         break
       }
       case 'message': {
         // Replace the streaming placeholder (if any) with the final,
         // persisted-shape message rather than appending a duplicate.
+        //
+        // idToReplace/finalId are captured HERE, outside the updater, and
+        // streamingIdRef is cleared HERE too — not inside the setMessages
+        // callback. React 18 Strict Mode double-invokes the updater
+        // function in dev mode specifically to catch impure updaters;
+        // mutating streamingIdRef.current INSIDE it meant the two
+        // invocations saw DIFFERENT ref values (the second saw the first
+        // invocation's mutation already applied), so one invocation
+        // replaced the placeholder while the other, impure-affected
+        // invocation found no placeholder to replace and appended a brand
+        // new message instead — two bubbles with identical text, every
+        // single turn, confirmed via logging both invocations' inputs.
+        const idToReplace = streamingIdRef.current
+        const finalId = `final-${Date.now()}`
+        streamingIdRef.current = null
         setMessages((prev) => {
-          console.info(
-            `[TalkInterface] MESSAGE updater invoked: prev.length=${prev.length} ids=${JSON.stringify(prev.map(m => m.id))} streamingId=${streamingIdRef.current}`
-          )
-          if (streamingIdRef.current) {
+          if (idToReplace) {
             const replaced = prev.map((m) =>
-              m.id === streamingIdRef.current
-                ? { ...m, id: `final-${Date.now()}`, content: msg.content }
-                : m
+              m.id === idToReplace ? { ...m, id: finalId, content: msg.content } : m
             )
-            streamingIdRef.current = null
             return replaced
           }
-          return [...prev, { id: `final-${Date.now()}`, role: 'assistant', content: msg.content }]
+          return [...prev, { id: finalId, role: 'assistant', content: msg.content }]
         })
         break
       }
