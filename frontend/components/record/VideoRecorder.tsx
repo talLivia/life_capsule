@@ -70,6 +70,8 @@ export function VideoRecorder({
   const recordedBlobRef = useRef<Blob | null>(null)
   const recordedUrlRef = useRef<string | null>(null)
   const mimeTypeRef = useRef<string>('video/webm')
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const audioLevelIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const stopTimer = () => {
     if (timerRef.current) {
@@ -89,7 +91,21 @@ export function VideoRecorder({
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: true,
+        // `audio: true` opts into Chrome's default voice-call DSP chain —
+        // echo cancellation, noise suppression, auto gain control — all
+        // tuned for a live call with simultaneous speaker playback to
+        // cancel against. There's no such playback here (a single-person
+        // monologue answer), and on some mic/driver combinations this
+        // processing chain can over-suppress the signal down to near-
+        // silence while the raw hardware signal is completely fine (which
+        // is why Windows' own Camera app, which doesn't apply this chain,
+        // captures audible sound from the exact same microphone). None of
+        // it is needed for this use case, so request the raw signal.
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
       })
       if (isCancelled?.()) {
         // The effect that requested this was torn down before getUserMedia
@@ -155,11 +171,55 @@ export function VideoRecorder({
     return () => {
       cancelled = true
       stopTimer()
+      stopAudioLevelMonitor()
       teardownStream()
       if (recordedUrlRef.current) URL.revokeObjectURL(recordedUrlRef.current)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [questionIndex])
+
+  // Diagnostic only: taps the stream with a Web Audio AnalyserNode (a
+  // passive listener — doesn't consume the track or interfere with
+  // MediaRecorder also reading it) and logs the actual peak signal level
+  // seen each second. This is the one thing none of the previous checks
+  // could show — whether real, non-zero audio signal is reaching the
+  // browser's audio pipeline at all during capture, independent of
+  // encoding/muxing/playback entirely.
+  const startAudioLevelMonitor = (stream: MediaStream) => {
+    if (stream.getAudioTracks().length === 0) return
+    try {
+      const AudioContextCtor =
+        window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+      const audioContext = new AudioContextCtor()
+      const source = audioContext.createMediaStreamSource(stream)
+      const analyser = audioContext.createAnalyser()
+      analyser.fftSize = 2048
+      source.connect(analyser)
+      const data = new Uint8Array(analyser.frequencyBinCount)
+      audioContextRef.current = audioContext
+
+      audioLevelIntervalRef.current = setInterval(() => {
+        analyser.getByteTimeDomainData(data)
+        let peak = 0
+        for (let i = 0; i < data.length; i++) {
+          const deviation = Math.abs(data[i] - 128)
+          if (deviation > peak) peak = deviation
+        }
+        console.info(`[VideoRecorder] live audio level: peak deviation ${peak}/128 (0 = total silence)`)
+      }, 1000)
+    } catch (e) {
+      console.warn('[VideoRecorder] could not start audio level monitor:', e)
+    }
+  }
+
+  const stopAudioLevelMonitor = () => {
+    if (audioLevelIntervalRef.current) {
+      clearInterval(audioLevelIntervalRef.current)
+      audioLevelIntervalRef.current = null
+    }
+    audioContextRef.current?.close().catch(() => {})
+    audioContextRef.current = null
+  }
 
   const startRecording = useCallback(() => {
     if (!streamRef.current) return
@@ -182,6 +242,7 @@ export function VideoRecorder({
       )
     }
     console.info(`[VideoRecorder] MediaRecorder mimeType: ${mimeTypeRef.current}`)
+    startAudioLevelMonitor(streamRef.current)
 
     const recorder = new MediaRecorder(
       streamRef.current,
@@ -191,6 +252,7 @@ export function VideoRecorder({
       if (e.data.size > 0) chunksRef.current.push(e.data)
     }
     recorder.onstop = () => {
+      stopAudioLevelMonitor()
       const blob = new Blob(chunksRef.current, { type: mimeTypeRef.current })
       console.info(`[VideoRecorder] recorded blob: size=${blob.size} type=${blob.type}`)
       recordedBlobRef.current = blob
