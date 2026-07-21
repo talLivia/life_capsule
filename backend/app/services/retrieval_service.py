@@ -2,12 +2,24 @@
 Real-time retrieval pipeline (Prompt 6) — called when the avatar receives a
 question during a live conversation with a family member (Prompt 9).
 
-1. `primary_match` — classify the question's topic (a single lightweight
-   Claude/Gemini call, temperature=0) and deterministically find 'ready'
-   segments in Postgres, scoped to this producer's archive only, whose
-   topic_tags include that topic. The classification is the only inference
-   step; the match itself is a plain set-membership check, not another LLM
-   judgment.
+1. `primary_match` — two independent signals, unioned:
+   a. TOPIC: classify the question's topic (a lightweight Claude/Gemini
+      call, temperature=0) and deterministically find 'ready' segments in
+      Postgres, scoped to this producer's archive only, whose topic_tags
+      include that topic. A plain set-membership check, not another LLM
+      judgment.
+   b. ENTITY: extract any person/place named directly in the question
+      (a second lightweight call, run concurrently with (a)), fuzzy-
+      resolve each against the graph's actual entity nodes
+      (`graph_memory.names_are_similar` — the same gate Prompt 5 uses at
+      ingestion time), and find segments that directly MENTION them
+      (`graph_memory.find_related_episodes`, max_hops=1). This exists
+      because topic_tags are thematic ("military service"), never person
+      names — a question naming someone directly ("tell me about Gila")
+      must still find their segments even when its overall theme doesn't
+      happen to overlap with how that segment was tagged at ingestion
+      time. Added in Prompt 10 after the QA harness surfaced exactly this
+      gap against real data.
 2. `expand_graph` — pull the entities Graphiti recorded for the primary
    segment(s) (`graph_memory.get_episode_entity_names`) and call
    `find_related_episodes_scored` (Prompt 3/6) to find other segments
@@ -33,9 +45,12 @@ not this read-only lookup's.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import select
 
@@ -61,6 +76,19 @@ lowercase, in {language}) describing what the question is actually \
 about - using the same tagging style as segment classification: e.g. \
 military service, childhood, family, career, loss, friendship. Do not \
 include any commentary or text outside the single tag."""
+
+_ENTITY_NAME_QUESTION_SYSTEM_PROMPT = """\
+You are a strict named-entity extractor for a personal life-story \
+archive retrieval system. Given a QUESTION someone is asking about the \
+storyteller's life, output ONLY a JSON array of distinct proper names of \
+PEOPLE or PLACES explicitly named IN THE QUESTION ITSELF - never a role, \
+relationship, or description that merely implies an unnamed person (e.g. \
+"your commander", "your wife", "your manager"), even if a specific \
+person is obviously meant. Written exactly as they appear in the \
+question (same language/script). If no proper name is mentioned, output \
+an empty array: []. Do not include any commentary or text outside the \
+JSON array. Example: question "Tell me about Gila" -> ["Gila"]. Question \
+"Who was your commander?" -> []."""
 
 
 @dataclass
@@ -104,14 +132,69 @@ async def _classify_topic(question: str, recording_language: str) -> Optional[st
     return topic or None
 
 
+def _parse_json_array(text: str) -> List[str]:
+    match = re.search(r"\[.*\]", text, re.DOTALL)
+    if not match:
+        return []
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [str(item).strip() for item in data if str(item).strip()]
+
+
+async def _extract_entity_names_from_question(question: str) -> List[str]:
+    """A second lightweight call, run concurrently with _classify_topic: a
+    question naming someone directly ("tell me about Gila") must find their
+    segments even when the question's overall THEME doesn't happen to
+    overlap with how that segment was topic-tagged at ingestion time —
+    topic_tags are thematic ("military service"), never person names.
+    Mirrors analysis_graph.py's ingestion-time entity extraction, but tuned
+    for a short question instead of a full transcript: an implied-but-
+    unnamed role ("your commander") must NOT be treated as a name."""
+    try:
+        raw = await llm_service.generate_response(
+            messages=[{"role": "user", "content": question}],
+            system_prompt=_ENTITY_NAME_QUESTION_SYSTEM_PROMPT,
+            temperature=0,
+        )
+    except Exception as e:
+        logger.warning(f"Entity-name extraction failed for question: {e}")
+        return []
+    return _parse_json_array(raw)
+
+
+async def _resolve_entity_names(names: List[str], group_id: str) -> List[str]:
+    """Fuzzy-resolve each name extracted from the question against the
+    graph's actual entity nodes (graph_memory.names_are_similar — the same
+    token-aware lexical gate Prompt 5 uses at ingestion time), so e.g.
+    "גילה" still finds segments even if the graph's canonical node ended
+    up named "גילה כהן" after a human-in-the-loop resolution. Returns the
+    graph's own node names (not the raw extracted text) — find_related_
+    episodes matches exactly, so it needs the name as the graph knows it."""
+    resolved: set = set()
+    for name in names:
+        candidates = await graph_memory.get_entity_candidates(name, group_id=group_id)
+        for c in candidates:
+            if graph_memory.names_are_similar(name, c["name"]):
+                resolved.add(c["name"])
+    return list(resolved)
+
+
 async def primary_match(
     question: str, group_id: str, recording_language: str
 ) -> List[RawSegment]:
-    """Classify the question's topic, then deterministically find 'ready'
-    segments in this producer's archive whose topic_tags include it."""
-    topic = await _classify_topic(question, recording_language)
-    if not topic:
-        return []
+    """Two independent signals, unioned — see module docstring:
+    (a) classify the question's topic, deterministically matched against
+    'ready' segments' topic_tags; (b) extract any person/place named
+    directly in the question and find segments that mention them in the
+    graph. Either signal alone is enough to surface a segment."""
+    topic, extracted_names = await asyncio.gather(
+        _classify_topic(question, recording_language),
+        _extract_entity_names_from_question(question),
+    )
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -121,11 +204,25 @@ async def primary_match(
         )
         segments = result.scalars().all()
 
-    return [
-        seg
-        for seg in segments
-        if seg.topic_tags and topic in {t.strip().lower() for t in seg.topic_tags}
-    ]
+    matched: Dict[str, RawSegment] = {}
+
+    if topic:
+        for seg in segments:
+            if seg.topic_tags and topic in {t.strip().lower() for t in seg.topic_tags}:
+                matched[seg.id] = seg
+
+    if extracted_names:
+        resolved_names = await _resolve_entity_names(extracted_names, group_id)
+        if resolved_names:
+            entity_segment_ids = await graph_memory.find_related_episodes(
+                entity_names=resolved_names, exclude_ids=[], group_id=group_id, max_hops=1
+            )
+            segments_by_id = {seg.id: seg for seg in segments}
+            for sid in entity_segment_ids:
+                if sid in segments_by_id:
+                    matched[sid] = segments_by_id[sid]
+
+    return list(matched.values())
 
 
 async def expand_graph(

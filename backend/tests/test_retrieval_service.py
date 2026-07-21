@@ -123,6 +123,7 @@ async def test_primary_match_returns_only_ready_overlapping_segments(
     test_user, producer_segments, retrieval_session_factory, monkeypatch
 ):
     monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
 
     matches = await rsvc.primary_match("Tell me about the army", test_user.id, "en")
 
@@ -133,6 +134,7 @@ async def test_primary_match_scoped_to_producer(
     test_user, producer_segments, retrieval_session_factory, monkeypatch
 ):
     monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
 
     matches = await rsvc.primary_match("Tell me about the army", "someone-elses-id", "en")
 
@@ -143,8 +145,84 @@ async def test_primary_match_empty_when_topic_classification_fails(
     test_user, producer_segments, retrieval_session_factory, monkeypatch
 ):
     monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value=None))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
     matches = await rsvc.primary_match("???", test_user.id, "en")
     assert matches == []
+
+
+# ── primary_match: entity-based signal (Prompt 10 fix) ──────────────────────
+
+
+async def test_primary_match_finds_segment_by_entity_name_alone(
+    test_user, producer_segments, retrieval_session_factory, monkeypatch
+):
+    """No topic overlap at all — only the entity-name signal should surface
+    the segment. This is the exact gap the QA harness found: "tell me about
+    Gila" not matching because topic classification doesn't produce person
+    names."""
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="unrelated-topic"))
+    monkeypatch.setattr(
+        rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=["Gila"])
+    )
+    monkeypatch.setattr(
+        rsvc.graph_memory,
+        "get_entity_candidates",
+        AsyncMock(return_value=[{"uuid": "u1", "name": "Gila", "summary": ""}]),
+    )
+    mock_find_related = AsyncMock(return_value=[producer_segments["matching"].id])
+    monkeypatch.setattr(rsvc.graph_memory, "find_related_episodes", mock_find_related)
+
+    matches = await rsvc.primary_match("Tell me about Gila", test_user.id, "en")
+
+    assert [s.id for s in matches] == [producer_segments["matching"].id]
+    assert mock_find_related.call_args.kwargs["entity_names"] == ["Gila"]
+    assert mock_find_related.call_args.kwargs["group_id"] == test_user.id
+
+
+async def test_primary_match_unions_topic_and_entity_signals_without_duplicates(
+    test_user, producer_segments, retrieval_session_factory, monkeypatch
+):
+    """Topic matches 'matching', entity resolution ALSO resolves to
+    'matching' (e.g. the question both overlaps on topic and names someone
+    in it) — must appear once, not twice."""
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
+    monkeypatch.setattr(
+        rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=["Gila"])
+    )
+    monkeypatch.setattr(
+        rsvc.graph_memory,
+        "get_entity_candidates",
+        AsyncMock(return_value=[{"uuid": "u1", "name": "Gila", "summary": ""}]),
+    )
+    monkeypatch.setattr(
+        rsvc.graph_memory,
+        "find_related_episodes",
+        AsyncMock(return_value=[producer_segments["matching"].id]),
+    )
+
+    matches = await rsvc.primary_match("Tell me about Gila in the army", test_user.id, "en")
+
+    assert [s.id for s in matches] == [producer_segments["matching"].id]
+
+
+async def test_primary_match_entity_extraction_ignores_unresolved_names(
+    test_user, producer_segments, retrieval_session_factory, monkeypatch
+):
+    """A name extracted from the question that doesn't lexically match any
+    real graph node must not reach find_related_episodes at all — resolving
+    against nothing should behave like no entity signal, not an error."""
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=["Nobody"])
+    )
+    monkeypatch.setattr(rsvc.graph_memory, "get_entity_candidates", AsyncMock(return_value=[]))
+    mock_find_related = AsyncMock()
+    monkeypatch.setattr(rsvc.graph_memory, "find_related_episodes", mock_find_related)
+
+    matches = await rsvc.primary_match("Tell me about Nobody", test_user.id, "en")
+
+    assert matches == []
+    mock_find_related.assert_not_called()
 
 
 # ── expand_graph ─────────────────────────────────────────────────────────────
@@ -246,6 +324,7 @@ async def test_retrieve_returns_empty_result_when_no_primary_match(
     test_user, producer_segments, retrieval_session_factory, monkeypatch
 ):
     monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="nonexistent-topic"))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
     result = await rsvc.retrieve("??", test_user.id, "en", "sess-1")
     assert result.primary == []
     assert result.candidates == []
@@ -255,6 +334,7 @@ async def test_retrieve_reads_visited_set_but_never_writes_it(
     test_user, producer_segments, retrieval_session_factory, monkeypatch
 ):
     monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
     monkeypatch.setattr(rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=[]))
     mock_get_visited = AsyncMock(return_value=set())
     mock_add_visited = AsyncMock()

@@ -24,10 +24,12 @@ minimum-relevance floor (that's its public contract, from Prompt 3 —
 filtering is deliberately left to the caller). Confirmed live against a
 real graph: querying a single-node graph for a totally unrelated name still
 returns that node as a "candidate", so a lexical-similarity gate
-(`_names_are_similar`) runs first — only a name that's actually similar to
-a candidate's name (substring or a high SequenceMatcher ratio) counts as a
-real match at all. A name with zero real matches is brand new and never
-interrupts — Graphiti will just create it during finalize_ingest.
+(`graph_memory.names_are_similar` — shared with retrieval_service.py's
+Prompt 6/10 entity-based primary matching) runs first — only a name that's
+actually similar to a candidate's name (substring or a high SequenceMatcher
+ratio) counts as a real match at all. A name with zero real matches is
+brand new and never interrupts — Graphiti will just create it during
+finalize_ingest.
 
 Auto-resolve without asking ONLY when there is exactly one real match and
 it's an exact case-insensitive name match — anything else is ambiguous and
@@ -65,7 +67,6 @@ import json
 import logging
 import re
 from contextlib import asynccontextmanager
-from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -77,6 +78,7 @@ from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import InterviewSession, RawSegment, User
 from app.services import embeddings, graph_memory
+from app.services.graph_memory import names_are_similar as _names_are_similar
 from app.services.llm import llm_service
 from app.services.storage import storage_service
 from app.services.stt import stt_service
@@ -124,44 +126,6 @@ and 10 is a major, life-altering event (e.g. a marriage, a birth, a \
 death, a life-changing decision), rate how significant and memorable \
 the event described in this transcript is. Output ONLY a single \
 integer from 0 to 10, with no other text."""
-
-
-_TOKEN_SIMILARITY_THRESHOLD = 0.75
-
-
-def _names_are_similar(a: str, b: str) -> bool:
-    """
-    Lexical-similarity gate for check_entities_node — see the module
-    docstring's Ambiguity heuristic section for why this exists.
-
-    Deliberately token-aware rather than a single whole-string similarity
-    ratio: comparing full strings character-by-character rewards a shared
-    surname as heavily as a shared full name — confirmed live that "גילה
-    כהן" (Gila Cohen) vs "דן כהן" (Dan Cohen) scores *higher* (0.57) via
-    SequenceMatcher than the genuinely-unrelated pair should, while two
-    different Cohens are obviously not the same person. Two people sharing
-    one surname must NOT count as similar; one name being a more/less
-    specific version of the other (e.g. "Gila" vs "Gila Cohen" — the same
-    person named with different specificity) should.
-    """
-    a_norm, b_norm = a.strip().lower(), b.strip().lower()
-    if not a_norm or not b_norm:
-        return False
-    if a_norm == b_norm:
-        return True
-
-    a_tokens, b_tokens = set(a_norm.split()), set(b_norm.split())
-    if a_tokens and b_tokens and (a_tokens <= b_tokens or b_tokens <= a_tokens):
-        return True
-
-    # Single-token names only: a strict character-similarity fallback for
-    # spelling/transliteration variants (e.g. "גילה" vs "גליה"). Never
-    # applied to multi-token names — that's exactly the shared-surname trap
-    # above.
-    if len(a_tokens) == 1 and len(b_tokens) == 1:
-        return SequenceMatcher(None, a_norm, b_norm).ratio() >= _TOKEN_SIMILARITY_THRESHOLD
-
-    return False
 
 
 def _parse_json_array(text: str) -> List[str]:

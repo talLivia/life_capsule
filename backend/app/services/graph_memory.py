@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Optional
 
 from graphiti_core import Graphiti
@@ -417,6 +418,48 @@ async def get_entity_candidates(
     """
     nodes = await _search_nodes(name, group_id=group_id, limit=limit)
     return [{"uuid": n.uuid, "name": n.name, "summary": n.summary} for n in nodes]
+
+
+_TOKEN_SIMILARITY_THRESHOLD = 0.75
+
+
+def names_are_similar(a: str, b: str) -> bool:
+    """
+    Lexical-similarity gate shared by two callers that both need "is this
+    candidate node plausibly the same real-world entity as this name" -
+    analysis_graph.py's check_entities_node (Prompt 5, ingestion-time
+    disambiguation) and retrieval_service.py's primary_match (Prompt 6/10,
+    resolving a name mentioned in a live question against the graph's
+    canonical node names).
+
+    Deliberately token-aware rather than a single whole-string similarity
+    ratio: comparing full strings character-by-character rewards a shared
+    surname as heavily as a shared full name — confirmed live that "גילה
+    כהן" (Gila Cohen) vs "דן כהן" (Dan Cohen) scores *higher* (0.57) via
+    SequenceMatcher than the genuinely-unrelated pair should, while two
+    different Cohens are obviously not the same person. Two people sharing
+    one surname must NOT count as similar; one name being a more/less
+    specific version of the other (e.g. "Gila" vs "Gila Cohen" — the same
+    person named with different specificity) should.
+    """
+    a_norm, b_norm = a.strip().lower(), b.strip().lower()
+    if not a_norm or not b_norm:
+        return False
+    if a_norm == b_norm:
+        return True
+
+    a_tokens, b_tokens = set(a_norm.split()), set(b_norm.split())
+    if a_tokens and b_tokens and (a_tokens <= b_tokens or b_tokens <= a_tokens):
+        return True
+
+    # Single-token names only: a strict character-similarity fallback for
+    # spelling/transliteration variants (e.g. "גילה" vs "גליה"). Never
+    # applied to multi-token names — that's exactly the shared-surname trap
+    # above.
+    if len(a_tokens) == 1 and len(b_tokens) == 1:
+        return SequenceMatcher(None, a_norm, b_norm).ratio() >= _TOKEN_SIMILARITY_THRESHOLD
+
+    return False
 
 
 async def _search_nodes(query: str, group_id: str, limit: int) -> list[EntityNode]:
