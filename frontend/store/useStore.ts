@@ -82,6 +82,18 @@ export const useStore = create<AppState>()(
         selectedAvatarId: state.selectedAvatarId,
         activeSessionId: state.activeSessionId,
       }),
+      // Without this, zustand rehydrates from localStorage as soon as this
+      // module is evaluated on the client — before React's first hydration
+      // pass — so that first client render already reflects the real
+      // token/theme/etc. while the server (no localStorage) rendered with
+      // the defaults. Next.js then reports a hydration mismatch on whatever
+      // first branches on that state (e.g. app/page.tsx's `!isAuthenticated()
+      // && <AuthModal />`). skipHydration defers rehydration to an explicit
+      // call — see components/providers/StoreHydration.tsx, which triggers
+      // it inside a useEffect (client-only, post-mount) so the first client
+      // render matches the server exactly, and the real values apply via a
+      // normal post-hydration re-render instead.
+      skipHydration: true,
     }
   )
 )

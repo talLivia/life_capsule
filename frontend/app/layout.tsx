@@ -3,6 +3,7 @@ import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import { Toaster } from 'react-hot-toast'
 import { QueryProvider } from '@/components/providers/QueryProvider'
+import { StoreHydration } from '@/components/providers/StoreHydration'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 
 const inter = Inter({ subsets: ['latin'] })
@@ -94,6 +95,7 @@ export default function RootLayout({
         >
           Skip to main content
         </a>
+        <StoreHydration />
         <QueryProvider>
           <ErrorBoundary>
             <div id="main-content">{children}</div>
