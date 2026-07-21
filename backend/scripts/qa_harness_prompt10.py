@@ -262,6 +262,21 @@ def _render_report(results: list[dict], transcripts_by_label: dict[str, str]) ->
         "verbatim in the **Source transcript(s) used** — no paraphrasing, no added "
         "detail, nothing invented.",
         "",
+        "## Known limitations (intentional, not bugs — revisit only if retrieval scope expands)",
+        "",
+        "- **Unnamed role/relationship questions** (e.g. \"who was your commander?\", "
+        "\"tell me about your boss\") get no benefit from the ENTITY signal — no proper "
+        "name was mentioned, so there's nothing to resolve against the graph. If the "
+        "segment's own transcript never happens to use that same role word (TOPIC) and "
+        "the question's embedding doesn't independently clear SEMANTIC_MATCH_THRESHOLD, "
+        "the question gets the no-story fallback even though a human reading the "
+        "transcript would immediately know who's meant. This is the deliberate boundary "
+        "of the project's \"never invent or guess\" principle (response_assembler.py's "
+        "zero-LLM-call guarantee, NO_STORY_FALLBACK) — resolving an unnamed role to a "
+        "specific real person would require exactly the kind of inference this project "
+        "avoids throughout. See retrieval_service.py's module docstring for the full "
+        "note.",
+        "",
         "---",
         "",
     ]

@@ -52,6 +52,25 @@ This module never writes the visited-set — only Prompt 8 knows which
 segments actually made it into the assembled response, so updating Redis
 with "all segment ids used" is explicitly its job (per the project plan),
 not this read-only lookup's.
+
+KNOWN LIMITATION (intentional, not a bug — revisit only if retrieval scope
+expands): a question referencing someone purely by role/relationship
+without naming them (e.g. "who was your commander?", "tell me about your
+boss") gets none of primary_match's three signals for free — ENTITY finds
+nothing because no proper name was mentioned, and it falls to TOPIC/
+SEMANTIC alone. If the segment's transcript never happens to use that
+same role word, and the question's topic/semantic similarity doesn't
+independently clear their thresholds either, the question gets the
+no-story fallback even though a human reading the transcript would
+recognize who's meant. This is the deliberate boundary of the project's
+"never invent or guess" principle (see response_assembler.py's zero-LLM-
+call guarantee and NO_STORY_FALLBACK) — resolving an unnamed role to a
+specific real person would require exactly the kind of inference this
+project avoids throughout. Fixing it would mean either LLM-inferring "your
+commander" -> a specific graph entity from context (an inference, not a
+lookup) or teaching entity extraction to also capture role words at
+ingestion time (a bigger, separate design change) — neither attempted
+here.
 """
 
 from __future__ import annotations
