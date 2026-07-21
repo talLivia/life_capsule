@@ -240,3 +240,65 @@ async def test_audio_transcribed_in_session_language(monkeypatch):
 
     await m._handle_audio_inner("s1", base64.b64encode(b"x" * 2000).decode())
     assert captured.get("language") == "fr"
+
+
+@pytest.mark.asyncio
+async def test_animate_from_queue_tolerates_locked_temp_file_cleanup(monkeypatch):
+    """A PermissionError deleting tmp_audio/tmp_video (Windows can briefly
+    hold a file lock after the ffmpeg subprocess behind synthesize/animate
+    exits) must not crash the whole turn. That unlink call lives in
+    `finally`, which propagates an exception regardless of the `except`
+    clause right above it unless handled explicitly there too — a real
+    incident where this bubbled all the way up to "Processing failed",
+    even though the chunk itself had already succeeded."""
+    import pathlib
+
+    from app import websocket as wsmod
+    from app.services.tts import SynthResult
+
+    m = ConnectionManager()
+    ws = _wire_session(m)
+    m.session_data["s1"]["avatar_image_local"] = "/fake/avatar.jpg"
+
+    async def fake_synthesize(text, output_path, speaker_wav=None, language="en"):
+        pathlib.Path(output_path).write_bytes(b"wav")
+        return SynthResult(
+            output_path=output_path, engine="chatterbox", fallback=False, voice_cloned=False
+        )
+
+    async def fake_animate(avatar_image_path, audio_path, output_path):
+        pathlib.Path(output_path).write_bytes(b"mp4")
+
+    async def fake_upload(data, key, content_type="video/mp4", metadata=None):
+        return f"http://test/{key}"
+
+    async def fake_serving_url(key, ttl_seconds=3600):
+        return f"http://test/{key}"
+
+    monkeypatch.setattr(wsmod.gpu_client, "synthesize", fake_synthesize)
+    monkeypatch.setattr(wsmod.gpu_client, "animate", fake_animate)
+    monkeypatch.setattr(wsmod.storage_service, "upload_file", fake_upload)
+    monkeypatch.setattr(wsmod.storage_service, "serving_url", fake_serving_url)
+
+    real_unlink = pathlib.Path.unlink
+
+    def flaky_unlink(self, missing_ok=False):
+        if self.name.endswith("_audio.wav") or self.name.endswith("_video.mp4"):
+            raise PermissionError(f"[WinError 32] simulated lock on {self}")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", flaky_unlink)
+
+    queue: "asyncio.Queue" = asyncio.Queue()
+    await queue.put("Hello there.")
+    await queue.put(None)
+
+    await m._animate_from_queue("s1", queue)
+
+    types = [msg["type"] for msg in ws.sent]
+    assert "video_chunk" in types  # the chunk itself still succeeded
+    assert "video_chunk_end" in types
+    assert not any(
+        msg["type"] == "error" and "failed for all sentences" in msg.get("message", "")
+        for msg in ws.sent
+    )

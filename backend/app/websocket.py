@@ -858,8 +858,22 @@ class ConnectionManager:
                     first_failure_detail = f"{stage}: {type(e).__name__}: {e}"
 
             finally:
-                tmp_audio.unlink(missing_ok=True)
-                tmp_video.unlink(missing_ok=True)
+                # missing_ok=True only suppresses FileNotFoundError, not a
+                # locked file — Windows can briefly hold a handle open on
+                # tmp_audio/tmp_video after the ffmpeg subprocess behind
+                # gpu_client.synthesize/animate exits (pydub's mp3->wav
+                # export and the "simple" animator both shell out to it),
+                # raising PermissionError here. An exception raised inside
+                # `finally` propagates regardless of the `except` above,
+                # which is exactly how this crashed the WHOLE turn
+                # (bypassing the per-chunk error handling entirely) instead
+                # of just leaving one leftover temp file for the existing
+                # daily cleanup task (celery_app.py) to sweep later.
+                for tmp_path in (tmp_audio, tmp_video):
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                    except OSError as cleanup_err:
+                        logger.warning(f"Could not delete temp file {tmp_path}: {cleanup_err}")
 
         await self.send_message(
             session_id,
