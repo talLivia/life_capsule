@@ -302,3 +302,77 @@ async def test_animate_from_queue_tolerates_locked_temp_file_cleanup(monkeypatch
         msg["type"] == "error" and "failed for all sentences" in msg.get("message", "")
         for msg in ws.sent
     )
+
+
+@pytest.mark.asyncio
+async def test_load_session_data_defaults_language_to_producer_recording_language(
+    db_session, test_engine, monkeypatch
+):
+    """session_data["language"] (used by BOTH STT transcription and TTS
+    synthesis) defaulted to "en" in connect() and was never updated
+    afterward unless the client sent an explicit set_language message.
+    Confirmed live: for a family member talking to a Hebrew-recorded
+    archive, this meant Edge TTS tried to speak verbatim Hebrew transcript
+    text with an English voice — which can't vocalize Hebrew at all, only
+    a literal embedded digit came through audible. The default must match
+    the STORYTELLER's own recording language instead."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    import app.database as database_module
+    from app import websocket as wsmod
+    from app.models import Avatar, User
+    from app.models import Session as SessionModel
+
+    producer = User(
+        email="producer@example.com",
+        username="producer",
+        hashed_password="x",
+        recording_language="he",
+    )
+    db_session.add(producer)
+    await db_session.flush()
+    avatar = Avatar(
+        user_id=producer.id,
+        name="A",
+        image_url="http://x/i.jpg",
+        s3_key="avatars/a/image.jpg",
+        status="ready",
+    )
+    db_session.add(avatar)
+    await db_session.flush()
+    session = SessionModel(
+        id="sess-lang", user_id=producer.id, avatar_id=avatar.id, status="active"
+    )
+    db_session.add(session)
+    await db_session.commit()
+
+    # _load_session_data opens its own AsyncSessionLocal (bypasses FastAPI's
+    # DI) — retarget it at this test's engine, matching the pattern used
+    # elsewhere for modules that do the same.
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(database_module, "AsyncSessionLocal", factory)
+
+    manager = wsmod.ConnectionManager()
+
+    async def fake_resolve_image(avatar):
+        return "/fake/avatar.jpg"
+
+    monkeypatch.setattr(manager, "_resolve_local_image", fake_resolve_image)
+    manager.session_data["sess-lang"] = {
+        "messages": [],
+        "avatar_id": None,
+        "avatar_image_key": None,
+        "avatar_image_local": None,
+        "voice_wav": None,
+        "language": "en",
+        "user_id": producer.id,
+        "producer_id": None,
+        "producer_recording_language": "en",
+        "connected_at": None,
+        "last_activity": None,
+    }
+
+    await manager._load_session_data("sess-lang")
+
+    assert manager.session_data["sess-lang"]["producer_recording_language"] == "he"
+    assert manager.session_data["sess-lang"]["language"] == "he"

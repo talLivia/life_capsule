@@ -249,6 +249,21 @@ class ConnectionManager:
                         self.session_data[session_id][
                             "producer_recording_language"
                         ] = producer.recording_language
+                        # "language" (used by both STT transcription and TTS
+                        # synthesis, see _handle_audio_inner/_animate_from_
+                        # queue) defaulted to "en" in connect() — but every
+                        # word this pipeline ever speaks or needs to
+                        # transcribe is in the STORYTELLER's own recording
+                        # language, never a generic English default. Confirmed
+                        # live: leaving this at "en" made Edge TTS try to
+                        # speak a Hebrew archive's verbatim text with an
+                        # English voice, which can't vocalize the Hebrew
+                        # words at all — only a literal digit like "14"
+                        # embedded in the sentence came through audible.
+                        # Still overridable via an explicit "set_language" WS
+                        # message (e.g. a family member who wants to ask
+                        # questions in a different language than the archive).
+                        self.session_data[session_id]["language"] = producer.recording_language
 
         except Exception as e:
             logger.error(f"Failed to load session data for {session_id}: {e}")
