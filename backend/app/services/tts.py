@@ -179,9 +179,21 @@ class TTSService:
                 await self._edge_fallback(text, output_path, language)
                 engine = "edge-tts"
             except Exception as edge_err:
-                logger.warning(f"Edge TTS failed ({edge_err}), falling back to gTTS")
-                await self._gtts_fallback(text, output_path, language)
-                engine = "gtts"
+                # exc_info=True here matters: a bare str(edge_err) can be
+                # unhelpfully empty for some subprocess/network failures,
+                # and this warning is the ONLY place edge's real failure
+                # reason is ever recorded — if gTTS below also fails, don't
+                # let that reason get lost, combine both into what actually
+                # propagates up instead of only showing gTTS's error.
+                logger.warning("Edge TTS failed, falling back to gTTS", exc_info=True)
+                try:
+                    await self._gtts_fallback(text, output_path, language)
+                    engine = "gtts"
+                except Exception as gtts_err:
+                    raise RuntimeError(
+                        f"All TTS fallbacks failed — edge-tts: {type(edge_err).__name__}: "
+                        f"{edge_err}; gtts: {type(gtts_err).__name__}: {gtts_err}"
+                    ) from gtts_err
 
             return SynthResult(
                 output_path=output_path,

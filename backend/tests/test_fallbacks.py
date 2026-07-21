@@ -56,6 +56,30 @@ async def test_tts_falls_back_to_gtts_when_edge_also_fails(monkeypatch, tmp_path
     assert result.fallback is True
 
 
+async def test_tts_combines_both_errors_when_edge_and_gtts_both_fail(monkeypatch, tmp_path):
+    """If every fallback fails, the raised error must name BOTH edge-tts's
+    and gTTS's actual failure reasons — not just the last one. Otherwise
+    debugging a real "all TTS failed" incident only ever shows gTTS's
+    error, hiding whatever actually broke Edge TTS (the one that should
+    normally work)."""
+    service = TTSService()
+    out = str(tmp_path / "out.wav")
+
+    monkeypatch.setattr(service, "initialize", AsyncMock(side_effect=RuntimeError("no chatterbox")))
+    monkeypatch.setattr(
+        service, "_edge_fallback", AsyncMock(side_effect=ConnectionError("edge unreachable"))
+    )
+    monkeypatch.setattr(
+        service, "_gtts_fallback", AsyncMock(side_effect=ModuleNotFoundError("No module named 'gtts'"))
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await service.synthesize("Hello world", out, speaker_wav=None, language="en")
+
+    assert "edge unreachable" in str(exc_info.value)
+    assert "No module named 'gtts'" in str(exc_info.value)
+
+
 def test_llm_ollama_provider_uses_openai_compatible_client(monkeypatch):
     """LLM_PROVIDER=ollama wires an OpenAI client at the local base URL."""
     from app.services import llm as llm_module
