@@ -107,10 +107,14 @@ async def score_candidates(
     candidate_segment_ids: List[str],
     session_id: str,
     group_id: str,
+    filter_by_threshold: bool = True,
 ) -> List[ScoredSegment]:
-    """Score and filter retrieval_service.py's candidate segments. Returns
-    only candidates that cleared RELEVANCE_THRESHOLD, sorted by score
-    descending."""
+    """Score retrieval_service.py's candidate segments, sorted by score
+    descending. Filtered to only candidates clearing RELEVANCE_THRESHOLD by
+    default (response_assembler's real usage); pass filter_by_threshold=False
+    to see every candidate's score regardless of outcome — Prompt 10's QA
+    harness needs this to report *why* a candidate did or didn't bridge, not
+    just the ones that made the cut."""
     if not candidate_segment_ids:
         return []
 
@@ -169,4 +173,6 @@ async def score_candidates(
         )
 
     scored.sort(key=lambda s: s.score, reverse=True)
-    return [s for s in scored if s.score >= RELEVANCE_THRESHOLD]
+    if filter_by_threshold:
+        return [s for s in scored if s.score >= RELEVANCE_THRESHOLD]
+    return scored

@@ -82,6 +82,9 @@ docker-compose.override.yml
 *.log
 logs/
 
+# Prompt 10 QA harness output — regenerated per run, not a source artifact
+backend/scripts/qa_report_prompt10.md
+
 # Coverage
 .coverage
 .coverage.*

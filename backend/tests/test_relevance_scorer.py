@@ -151,6 +151,27 @@ async def test_score_candidates_ranks_and_filters_by_threshold(
     assert result[0].score >= rs.RELEVANCE_THRESHOLD
 
 
+async def test_score_candidates_filter_by_threshold_false_returns_everyone(
+    scored_segments, relevance_session_factory, monkeypatch
+):
+    """Prompt 10's QA harness needs to see WHY a candidate didn't bridge, not
+    just the ones that did — filter_by_threshold=False must return both
+    segments, still sorted by score, with the below-threshold one included."""
+    high, low = scored_segments["high"], scored_segments["low"]
+
+    monkeypatch.setattr(rs, "_embed_question", AsyncMock(return_value=[1.0, 0.0, 0.0]))
+    monkeypatch.setattr(rs.graph_memory, "get_episode_entity_names", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rs.cache_service, "get_entity_last_mentioned", AsyncMock(return_value={}))
+
+    result = await rs.score_candidates(
+        "Tell me more", [high.id, low.id], "sess-1", "g1", filter_by_threshold=False
+    )
+
+    assert [s.segment_id for s in result] == [high.id, low.id]
+    assert result[0].score >= rs.RELEVANCE_THRESHOLD
+    assert result[1].score < rs.RELEVANCE_THRESHOLD
+
+
 async def test_score_candidates_skips_missing_segment(
     scored_segments, relevance_session_factory, monkeypatch
 ):
