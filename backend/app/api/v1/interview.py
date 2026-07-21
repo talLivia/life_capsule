@@ -251,26 +251,30 @@ async def ingest_segment(
     await db.commit()
     await db.refresh(segment)
 
-    try:
-        from app.celery_app import analyze_segment_task
+    if settings.DEBUG:
+        # Local dev convenience only (never runs in production, where
+        # DEBUG=false and a real Celery worker/broker are expected): the
+        # common local setup has no Redis/Celery worker running at all.
+        # Deliberately skip attempting analyze_segment_task.delay() rather
+        # than try-it-then-fall-back-on-exception - measured directly
+        # against an unreachable local broker, Kombu's connection/retry
+        # behavior doesn't fail fast, it hangs for well over axios's 30s
+        # client-side timeout before ever raising. Go straight to running
+        # the same pipeline in-process instead.
+        import asyncio
 
-        analyze_segment_task.delay(segment.id)
-    except Exception as e:
-        # Segment is safely persisted either way; a down broker just means
-        # analysis is delayed rather than the upload failing outright.
-        logger.warning(f"Could not enqueue analysis for segment {segment.id}: {e}")
-        if settings.DEBUG:
-            # Local dev convenience only (never runs in production, where
-            # DEBUG=false and a real Celery worker/broker are expected): the
-            # common local setup has no Redis/Celery worker running at all,
-            # which would otherwise leave every segment stuck at
-            # 'pending_transcription' forever with just this warning logged.
-            # Run the same pipeline in-process instead of through Celery.
-            import asyncio
+        from app.analysis_graph import run_segment_analysis
 
-            from app.analysis_graph import run_segment_analysis
+        asyncio.create_task(run_segment_analysis(segment.id))
+    else:
+        try:
+            from app.celery_app import analyze_segment_task
 
-            asyncio.create_task(run_segment_analysis(segment.id))
+            analyze_segment_task.delay(segment.id)
+        except Exception as e:
+            # Segment is safely persisted either way; a down broker just
+            # means analysis is delayed rather than the upload failing.
+            logger.warning(f"Could not enqueue analysis for segment {segment.id}: {e}")
 
     logger.info(f"Segment ingested: {segment.id} (session={session.id}, q={payload.question_index})")
     return segment

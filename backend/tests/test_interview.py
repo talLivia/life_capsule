@@ -12,10 +12,22 @@ from app.models import User
 def no_celery_broker(monkeypatch):
     """Never let a test touch a real Redis broker — the ingest endpoint
     enqueues analysis as a side effect we don't want network-dependent
-    or slow in the unit-test suite."""
+    or slow in the unit-test suite.
+
+    Also forces settings.DEBUG=False here: the real .env this test suite
+    loads has DEBUG=true (for local dev), and ingest_segment's DEBUG-gated
+    path runs analysis_graph.run_segment_analysis directly via
+    asyncio.create_task - unmocked, that's a real LLM/Neo4j-calling
+    background task, which every ordinary ingest test would otherwise
+    kick off unintentionally. Tests that specifically want to exercise
+    that DEBUG path (see test_ingest_segment_runs_analysis_in_process_
+    when_debug) override settings.DEBUG back to True themselves and mock
+    run_segment_analysis explicitly."""
+    from app.api.v1 import interview as interview_module
     from app.celery_app import analyze_segment_task
 
     monkeypatch.setattr(analyze_segment_task, "delay", lambda *a, **kw: None)
+    monkeypatch.setattr(interview_module.settings, "DEBUG", False)
 
 
 @pytest.fixture
@@ -166,20 +178,20 @@ async def test_ingest_segment_creates_pending_transcription(client: AsyncClient,
 
 
 @pytest.mark.asyncio
-async def test_ingest_segment_falls_back_to_in_process_analysis_when_celery_unreachable(
+async def test_ingest_segment_runs_analysis_in_process_when_debug(
     client: AsyncClient, auth_headers, test_user, monkeypatch
 ):
-    """Local dev has no Celery worker/broker running by default — when
-    enqueueing raises (simulating that), DEBUG=true must run the pipeline
-    in-process instead of leaving the segment stuck at
-    'pending_transcription' forever."""
+    """Local dev has no Celery worker/broker running by default, and
+    measured directly, Kombu's connection/retry behavior against an
+    unreachable broker hangs well past axios's 30s client-side timeout
+    rather than failing fast - so DEBUG=true must skip attempting Celery
+    entirely and run the pipeline in-process, not try-then-fall-back."""
     from app.api.v1 import interview as interview_module
     from app.celery_app import analyze_segment_task
 
-    monkeypatch.setattr(
-        analyze_segment_task, "delay", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no broker"))
-    )
     monkeypatch.setattr(interview_module.settings, "DEBUG", True)
+    mock_delay = AsyncMock()
+    monkeypatch.setattr(analyze_segment_task, "delay", mock_delay)
     mock_run_analysis = AsyncMock()
     monkeypatch.setattr("app.analysis_graph.run_segment_analysis", mock_run_analysis)
 
@@ -201,6 +213,7 @@ async def test_ingest_segment_falls_back_to_in_process_analysis_when_celery_unre
 
     await asyncio.sleep(0)  # let the scheduled asyncio.create_task actually run
     mock_run_analysis.assert_awaited_once_with(segment_id)
+    mock_delay.assert_not_called()
 
 
 @pytest.mark.asyncio
