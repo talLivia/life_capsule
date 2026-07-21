@@ -1,3 +1,6 @@
+import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
 from httpx import AsyncClient
 
@@ -160,6 +163,44 @@ async def test_ingest_segment_creates_pending_transcription(client: AsyncClient,
     assert body["status"] == "pending_transcription"
     assert body["question_index"] == 0
     assert body["video_key"] == video_key
+
+
+@pytest.mark.asyncio
+async def test_ingest_segment_falls_back_to_in_process_analysis_when_celery_unreachable(
+    client: AsyncClient, auth_headers, test_user, monkeypatch
+):
+    """Local dev has no Celery worker/broker running by default — when
+    enqueueing raises (simulating that), DEBUG=true must run the pipeline
+    in-process instead of leaving the segment stuck at
+    'pending_transcription' forever."""
+    from app.api.v1 import interview as interview_module
+    from app.celery_app import analyze_segment_task
+
+    monkeypatch.setattr(
+        analyze_segment_task, "delay", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no broker"))
+    )
+    monkeypatch.setattr(interview_module.settings, "DEBUG", True)
+    mock_run_analysis = AsyncMock()
+    monkeypatch.setattr("app.analysis_graph.run_segment_analysis", mock_run_analysis)
+
+    session = (await client.get("/api/v1/interview/session", headers=auth_headers)).json()["session"]
+    video_key = f"segments/{test_user.id}/{session['id']}/0/take.webm"
+
+    resp = await client.post(
+        "/api/v1/interview/segments/ingest",
+        json={
+            "interview_session_id": session["id"],
+            "question_index": 0,
+            "question_asked": "Tell me about your childhood",
+            "video_key": video_key,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 201
+    segment_id = resp.json()["id"]
+
+    await asyncio.sleep(0)  # let the scheduled asyncio.create_task actually run
+    mock_run_analysis.assert_awaited_once_with(segment_id)
 
 
 @pytest.mark.asyncio

@@ -259,6 +259,18 @@ async def ingest_segment(
         # Segment is safely persisted either way; a down broker just means
         # analysis is delayed rather than the upload failing outright.
         logger.warning(f"Could not enqueue analysis for segment {segment.id}: {e}")
+        if settings.DEBUG:
+            # Local dev convenience only (never runs in production, where
+            # DEBUG=false and a real Celery worker/broker are expected): the
+            # common local setup has no Redis/Celery worker running at all,
+            # which would otherwise leave every segment stuck at
+            # 'pending_transcription' forever with just this warning logged.
+            # Run the same pipeline in-process instead of through Celery.
+            import asyncio
+
+            from app.analysis_graph import run_segment_analysis
+
+            asyncio.create_task(run_segment_analysis(segment.id))
 
     logger.info(f"Segment ingested: {segment.id} (session={session.id}, q={payload.question_index})")
     return segment
