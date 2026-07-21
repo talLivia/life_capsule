@@ -326,6 +326,32 @@ export const api = {
     )
     return response.data
   },
+
+  // Family access (Prompt 9)
+  createFamilyInvite: async () => {
+    const response = await apiClient.post('/api/v1/family/invites')
+    return response.data
+  },
+
+  listFamilyInvites: async () => {
+    const response = await apiClient.get('/api/v1/family/invites')
+    return response.data
+  },
+
+  revokeFamilyInvite: async (inviteId: string) => {
+    const response = await apiClient.delete(`/api/v1/family/invites/${inviteId}`)
+    return response.data
+  },
+
+  redeemFamilyInvite: async (token: string) => {
+    const response = await apiClient.post('/api/v1/family/invites/redeem', { token })
+    return response.data
+  },
+
+  getTalkAvailability: async () => {
+    const response = await apiClient.get('/api/v1/family/talk-availability')
+    return response.data
+  },
 }
 
 /**

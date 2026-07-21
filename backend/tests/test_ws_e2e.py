@@ -74,11 +74,14 @@ async def test_ws_full_turn_streams_events(monkeypatch):
     from app import websocket as wsmod
 
     # Stub the heavy pipeline so a turn completes instantly, deterministically.
-    # Note: there's no LLM stream to stub anymore — Prompt 1 removed the
-    # free-form chat loop, so `_response_producer` emits a fixed placeholder
-    # (see `wsmod.ConnectionManager._NO_PIPELINE_MSG`) instead of calling out
-    # to `llm_service`. This test now just verifies the TTS/lip-sync plumbing
-    # downstream of that text still works end-to-end.
+    # `_response_producer` now calls response_assembler.assemble_response()
+    # (Prompts 6-9's retrieval + relevance scoring + bridge-phrase assembly
+    # against the storyteller's own archive) — mocked here at that single
+    # entry point, since its own internals (topic classification, graph
+    # traversal, scoring) are covered by test_response_assembler.py and
+    # friends, not this WS-plumbing test.
+    TEST_REPLY = "This is the assembled, retrieval-based reply."
+
     async def fake_resolve_image(avatar):
         return "/tmp/fake-avatar.jpg"
 
@@ -98,15 +101,20 @@ async def test_ws_full_turn_streams_events(monkeypatch):
     async def fake_upload(data, key, content_type="video/mp4", metadata=None):
         return f"http://test/{key}"
 
-    # Poison pill: if a text turn ever reaches the LLM service again (a
-    # regression reintroducing free-form chat), fail loudly instead of
-    # silently passing. This is the actual safety property Prompt 1 exists
-    # to guarantee — not just "the reply looks like a placeholder".
+    async def fake_assemble_response(question, group_id, recording_language, session_id):
+        return TEST_REPLY
+
+    # Poison pill: if a text turn ever reaches the LLM service DIRECTLY (not
+    # through response_assembler, which is mocked above) — a regression
+    # reintroducing free-form chat — fail loudly instead of silently
+    # passing. This is the actual safety property Prompt 1 exists to
+    # guarantee: only response_assembler's constrained, retrieval-based
+    # text may ever reach TTS/lip-sync.
     def _fail_if_llm_called(*args, **kwargs):
         raise AssertionError(
-            "llm_service was invoked during a text turn — the free-form chat "
-            "path must stay disconnected until response_assembler.py "
-            "(Prompts 6-9) replaces it with constrained, retrieval-based text."
+            "llm_service was invoked directly during a text turn, bypassing "
+            "response_assembler.py — the free-form chat path must stay "
+            "disconnected."
         )
 
     from app.services.llm import llm_service
@@ -114,9 +122,19 @@ async def test_ws_full_turn_streams_events(monkeypatch):
     monkeypatch.setattr(llm_service, "generate_response", _fail_if_llm_called)
     monkeypatch.setattr(llm_service, "stream_response", _fail_if_llm_called)
 
+    from app.services import response_assembler
+
+    monkeypatch.setattr(response_assembler, "assemble_response", fake_assemble_response)
+
+    # _animate_from_queue calls gpu_client.synthesize()/.animate(), which
+    # (with GPU_SERVICE_URL unset, the default) call these exact shared
+    # singletons — patching them here affects those calls too.
+    from app.services.animator import avatar_animator
+    from app.services.tts import tts_service
+
     monkeypatch.setattr(wsmod.websocket_manager, "_resolve_local_image", fake_resolve_image)
-    monkeypatch.setattr(wsmod.tts_service, "synthesize", fake_tts)
-    monkeypatch.setattr(wsmod.avatar_animator, "animate", fake_animate)
+    monkeypatch.setattr(tts_service, "synthesize", fake_tts)
+    monkeypatch.setattr(avatar_animator, "animate", fake_animate)
     monkeypatch.setattr(wsmod.storage_service, "upload_file", fake_upload)
 
     token = create_access_token(data={"sub": "u1"})
@@ -137,14 +155,15 @@ async def test_ws_full_turn_streams_events(monkeypatch):
                     break
 
     # The full pipeline emitted the expected event sequence.
-    assert "token" in types  # placeholder text sent for live UI display
+    assert "token" in types  # full reply text sent for live UI display
     assert "message" in types  # assembled assistant message
     assert "video_chunk" in types  # at least one lip-sync chunk
     assert "video_chunk_end" in types  # stream terminated cleanly
 
-    # The reply is the fixed, non-generated placeholder — never LLM output.
+    # The reply is exactly what response_assembler.assemble_response()
+    # returned — nothing else reached TTS/lip-sync.
     final = next(m for m in messages if m["type"] == "message")
-    assert final["content"] == wsmod.ConnectionManager._NO_PIPELINE_MSG
+    assert final["content"] == TEST_REPLY
 
 
 @pytest.mark.asyncio

@@ -13,10 +13,8 @@ from typing import Dict, Optional
 
 from fastapi import WebSocket
 
-from app.services.animator import avatar_animator
+from app.services import gpu_client
 from app.services.storage import storage_service
-from app.services.stt import stt_service
-from app.services.tts import tts_service
 from app.telemetry import span
 
 logger = logging.getLogger(__name__)
@@ -61,10 +59,9 @@ def _write_private_bytes(path: Path, data: bytes) -> None:
 
 
 # ── chunking thresholds (first-frame latency vs prosody trade-off) ──────────
-# Currently unused by `_response_producer` (its placeholder text is short
-# enough to speak as one chunk) but kept for `response_assembler.py`
-# (Prompts 6-9), which will stream a real multi-sentence assembled reply
-# through the same TTS/lip-sync consumer and needs this exact chunking.
+# Used by `_response_producer` to pace response_assembler.py's fully-known
+# assembled text (Prompts 6-9) through the same TTS/lip-sync consumer a
+# live-streamed LLM reply would use.
 # The opening fragment ships at the first CLAUSE boundary (comma/semicolon/
 # colon/dash) once it's long enough, so audio+video start as early as
 # possible. Every chunk after that uses SENTENCE boundaries — fewer TTS
@@ -162,6 +159,12 @@ class ConnectionManager:
             "voice_wav": None,
             "language": "en",
             "user_id": user_id,
+            # Populated in _load_session_data from the avatar's owner — the
+            # storyteller whose archive response_assembler.py (Prompts 6-9)
+            # searches, which may differ from `user_id` (a family member
+            # chatting with someone else's avatar).
+            "producer_id": None,
+            "producer_recording_language": "en",
             "connected_at": datetime.now(timezone.utc),
             "last_activity": datetime.now(timezone.utc),
         }
@@ -174,7 +177,7 @@ class ConnectionManager:
             from sqlalchemy.orm import joinedload
 
             from app.database import AsyncSessionLocal
-            from app.models import Message
+            from app.models import Message, User
             from app.models import Session as SessionModel
 
             async with AsyncSessionLocal() as db:
@@ -229,6 +232,23 @@ class ConnectionManager:
                                 f"Auto-loaded voice {avatar.voice_id} for session {session_id}"
                             )
                     logger.info(f"Loaded avatar {avatar.id} for session {session_id}")
+
+                    # response_assembler.py needs the STORYTELLER's archive to
+                    # search (Prompt 6's group_id) and recording language —
+                    # the avatar's owner, not necessarily the chatting user
+                    # (a family member's session belongs to them, but the
+                    # avatar belongs to the producer whose stories they're
+                    # asking about; see sessions.py's create_session for the
+                    # access check that authorized this in the first place).
+                    producer_result = await db.execute(
+                        select(User).where(User.id == avatar.user_id)
+                    )
+                    producer = producer_result.scalar_one_or_none()
+                    if producer:
+                        self.session_data[session_id]["producer_id"] = producer.id
+                        self.session_data[session_id][
+                            "producer_recording_language"
+                        ] = producer.recording_language
 
         except Exception as e:
             logger.error(f"Failed to load session data for {session_id}: {e}")
@@ -487,7 +507,7 @@ class ConnectionManager:
             # Transcribe in the session's selected language — otherwise Whisper
             # assumes English and garbles non-English speech.
             language = self.session_data.get(session_id, {}).get("language", "en")
-            text = await stt_service.transcribe(str(tmp_audio), language=language)
+            text = await gpu_client.transcribe(str(tmp_audio), language=language)
 
             if not text:
                 await self.send_message(
@@ -522,12 +542,10 @@ class ConnectionManager:
           3. Consumer runs TTS + animation per sentence, streaming
              `video_chunk` events as each completes
 
-        NOTE: step 1 currently returns a fixed placeholder — see
-        `_response_producer` below. The free-form LLM chat loop that used
-        to generate step 1's text from general knowledge was removed in
-        Prompt 1. It will be replaced by `response_assembler.py`'s
-        constrained, retrieval-based text (Prompts 6-9), which is the only
-        thing allowed to reach TTS/lip-sync in this system.
+        Step 1 is `response_assembler.assemble_response()` (Prompts 6-9) —
+        retrieval + relevance scoring + bridge-phrase assembly against the
+        storyteller's own archive, never the general-purpose LLM (removed
+        in Prompt 1). It's the only thing allowed to reach TTS/lip-sync.
         """
         text = (text or "").strip()
         if not text:
@@ -578,7 +596,7 @@ class ConnectionManager:
             # so a trace shows exactly where a slow turn spent its time.
             with span("chat.turn", **{"input_chars": len(text)}):
                 results = await asyncio.gather(
-                    self._response_producer(session_id, sentence_queue),
+                    self._response_producer(session_id, sentence_queue, text),
                     self._animate_from_queue(session_id, sentence_queue),
                     return_exceptions=True,
                 )
@@ -601,9 +619,10 @@ class ConnectionManager:
 
     # ── streaming pipeline ────────────────────────────────────────────────────
 
-    # Placeholder reply used until Prompts 6-9 wire in response_assembler.py.
-    # Intentionally NOT LLM-generated — a fixed string, so this stub can
-    # never answer from general knowledge.
+    # Only used when a session has no producer_id yet (shouldn't normally
+    # happen — sessions.py's create_session already requires a valid
+    # avatar — but a missing/deleted avatar owner is a real enough edge case
+    # to have a safe, non-generated fallback for). Never LLM-generated.
     _NO_PIPELINE_MSG = (
         "I'm not connected to any recorded stories yet — this avatar's "
         "answer pipeline is still being built."
@@ -613,25 +632,76 @@ class ConnectionManager:
         self,
         session_id: str,
         queue: "asyncio.Queue[Optional[str]]",
+        text: str,
     ) -> str:
         """
-        Stand-in for the retrieval-constrained response pipeline
-        (`response_assembler.py`, Prompts 6-9). Pushes one fixed,
-        non-generated sentence through the same queue the TTS/lip-sync
-        consumer (`_animate_from_queue`) reads from, so that plumbing stays
-        exercised and testable while the real pipeline doesn't exist yet.
+        The retrieval-constrained response pipeline (Prompts 6-9):
+        response_assembler.assemble_response() runs retrieval (Prompt 6) +
+        relevance scoring (Prompt 7) + bridge-phrase assembly (Prompt 8)
+        against the STORYTELLER's archive (session's producer_id, the
+        avatar owner — see _load_session_data), then the assembled text
+        (verbatim transcripts + fixed bridge phrases only, never generated)
+        is chunked into this queue exactly the way a live-streamed LLM
+        reply would be, so the TTS/lip-sync consumer downstream
+        (`_animate_from_queue`) doesn't need to know the difference.
 
-        Deliberately does NOT call the LLM service — this project's rule is
-        that only ingested, confirmed story content (assembled verbatim by
-        `response_assembler.py`) may ever reach TTS/lip-sync. There is no
-        free-form generation here, on purpose.
+        Deliberately never calls the general-purpose LLM service for the
+        reply itself — this project's rule is that only ingested, confirmed
+        story content may ever reach TTS/lip-sync.
         """
-        full_text = self._NO_PIPELINE_MSG
+        from app.services import response_assembler
+
+        data = self.session_data.get(session_id, {})
+        group_id = data.get("producer_id")
+        recording_language = data.get("producer_recording_language", "en")
 
         with span("response.produce"):
+            if not group_id:
+                full_text = self._NO_PIPELINE_MSG
+            else:
+                try:
+                    full_text = await response_assembler.assemble_response(
+                        question=text,
+                        group_id=group_id,
+                        recording_language=recording_language,
+                        session_id=session_id,
+                    )
+                except Exception as e:
+                    logger.error(f"response_assembler failed [{session_id}]: {e}")
+                    full_text = response_assembler.NO_STORY_FALLBACK
+
             if session_id in self.active_connections:
+                # The whole reply is already known (retrieval, not live
+                # generation) — show it in full immediately rather than
+                # faking an incremental reveal of text we already have.
                 await self.send_message(session_id, {"type": "token", "token": full_text})
-                await queue.put(full_text)
+
+            # Chunk the complete text for TTS/animation using the same
+            # first-clause-then-sentences pacing a live-streamed LLM reply
+            # goes through: the opening fragment ships at the first CLAUSE
+            # boundary once it's long enough (fastest first video frame),
+            # everything after that chunks at SENTENCE boundaries.
+            buf = full_text
+            chunks: list[str] = []
+            first_clause_end = next(
+                (
+                    m.end()
+                    for m in _CLAUSE_RE.finditer(buf)
+                    if len(buf[: m.end()].strip()) >= _MIN_FIRST_CHUNK_LEN
+                ),
+                None,
+            )
+            if first_clause_end is not None:
+                chunks.append(buf[:first_clause_end].strip())
+                buf = buf[first_clause_end:]
+
+            sentence_chunks, buf = _drain_chunks(buf, _SENTENCE_RE, _MIN_SENTENCE_LEN, _MAX_CHUNK_CHARS)
+            chunks.extend(sentence_chunks)
+
+            for chunk in chunks:
+                await queue.put(chunk)
+            if buf.strip():
+                await queue.put(buf.strip())
 
         await queue.put(None)
 
@@ -704,7 +774,7 @@ class ConnectionManager:
                     "tts.synthesize",
                     **{"chars": len(sentence), "lang": language, "cloned": bool(speaker_wav)},
                 ):
-                    synth = await tts_service.synthesize(
+                    synth = await gpu_client.synthesize(
                         text=sentence,
                         output_path=str(tmp_audio),
                         speaker_wav=speaker_wav,
@@ -730,7 +800,7 @@ class ConnectionManager:
                     )
 
                 with span("avatar.animate", **{"chunk": chunk_index}):
-                    await avatar_animator.animate(
+                    await gpu_client.animate(
                         avatar_image_path=avatar_image,
                         audio_path=str(tmp_audio),
                         output_path=str(tmp_video),

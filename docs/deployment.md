@@ -125,6 +125,111 @@ built on top of this same connection.
    used earlier in the same conversation. It's TTL-bounded (6h) so
    abandoned sessions don't accumulate forever.
 
+## 6. GPU inference: Runpod pod + the Fly.io/Runpod split (Prompt 9)
+
+Family/consumer conversations on `/talk` need real-time STT → retrieval →
+TTS → lip-sync, and that last leg (Whisper, Chatterbox, MuseTalk) needs a
+GPU to run at usable latency. Fly.io doesn't offer GPU machines in the
+regions this project targets, so the split is:
+
+- **Fly.io** (section 1 above) runs the FastAPI app — auth, sessions,
+  `/api/v1/family`, the WebSocket endpoint, retrieval/LLM calls — on a
+  standard CPU machine.
+- **Runpod** runs a **persistent pod** (not per-request serverless — a POC
+  goal is avoiding cold-start latency mid-conversation) using the exact
+  same Docker image, with a GPU attached. It serves three endpoints under
+  `/internal/gpu/*` (`app/api/v1/gpu_internal.py`): `transcribe`,
+  `synthesize`, `animate` — shared-secret authenticated
+  (`X-GPU-Service-Secret` header), never exposed to the frontend.
+- `app/services/gpu_client.py` is what `websocket.py` actually calls. When
+  `GPU_SERVICE_URL` is unset (the Fly default, and always unset on the
+  Runpod pod itself), it calls the in-process STT/TTS/animator services
+  directly — so local dev and this Runpod pod both run real inference
+  in-process, unchanged. Only the Fly.io deployment sets
+  `GPU_SERVICE_URL` to point at Runpod, turning those same three calls
+  into HTTP proxy requests instead. The split is a config toggle, not a
+  code fork.
+
+### Setting up the Runpod pod
+
+1. Create a **persistent GPU pod** (not serverless) at
+   https://www.runpod.io/console/pods, using this repo's `backend/Dockerfile`
+   (same CUDA 11.8 image the base project already builds for MuseTalk/
+   Whisper/Chatterbox — no separate GPU-specific Dockerfile needed). Any
+   RTX 4090 / A4000-class GPU is enough for one concurrent conversation;
+   size up if you expect concurrent family sessions.
+2. Override the pod's **container start command** to
+   `./entrypoint.gpu.sh` instead of the image's default (`./entrypoint.sh`).
+   The GPU variant skips the Postgres-wait-and-migrate steps — Fly.io
+   already owns migrations against the shared Neon database, and running
+   `alembic upgrade head` from two deployments on every boot just races
+   without adding anything.
+3. Set the pod's environment variables — it needs the **same secrets** as
+   the Fly.io deployment (`DATABASE_URL`, `NEO4J_*`, `R2_*`, `GEMINI_API_KEY`,
+   `SECRET_KEY`, `JWT_SECRET_KEY`, ...) since it's the same codebase and
+   the rest of the app initializes at import time regardless of which
+   routes actually get hit, **plus**:
+   ```
+   GPU_SERVICE_SHARED_SECRET=<same value you'll set on Fly — generate once with:
+     python -c 'import secrets; print(secrets.token_hex(32))'>
+   ```
+   Leave `GPU_SERVICE_URL` **unset** on the Runpod pod itself — it should
+   never proxy anywhere; it's the target, not a caller.
+4. Expose port 8000 (Runpod's proxy gives you a public
+   `https://<pod-id>-8000.proxy.runpod.net` URL) and confirm
+   `GET /health` reports `"gpu": "<GPU name> (...GB used)"` instead of
+   `"not available (CPU mode)"`.
+5. Point the Fly.io deployment at it:
+   ```bash
+   cd backend
+   fly secrets set \
+     GPU_SERVICE_URL="https://<pod-id>-8000.proxy.runpod.net" \
+     GPU_SERVICE_SHARED_SECRET="<the same value from step 3>"
+   fly deploy
+   ```
+6. Verify end-to-end: open a `/talk` conversation and confirm responses
+   come back lip-synced at real-time-ish latency rather than the slow
+   CPU-fallback pace from section 1.
+
+## 7. Frontend on Vercel
+
+1. Import the repo at https://vercel.com/new, set the **Root Directory**
+   to `frontend/` (this is a monorepo — Vercel needs to be told not to
+   build from the repo root).
+2. Framework preset: Next.js (auto-detected from `frontend/next.config.js`).
+3. Environment variables (Project Settings → Environment Variables) —
+   these are inlined into the client bundle at **build time**, so they
+   must be set before each deploy, not just at runtime:
+   ```
+   NEXT_PUBLIC_API_URL=https://<your-fly-app>.fly.dev
+   NEXT_PUBLIC_WS_URL=wss://<your-fly-app>.fly.dev
+   ```
+4. Deploy. Vercel gives you a `https://<project>.vercel.app` URL — that's
+   the single live URL for end-to-end testing (family members hit
+   `<that-url>/talk?invite=<token>`; the producer signs in at `<that-url>/`
+   and generates invites from Settings).
+5. On the Fly.io backend, make sure `CORS_ORIGINS` (an existing setting,
+   not new to this prompt) includes the Vercel URL, or the browser will
+   block the API/WebSocket calls.
+
+## 8. Wiring it together
+
+With all three pieces deployed, the request path for a family member's
+`/talk` conversation is:
+
+```
+Vercel (Next.js /talk)
+  → Fly.io (FastAPI: auth, sessions, family access, retrieval, LLM)
+      → Runpod pod (GPU: Whisper STT / Chatterbox TTS / MuseTalk lip-sync)
+  ← WebSocket stream of token/video_chunk/message frames back through Fly.io to the browser
+```
+
+The WebSocket itself is a direct browser ↔ Fly.io connection
+(`wss://<fly-app>.fly.dev/ws/session/{id}`, built by
+`frontend/lib/api.ts`'s `buildSessionWsUrl`) — Runpod is never contacted
+directly by the browser, only by Fly.io's `gpu_client.py` on the backend
+side.
+
 ## Local dev: `docker compose up`
 
 `docker-compose.yml` mirrors the same five-piece topology so local dev

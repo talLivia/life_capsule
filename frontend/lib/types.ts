@@ -136,3 +136,23 @@ export interface ApiError {
   }
   message?: string
 }
+
+// Family access (Prompt 9)
+export interface FamilyInvite {
+  id: string
+  token: string
+  status: 'pending' | 'redeemed' | 'revoked'
+  redeemed_by_user_id?: string | null
+  created_at: string
+  expires_at: string
+  redeemed_at?: string | null
+}
+
+export interface TalkAvailability {
+  producer_id: string
+  producer_name: string
+  available: boolean
+  ready_segment_count: number
+  avatar_id?: string | null
+  avatar_image_url?: string | null
+}

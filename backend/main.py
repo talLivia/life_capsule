@@ -12,7 +12,17 @@ from jose import JWTError, jwt
 from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import select, text
 
-from app.api.v1 import avatars, conversations, interview, messages, sessions, users, voices
+from app.api.v1 import (
+    avatars,
+    conversations,
+    family,
+    gpu_internal,
+    interview,
+    messages,
+    sessions,
+    users,
+    voices,
+)
 from app.config import settings
 from app.database import AsyncSessionLocal, Base, engine
 from app.logging_config import configure_logging
@@ -163,6 +173,11 @@ app.include_router(conversations.router, prefix="/api/v1/conversations", tags=["
 app.include_router(messages.router, prefix="/api/v1/messages", tags=["messages"])
 app.include_router(voices.router, prefix="/api/v1/voices", tags=["voices"])
 app.include_router(interview.router, prefix="/api/v1/interview", tags=["interview"])
+app.include_router(family.router, prefix="/api/v1/family", tags=["family"])
+# Internal GPU-inference proxy target (Prompt 9) — shared-secret auth per
+# request (see gpu_internal._check_secret), not JWT; deliberately outside
+# /api/v1 to make clear this isn't a frontend-facing API surface.
+app.include_router(gpu_internal.router, prefix="/internal/gpu", tags=["internal"])
 
 
 @app.exception_handler(Exception)
@@ -262,6 +277,10 @@ async def health_check():
         services["llm"] = (
             f"ready (ollama @ {settings.OPENAI_BASE_URL or 'http://localhost:11434/v1'})"
         )
+    elif settings.LLM_PROVIDER == "gemini":
+        services["llm"] = "ready (gemini)" if settings.GEMINI_API_KEY else "missing GEMINI_API_KEY"
+        if not settings.GEMINI_API_KEY:
+            health["status"] = "degraded"
     else:
         services["llm"] = f"unknown provider: {settings.LLM_PROVIDER}"
         health["status"] = "degraded"

@@ -33,10 +33,18 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_superuser = Column(Boolean, default=False)
     # producer: owns a story archive, records segments via /record.
-    # family: invited viewer, /talk-only, scoped to a producer's archive
-    # (real invite/scoping lands in Prompt 9 — every account is "producer"
-    # by default since this POC has one storyteller per deployment).
+    # family: invited viewer, /talk-only, scoped to a producer's archive via
+    # producer_id below (Prompt 9's invite/redeem flow, family_invites
+    # table). Every account is "producer" by default since this POC has one
+    # storyteller per deployment; redeeming an invite flips role to "family".
     role = Column(String, nullable=False, default="producer", server_default="producer")
+    # Set only for role="family" accounts — which producer's archive this
+    # family member is scoped to (retrieval_service's group_id, Prompt 6-8).
+    # Populated by redeeming a family_invites token, never set directly by
+    # the user. Self-referential FK, so no ondelete=CASCADE here (a deleted
+    # producer would need real cleanup semantics beyond this POC's scope) —
+    # left NULL to unlink is nullable already, so it fails soft either way.
+    producer_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
     # The language the storyteller records in (BCP-47-ish short code, e.g.
     # "he", "en"). Stamped onto segments/transcripts at ingest time so
     # entity extraction and storage always stay in the storyteller's own
@@ -53,6 +61,7 @@ class User(Base):
     interview_sessions = relationship(
         "InterviewSession", back_populates="user", cascade="all, delete-orphan"
     )
+    producer = relationship("User", remote_side=[id], foreign_keys=[producer_id])
 
 
 class Avatar(Base):
@@ -251,3 +260,32 @@ class RawSegment(Base):
     __table_args__ = (
         Index("ix_raw_segments_session_created", "interview_session_id", "created_at"),
     )
+
+
+class FamilyInvite(Base):
+    """
+    A producer-issued invite token (Prompt 9) — a family member redeems it
+    to link their account's `User.producer_id` to this producer, unlocking
+    /talk scoped to that producer's archive. Deliberately simple (one
+    producer per family account, no multi-producer sharing) to match this
+    POC's single-storyteller-per-deployment design.
+    """
+
+    __tablename__ = "family_invites"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    producer_id = Column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token = Column(String, unique=True, nullable=False, index=True)
+    # pending -> redeemed | revoked | expired. "expired" is derived at read
+    # time from expires_at, never written — see family.py's is_expired check.
+    status = Column(String, nullable=False, default="pending", server_default="pending")
+    redeemed_by_user_id = Column(
+        String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    redeemed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (Index("ix_family_invites_producer_status", "producer_id", "status"),)

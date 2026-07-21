@@ -5,6 +5,7 @@ import { Save, Loader2, User, KeyRound, Trash2 } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
 import { useStore } from '@/store/useStore'
+import { FamilyInvitePanel } from '@/components/FamilyInvitePanel'
 import type { ApiError } from '@/lib/types'
 
 export function SettingsPanel() {
@@ -181,6 +182,8 @@ export function SettingsPanel() {
           Update password
         </button>
       </div>
+
+      {!isGuest && user?.role !== 'family' && <FamilyInvitePanel />}
 
       {/* Danger zone */}
       <div className="card flex flex-col gap-5 mt-6 border border-red-500/20">

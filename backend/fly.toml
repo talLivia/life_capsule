@@ -8,15 +8,16 @@
 # JWT_SECRET_KEY, ...) are NOT set here — see docs/deployment.md for the
 # `fly secrets set` commands. Never commit secrets into this file.
 #
-# GPU note: this container still bundles the full STT/TTS/lip-sync stack
-# (Whisper, Chatterbox, MuseTalk) from the base project, including
-# CUDA-linked torch wheels. Deployed here on a standard (non-GPU) Fly
-# machine, that inference code runs in CPU fallback mode — slow, but
-# functional for exercising the API/WebSocket/health-check surface this
-# prompt is scoped to. Prompt 9 splits GPU inference out to a persistent
-# Runpod pod and wires this backend to it over the network instead of
-# running inference in-process; until then, expect STT/TTS/animate calls
-# against this deployment to be slow (CPU Whisper/Chatterbox/MuseTalk).
+# GPU note (Prompt 9): this container still bundles the full STT/TTS/
+# lip-sync stack (Whisper, Chatterbox, MuseTalk) from the base project,
+# including CUDA-linked torch wheels — but on this standard (non-GPU) Fly
+# machine it never actually runs that code. Set GPU_SERVICE_URL (as a
+# secret, see docs/deployment.md section 6) to a persistent Runpod pod
+# running this SAME image, and every STT/TTS/animate call proxies there
+# over HTTP via app/services/gpu_client.py instead of running in-process.
+# Leave GPU_SERVICE_URL unset to fall back to slow CPU in-process inference
+# (useful for exercising the API/WebSocket/health-check surface without a
+# GPU pod running).
 
 app = "life-capsule-backend" # override with your own globally-unique name
 primary_region = "iad" # pick the region closest to your Neon/AuraDB instances
@@ -30,7 +31,16 @@ primary_region = "iad" # pick the region closest to your Neon/AuraDB instances
   LOG_LEVEL = "INFO"
   USE_LOCAL_STORAGE = "false"
   STORAGE_PROVIDER = "r2"
-  LLM_PROVIDER = "anthropic"
+  # This project consolidates on Gemini (GEMINI_API_KEY secret) rather than
+  # separately funding Anthropic — see app/services/llm.py.
+  LLM_PROVIDER = "gemini"
+  LLM_MODEL = "gemini-flash-lite-latest"
+  GRAPHITI_LLM_PROVIDER = "gemini"
+  GRAPHITI_LLM_MODEL = "gemini-flash-lite-latest"
+  GRAPHITI_LLM_SMALL_MODEL = "gemini-flash-lite-latest"
+  GRAPHITI_EMBEDDER_PROVIDER = "gemini"
+  GRAPHITI_EMBEDDING_MODEL = "gemini-embedding-001"
+  GRAPHITI_EMBEDDING_DIM = "3072"
 
 [http_service]
   internal_port = 8000

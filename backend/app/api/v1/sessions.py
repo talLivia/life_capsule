@@ -40,9 +40,18 @@ async def create_session(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="Avatar is not ready"
             )
 
-        # Ensure user owns this avatar (or is demo)
+        # Two ways to be allowed to start a session against this avatar:
+        # the producer talking to their own avatar (self-chat, base
+        # project's original behavior), or a family member whose account
+        # (Prompt 9's invite/redeem flow) is linked to the avatar's owner.
         uid = _user_id(current_user)
-        if avatar.user_id != uid:
+        is_owner = avatar.user_id == uid
+        is_linked_family = (
+            current_user is not None
+            and current_user.role == "family"
+            and current_user.producer_id == avatar.user_id
+        )
+        if not (is_owner or is_linked_family):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Not authorised to use this avatar"
             )

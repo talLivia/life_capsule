@@ -8,6 +8,7 @@ interface User {
   full_name?: string
   role?: 'producer' | 'family'
   recording_language?: string
+  producer_id?: string | null
 }
 
 interface AppState {
@@ -15,6 +16,11 @@ interface AppState {
   token: string | null
   user: User | null
   setAuth: (token: string, user: User) => void
+  // Refresh the cached profile in place (e.g. after redeeming a family
+  // invite flips role/producer_id) without needing a new JWT — role/
+  // producer_id aren't in the token claims, they're looked up from the DB
+  // on every request, so the existing token stays valid.
+  updateUser: (user: User) => void
   clearAuth: () => void
   isAuthenticated: () => boolean
 
@@ -40,6 +46,7 @@ export const useStore = create<AppState>()(
       token: null,
       user: null,
       setAuth: (token, user) => set({ token, user }),
+      updateUser: (user) => set({ user }),
       clearAuth: () =>
         set({
           token: null,

@@ -208,6 +208,25 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"
     BACKEND_URL: str = "http://localhost:8000"
 
+    # GPU-inference network split (Prompt 9) — the Fly.io/Runpod topology
+    # the project plan calls for. When GPU_SERVICE_URL is set, STT/TTS/
+    # animate calls (app/services/gpu_client.py) proxy to a separate
+    # GPU-backed deployment of this SAME codebase (a persistent Runpod pod)
+    # over HTTP, hitting its /internal/gpu/* endpoints, instead of running
+    # inference in-process. Left unset (the default), everything runs
+    # in-process exactly as it does today — this is a config toggle, not a
+    # code fork, so local dev and a CPU-only Fly.io deployment need no
+    # changes at all.
+    GPU_SERVICE_URL: Optional[str] = None
+    # Shared-secret auth for /internal/gpu/* — every deployment of this
+    # codebase exposes those routes, but they only matter (and are only
+    # reachable in practice) on whichever instance is actually running on
+    # the GPU pod. Required at request time (not app startup) so a
+    # CPU-tier deployment that never sets GPU_SERVICE_URL and never gets
+    # hit on these routes doesn't need this secret configured either.
+    GPU_SERVICE_SHARED_SECRET: str = ""
+    GPU_SERVICE_TIMEOUT_SECONDS: float = 60.0
+
     @field_validator("CORS_ORIGINS", "ALLOWED_EXTENSIONS", mode="before")
     @classmethod
     def _split_comma_separated(cls, value):

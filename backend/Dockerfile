@@ -40,9 +40,12 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p /tmp/avatars /tmp/videos /tmp/audio voice_profiles
 
-# Entrypoint: run migrations then start server
-COPY entrypoint.sh .
-RUN chmod +x entrypoint.sh
+# Entrypoints: entrypoint.sh (Fly.io — runs migrations then starts server),
+# entrypoint.gpu.sh (Runpod GPU pod — skips migrations, see its own
+# comments). Same image serves both roles; Runpod overrides the container
+# start command to pick the GPU variant.
+COPY entrypoint.sh entrypoint.gpu.sh ./
+RUN chmod +x entrypoint.sh entrypoint.gpu.sh
 
 # Expose port
 EXPOSE 8000

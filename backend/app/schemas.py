@@ -27,6 +27,7 @@ class UserResponse(UserBase):
     is_active: bool
     role: str
     recording_language: str
+    producer_id: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -223,3 +224,62 @@ class SegmentIngestRequest(BaseModel):
     question_index: int = Field(..., ge=0)
     question_asked: str = Field(..., min_length=1, max_length=2000)
     video_key: str = Field(..., min_length=1)
+
+
+# Family access Schemas (Prompt 9)
+class FamilyInviteResponse(BaseModel):
+    id: str
+    token: str
+    status: str
+    redeemed_by_user_id: Optional[str] = None
+    created_at: datetime
+    expires_at: datetime
+    redeemed_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class FamilyInviteRedeemRequest(BaseModel):
+    token: str = Field(..., min_length=1)
+
+
+class TalkAvailabilityResponse(BaseModel):
+    producer_id: str
+    producer_name: str
+    available: bool
+    ready_segment_count: int
+    avatar_id: Optional[str] = None
+    avatar_image_url: Optional[str] = None
+
+
+# Internal GPU-inference Schemas (Prompt 9) — /internal/gpu/*, never called
+# by the frontend; see app/services/gpu_client.py.
+class GpuTranscribeRequest(BaseModel):
+    audio_b64: str
+    language: str = "en"
+
+
+class GpuTranscribeResponse(BaseModel):
+    text: str
+
+
+class GpuSynthesizeRequest(BaseModel):
+    text: str
+    language: str = "en"
+    speaker_wav_b64: Optional[str] = None
+
+
+class GpuSynthesizeResponse(BaseModel):
+    audio_b64: str
+    engine: str
+    fallback: bool
+    voice_cloned: bool
+
+
+class GpuAnimateRequest(BaseModel):
+    avatar_image_b64: str
+    audio_b64: str
+
+
+class GpuAnimateResponse(BaseModel):
+    video_b64: str

@@ -233,11 +233,10 @@ async def test_audio_transcribed_in_session_language(monkeypatch):
         captured["language"] = language
         return ""  # empty → handler returns before spawning a turn
 
+    # _handle_audio_inner calls gpu_client.transcribe(), which (with
+    # GPU_SERVICE_URL unset, the default) calls this exact shared
+    # stt_service singleton — patching it here affects that call too.
     monkeypatch.setattr(stt_module.stt_service, "transcribe", fake_transcribe)
-    # _handle_audio_inner reads the module-level stt_service via the ws module
-    from app import websocket as wsmod
-
-    monkeypatch.setattr(wsmod.stt_service, "transcribe", fake_transcribe)
 
     await m._handle_audio_inner("s1", base64.b64encode(b"x" * 2000).decode())
     assert captured.get("language") == "fr"
