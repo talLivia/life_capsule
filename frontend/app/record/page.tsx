@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ChevronLeft, ChevronRight, Feather, Loader2, ShieldOff, PartyPopper } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Feather, Loader2, ShieldOff, PartyPopper, Gift, ListChecks } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { AuthModal } from '@/components/AuthModal'
 import { EntityConfirmModal } from '@/components/record/EntityConfirmModal'
@@ -17,6 +17,13 @@ export default function RecordPage() {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // True for exactly one render: the moment the LAST unanswered question
+  // gets accepted. Distinct from the ongoing "answeredCount >= total" state
+  // (which stays true forever after, including while revisiting past
+  // answers) — this is what actually shows a "you're done, here's what's
+  // next" screen instead of silently leaving the user on the same last
+  // question with no forward path (Next was already disabled there).
+  const [justCompleted, setJustCompleted] = useState(false)
 
   const isProducer = user?.role === 'producer'
 
@@ -56,9 +63,13 @@ export default function RecordPage() {
     // user navigates back here later, then advance to the next question.
     const nextIndex = Math.min(currentIndex + 1, state.questions.length - 1)
     const atEnd = currentIndex === state.questions.length - 1
+    const wasIncomplete = state.segments.length < state.questions.length
     try {
       const data: InterviewSessionState = await api.getInterviewSession()
       setState(data)
+      if (wasIncomplete && data.segments.length >= data.questions.length) {
+        setJustCompleted(true)
+      }
     } catch {
       /* segment is already saved server-side; a refresh failure here is non-fatal */
     }
@@ -119,6 +130,33 @@ export default function RecordPage() {
   const isFirst = currentIndex === 0
   const answeredCount = state.segments.length
   const interviewComplete = answeredCount >= total
+
+  if (justCompleted) {
+    return (
+      <div className="min-h-screen bg-calm-paper dark:bg-calm-paperDark text-calm-ink dark:text-calm-inkDark flex items-center justify-center px-6">
+        <div className="max-w-md text-center flex flex-col items-center gap-5">
+          <PartyPopper size={32} className="text-calm-sage-600 dark:text-calm-sage-300" />
+          <div>
+            <h1 className="text-2xl font-semibold mb-2">You&apos;ve answered every question</h1>
+            <p className="text-sm text-calm-inkmuted dark:text-calm-inkmutedDark">
+              Your story is saved. Invite a family member from Settings so they can talk with
+              it, or come back anytime to review or re-record any answer.
+            </p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+            <Link href="/" className="calm-btn-primary justify-center">
+              <Gift size={16} />
+              Go invite family
+            </Link>
+            <button onClick={() => setJustCompleted(false)} className="calm-btn-secondary justify-center">
+              <ListChecks size={16} />
+              Review my answers
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-calm-paper dark:bg-calm-paperDark text-calm-ink dark:text-calm-inkDark">

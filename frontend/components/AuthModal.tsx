@@ -10,9 +10,21 @@ import type { ApiError } from '@/lib/types'
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
-export function AuthModal() {
+interface AuthModalProps {
+  // Callers with a specific reason to expect a brand-new account (e.g. the
+  // /talk invite flow, where a first-time family member almost certainly
+  // needs to register, not sign into an existing account) can default to
+  // the Register tab and swap the generic copy for something that actually
+  // ties the modal to why the visitor is here — otherwise this looks
+  // identical to visiting the site with no invite at all.
+  defaultTab?: 'login' | 'register'
+  title?: string
+  description?: string
+}
+
+export function AuthModal({ defaultTab = 'login', title, description }: AuthModalProps = {}) {
   const { setAuth } = useStore()
-  const [tab, setTab] = useState<'login' | 'register'>('login')
+  const [tab, setTab] = useState<'login' | 'register'>(defaultTab)
   const [isLoading, setIsLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -127,8 +139,10 @@ export function AuthModal() {
             <Sparkles size={22} className="text-white" />
           </div>
           <div className="text-center">
-            <h1 id="auth-modal-title" className="text-2xl font-black gradient-text">AvatarAI</h1>
-            <p id="auth-modal-desc" className="text-sm text-gray-500 mt-0.5">Sign in to your account</p>
+            <h1 id="auth-modal-title" className="text-2xl font-black gradient-text">{title ?? 'AvatarAI'}</h1>
+            <p id="auth-modal-desc" className="text-sm text-gray-500 mt-0.5">
+              {description ?? 'Sign in to your account'}
+            </p>
           </div>
         </div>
 

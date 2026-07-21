@@ -101,7 +101,21 @@ function TalkPageInner() {
   }, [isAuthenticated, isLinkedFamily])
 
   if (!isAuthenticated()) {
-    return <AuthModal />
+    // A brand-new incognito visitor following an invite link almost
+    // certainly needs to REGISTER, not sign into an existing account —
+    // defaulting to Login here (AuthModal's normal default) with no
+    // messaging tying it to the invite looks identical to visiting the
+    // site with no invite at all, which is exactly what read as "just
+    // redirects to regular login" when this wasn't set.
+    return inviteToken ? (
+      <AuthModal
+        defaultTab="register"
+        title="You're invited!"
+        description="Create an account to connect and start talking."
+      />
+    ) : (
+      <AuthModal />
+    )
   }
 
   if (!isLinkedFamily) {
