@@ -97,13 +97,21 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
         const id = `stream-${Date.now()}`
         streamingIdRef.current = id
         setIsThinking(false)
-        setMessages((prev) => [...prev, { id, role: 'assistant', content: msg.token }])
+        setMessages((prev) => {
+          console.info(
+            `[TalkInterface] TOKEN updater invoked: prev.length=${prev.length} ids=${JSON.stringify(prev.map(m => m.id))} newId=${id}`
+          )
+          return [...prev, { id, role: 'assistant', content: msg.token }]
+        })
         break
       }
       case 'message': {
         // Replace the streaming placeholder (if any) with the final,
         // persisted-shape message rather than appending a duplicate.
         setMessages((prev) => {
+          console.info(
+            `[TalkInterface] MESSAGE updater invoked: prev.length=${prev.length} ids=${JSON.stringify(prev.map(m => m.id))} streamingId=${streamingIdRef.current}`
+          )
           if (streamingIdRef.current) {
             const replaced = prev.map((m) =>
               m.id === streamingIdRef.current
