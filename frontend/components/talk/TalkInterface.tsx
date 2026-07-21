@@ -42,6 +42,7 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const streamingIdRef = useRef<string | null>(null)
+  const wsInstanceCounterRef = useRef(0) // diagnostic only — labels each socket instance created
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -144,13 +145,32 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
   const connectWs = useCallback(
     (sessionId: string) => {
       const socket = new WebSocket(buildSessionWsUrl(sessionId))
+      const socketLabel = `ws#${++wsInstanceCounterRef.current}`
       wsRef.current = socket
+      console.info(`[TalkInterface] ${socketLabel} connecting for session ${sessionId}`)
 
       socket.onopen = () => {
         reconnectAttemptsRef.current = 0
         setConnected(true)
       }
       socket.onmessage = (event) => {
+        // Diagnostic only: which socket instance received this frame, and
+        // is it still the one currently tracked in wsRef (vs. a stale
+        // connection from an earlier StrictMode remount / reconnect that
+        // should have been superseded)? If duplicate assistant messages
+        // ever trace back to two DIFFERENT socketLabels both delivering
+        // the same turn, that confirms two live connections rather than a
+        // single-connection rendering bug.
+        const isCurrent = socket === wsRef.current
+        let type = '?'
+        try {
+          type = JSON.parse(event.data)?.type ?? '?'
+        } catch {
+          /* fall through with type '?' */
+        }
+        console.info(
+          `[TalkInterface] ${socketLabel} received type=${type} isCurrentSocket=${isCurrent}`
+        )
         try {
           handleWsMessage(JSON.parse(event.data))
         } catch {
@@ -175,10 +195,14 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
 
   useEffect(() => {
     let cancelled = false
+    console.info('[TalkInterface] session-creation effect running, cancelled=false at start')
 
     api
       .createSession(avatarId)
       .then((session) => {
+        console.info(
+          `[TalkInterface] createSession resolved: session=${session.id} cancelled=${cancelled}`
+        )
         if (cancelled) return
         sessionIdRef.current = session.id
         connectWs(session.id)
@@ -186,6 +210,7 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
       .catch(() => toast.error('Could not start a conversation — please try again'))
 
     return () => {
+      console.info(`[TalkInterface] effect cleanup running for session=${sessionIdRef.current}`)
       cancelled = true
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       wsRef.current?.close()
