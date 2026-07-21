@@ -170,6 +170,30 @@ async def test_transcribe_node_errors_without_video_key(db_session, segment):
     assert "error" in result
 
 
+async def test_embed_transcript_node_persists_vector(db_session, segment, monkeypatch):
+    monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1, 0.2, 0.3]))
+
+    result = await ag.embed_transcript_node(
+        {"segment_id": segment.id, "transcript": segment.transcript}
+    )
+
+    assert result["embedding"] == [0.1, 0.2, 0.3]
+    await db_session.refresh(segment)
+    assert segment.embedding == [0.1, 0.2, 0.3]
+
+
+async def test_embed_transcript_node_tolerates_failure(db_session, segment, monkeypatch):
+    monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(side_effect=RuntimeError("down")))
+
+    result = await ag.embed_transcript_node(
+        {"segment_id": segment.id, "transcript": segment.transcript}
+    )
+
+    assert result == {}
+    await db_session.refresh(segment)
+    assert segment.embedding is None
+
+
 async def test_extract_topics_node_persists_parsed_tags(db_session, segment, monkeypatch):
     monkeypatch.setattr(
         ag.llm_service, "generate_response", AsyncMock(return_value='["childhood", "family"]')
@@ -356,6 +380,7 @@ async def _mock_all_llm_calls(monkeypatch, *, entity_candidates):
     monkeypatch.setattr(
         ag.graph_memory, "get_entity_candidates", AsyncMock(return_value=entity_candidates)
     )
+    monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1, 0.2, 0.3]))
 
 
 async def test_full_pipeline_no_ambiguity_reaches_ready(
@@ -372,6 +397,7 @@ async def test_full_pipeline_no_ambiguity_reaches_ready(
     assert segment.status == "ready"
     assert segment.topic_tags == ["childhood"]
     assert segment.importance_score == 8.0
+    assert segment.embedding == [0.1, 0.2, 0.3]
     mock_add_episode.assert_awaited_once()
     assert mock_add_episode.call_args.kwargs["custom_extraction_instructions"] is None
 

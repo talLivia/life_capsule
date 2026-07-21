@@ -225,6 +225,12 @@ class RawSegment(Base):
     # Set by score_importance (Prompt 5), 0-10, Generative Agents style.
     # Reused at retrieval time (Prompt 7) with no additional LLM call.
     importance_score = Column(Float, nullable=True)
+    # Transcript embedding (analysis_graph.py's embed_transcript node,
+    # Prompt 7) — a JSON list of floats, same vector space as
+    # services/embeddings.py's question embeddings so Prompt 7's
+    # relevance_score (cosine similarity) is computed once at ingestion
+    # time, not recomputed per candidate on every retrieval turn.
+    embedding = Column(JSON, nullable=True)
     # The live human_confirm interrupt payload while status='pending_confirmation'
     # ({"entity_name", "candidate_uuid", "candidate_name", "candidate_summary",
     # "question"}) — mirrors analysis_graph.py's LangGraph checkpoint so the

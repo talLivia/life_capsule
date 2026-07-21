@@ -4,10 +4,19 @@ Graphiti episode, with a human-in-the-loop pause when an entity name in the
 new segment might (or might not) be the same real-world person/place/event
 as one already in the story archive.
 
-Nodes, in order: transcribe -> extract_topics -> check_entities ->
-human_confirm (loops until every ambiguous name this segment introduces is
-resolved) -> score_importance -> finalize_ingest. Any node that hits an
-unrecoverable error routes to `fail` instead of continuing.
+Nodes, in order: transcribe -> embed_transcript -> extract_topics ->
+check_entities -> human_confirm (loops until every ambiguous name this
+segment introduces is resolved) -> score_importance -> finalize_ingest. Any
+node that hits an unrecoverable error routes to `fail` instead of
+continuing.
+
+embed_transcript (Prompt 7) computes and persists the segment's transcript
+embedding once, at ingestion time, so relevance_scorer.py's cosine-
+similarity term never re-embeds segment text on a live retrieval turn —
+only the incoming question gets embedded then. Fail-soft like
+extract_topics: an embedding failure leaves embedding=None (relevance_score
+degrades to 0 for that segment, per relevance_scorer.py) rather than
+failing the whole segment.
 
 Ambiguity heuristic (check_entities): `graph_memory.get_entity_candidates`
 returns candidates ranked by relevance but WITHOUT a similarity score or a
@@ -56,7 +65,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import InterviewSession, RawSegment, User
-from app.services import graph_memory
+from app.services import embeddings, graph_memory
 from app.services.llm import llm_service
 from app.services.storage import storage_service
 from app.services.stt import stt_service
@@ -68,6 +77,7 @@ class AnalysisState(TypedDict, total=False):
     segment_id: str
     group_id: str
     transcript: str
+    embedding: List[float]
     topic_tags: List[str]
     names_to_check: List[Dict[str, str]]
     entity_resolutions: Dict[str, Dict[str, Optional[str]]]
@@ -227,6 +237,27 @@ async def transcribe_node(state: AnalysisState) -> dict:
         segment.transcript = transcript
         await db.commit()
         return {"transcript": transcript}
+
+
+async def embed_transcript_node(state: AnalysisState) -> dict:
+    segment_id = state["segment_id"]
+    transcript = state.get("transcript") or ""
+    vector: Optional[List[float]] = None
+    if transcript:
+        try:
+            vector = await embeddings.embed_text(transcript)
+        except Exception as e:
+            # Non-fatal — Prompt 7's relevance scoring just treats a missing
+            # embedding as "no relevance signal" for this segment, not a
+            # reason to fail the whole segment.
+            logger.warning(f"embed_transcript_node failed for segment {segment_id}: {e}")
+
+    async with AsyncSessionLocal() as db:
+        segment, _user = await _load_segment_and_user(db, segment_id)
+        if segment is not None:
+            segment.embedding = vector
+            await db.commit()
+    return {"embedding": vector} if vector is not None else {}
 
 
 async def extract_topics_node(state: AnalysisState) -> dict:
@@ -422,6 +453,7 @@ def _has_pending_names(state: AnalysisState) -> str:
 def build_graph(checkpointer):
     graph = StateGraph(AnalysisState)
     graph.add_node("transcribe", transcribe_node)
+    graph.add_node("embed_transcript", embed_transcript_node)
     graph.add_node("extract_topics", extract_topics_node)
     graph.add_node("check_entities", check_entities_node)
     graph.add_node("human_confirm", human_confirm_node)
@@ -431,8 +463,9 @@ def build_graph(checkpointer):
 
     graph.add_edge(START, "transcribe")
     graph.add_conditional_edges(
-        "transcribe", _route_on_error, {"fail": "fail", "next": "extract_topics"}
+        "transcribe", _route_on_error, {"fail": "fail", "next": "embed_transcript"}
     )
+    graph.add_edge("embed_transcript", "extract_topics")
     graph.add_edge("extract_topics", "check_entities")
     graph.add_conditional_edges(
         "check_entities", _has_pending_names, {"confirm": "human_confirm", "skip": "score_importance"}
