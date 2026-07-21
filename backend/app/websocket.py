@@ -738,6 +738,11 @@ class ConnectionManager:
         # Only warn about TTS fallback once per turn — repeated warnings on
         # every sentence would be noisy. We reset this in the enclosing turn.
         fallback_announced = False
+        # Surfaced to the client in the final "failed for all sentences"
+        # message if every chunk fails, so the real cause is visible without
+        # needing to tail server logs — captures only the FIRST failure
+        # (later ones are usually the same root cause repeating).
+        first_failure_detail: Optional[str] = None
 
         await self.send_message(
             session_id,
@@ -760,6 +765,7 @@ class ConnectionManager:
             tmp_audio = session_dir / f"{job_id}_audio.wav"
             tmp_video = session_dir / f"{job_id}_video.mp4"
 
+            stage = "setup"
             try:
                 await self.send_message(
                     session_id,
@@ -770,6 +776,7 @@ class ConnectionManager:
                     },
                 )
 
+                stage = "tts.synthesize"
                 with span(
                     "tts.synthesize",
                     **{"chars": len(sentence), "lang": language, "cloned": bool(speaker_wav)},
@@ -799,6 +806,7 @@ class ConnectionManager:
                         },
                     )
 
+                stage = "avatar.animate"
                 with span("avatar.animate", **{"chunk": chunk_index}):
                     await gpu_client.animate(
                         avatar_image_path=avatar_image,
@@ -806,6 +814,7 @@ class ConnectionManager:
                         output_path=str(tmp_video),
                     )
 
+                stage = "storage.upload"
                 ts = int(datetime.now(timezone.utc).timestamp() * 1000)
                 video_key = f"videos/{session_id}/{ts}_c{chunk_index}.mp4"
                 with span("storage.upload", **{"chunk": chunk_index}):
@@ -816,6 +825,7 @@ class ConnectionManager:
                     # actually fetch (presigned on S3, /uploads/ locally).
                     video_url = await storage_service.serving_url(video_key)
 
+                stage = "send_video_chunk"
                 await self.send_message(
                     session_id,
                     {
@@ -831,7 +841,18 @@ class ConnectionManager:
                 logger.info(f"Chunk {chunk_index} ready [{session_id}]")
 
             except Exception as e:
-                logger.error(f"Chunk {chunk_index} failed [{session_id}]: {e}")
+                # exc_info=True so the FULL traceback lands in server logs,
+                # not just str(e) — a bare exception message (e.g. an empty
+                # string from some subprocess failures) is often useless
+                # without the traceback showing exactly where it came from.
+                # `stage` pinpoints which of the four steps above failed.
+                logger.error(
+                    f"Chunk {chunk_index} failed at stage={stage!r} [{session_id}]: "
+                    f"{type(e).__name__}: {e}",
+                    exc_info=True,
+                )
+                if first_failure_detail is None:
+                    first_failure_detail = f"{stage}: {type(e).__name__}: {e}"
 
             finally:
                 tmp_audio.unlink(missing_ok=True)
@@ -846,9 +867,10 @@ class ConnectionManager:
         )
 
         if not sent_any:
+            detail = f" ({first_failure_detail})" if first_failure_detail else ""
             await self.send_message(
                 session_id,
-                {"type": "error", "message": "Avatar animation failed for all sentences."},
+                {"type": "error", "message": f"Avatar animation failed for all sentences.{detail}"},
             )
 
     # ── helpers ───────────────────────────────────────────────────────────────
