@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -318,15 +319,24 @@ class AvatarAnimator:
             output_path,
         ]
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
+        # asyncio.create_subprocess_exec needs ProactorEventLoop on Windows —
+        # its subprocess transport is simply not implemented for
+        # SelectorEventLoop, raising a bare NotImplementedError. This app
+        # pins WindowsSelectorEventLoopPolicy in main.py instead (needed for
+        # psycopg3's async mode / LangGraph's checkpointer, which conversely
+        # breaks under Proactor) — the two requirements are mutually
+        # exclusive under a single global policy on Windows. Run ffmpeg via
+        # the plain synchronous subprocess module in a worker thread instead,
+        # sidestepping asyncio's subprocess transport entirely — the same
+        # workaround pydub's own ffmpeg invocation (used by the Edge TTS
+        # fallback in tts.py) already relies on, just made explicit here.
+        def _run_ffmpeg() -> "subprocess.CompletedProcess[bytes]":
+            return subprocess.run(cmd, capture_output=True)
 
-        if proc.returncode != 0:
-            err = stderr.decode(errors="replace")
+        result = await asyncio.to_thread(_run_ffmpeg)
+
+        if result.returncode != 0:
+            err = result.stderr.decode(errors="replace")
             logger.error(f"FFmpeg error:\n{err}")
             raise RuntimeError("Simple animation (ffmpeg) failed")
 
