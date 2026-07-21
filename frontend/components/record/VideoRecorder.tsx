@@ -62,6 +62,7 @@ export function VideoRecorder({
   const [recordedUrl, setRecordedUrl] = useState<string | null>(null)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const reviewVideoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
@@ -365,8 +366,21 @@ export function VideoRecorder({
       {(phase === 'reviewing_new' || phase === 'uploading' || phase === 'done') && recordedUrl && (
         <div className="flex flex-col">
           <video
+            ref={reviewVideoRef}
             controls
+            muted={false}
             src={recordedUrl}
+            // Chrome persists the last-set volume/mute state across <video>
+            // elements on the same page — the live-preview element just
+            // above is explicitly muted, and that "0 volume" carries over
+            // to this element by default even with no muted attribute of
+            // its own. onLoadedMetadata fires right as the browser would
+            // apply that inherited default, so re-asserting here overrides
+            // it rather than racing it via a separate effect.
+            onLoadedMetadata={(e) => {
+              e.currentTarget.muted = false
+              e.currentTarget.volume = 1
+            }}
             className="w-full bg-black aspect-video"
           />
           <div className="flex flex-col gap-3 p-5">
