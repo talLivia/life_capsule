@@ -31,12 +31,17 @@ interface VideoRecorderProps {
 const fmtTime = (s: number) =>
   `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`
 
-// Prefer VP9/VP8+Opus webm; fall back to whatever the browser (e.g. Safari,
-// which lacks webm support) can actually record.
+// vp8,opus first, NOT vp9 — Chromium has a long-documented bug where
+// recording with vp9,opus produces a silently EMPTY audio track on many
+// Windows GPU/driver combos (isTypeSupported reports true, video records
+// perfectly, audio just isn't there): https://crbug.com/1197086 and widely
+// reported elsewhere. vp8,opus is the original, most battle-tested
+// MediaRecorder audio+video combo and doesn't have this issue. Falls back to
+// whatever the browser (e.g. Safari, which lacks webm support) can record.
 function pickMimeType(): string {
   const candidates = [
-    'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=vp9,opus',
     'video/webm',
     'video/mp4',
   ]
@@ -160,6 +165,23 @@ export function VideoRecorder({
     chunksRef.current = []
     const mimeType = pickMimeType()
     mimeTypeRef.current = mimeType || 'video/webm'
+
+    // Diagnostic only (kept deliberately — cheap, and the next place to
+    // look if audio is ever missing again): confirms whether the STREAM
+    // itself has a live, unmuted audio track at the moment recording
+    // starts, vs. the problem being in encoding/muxing/playback instead.
+    const audioTracks = streamRef.current.getAudioTracks()
+    if (audioTracks.length === 0) {
+      console.warn('[VideoRecorder] starting recording with NO audio track in the stream')
+    } else {
+      audioTracks.forEach(t =>
+        console.info(
+          `[VideoRecorder] audio track before recording: enabled=${t.enabled} muted=${t.muted} readyState=${t.readyState}`
+        )
+      )
+    }
+    console.info(`[VideoRecorder] MediaRecorder mimeType: ${mimeTypeRef.current}`)
+
     const recorder = new MediaRecorder(
       streamRef.current,
       mimeType ? { mimeType } : undefined,
@@ -169,6 +191,7 @@ export function VideoRecorder({
     }
     recorder.onstop = () => {
       const blob = new Blob(chunksRef.current, { type: mimeTypeRef.current })
+      console.info(`[VideoRecorder] recorded blob: size=${blob.size} type=${blob.type}`)
       recordedBlobRef.current = blob
       const url = URL.createObjectURL(blob)
       recordedUrlRef.current = url
