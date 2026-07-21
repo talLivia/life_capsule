@@ -107,6 +107,29 @@ export function VideoRecorder({
           autoGainControl: false,
         },
       })
+      // Diagnostic only: which physical/virtual device did Chrome actually
+      // pick for audio (audio: true doesn't specify one), and what other
+      // input devices exist to pick from? A mismatch here — e.g. Chrome
+      // defaulting to a disconnected virtual mic (NVIDIA Broadcast, Discord
+      // Krisp, "Stereo Mix", etc.) while Windows' own default/Camera app
+      // uses the real physical mic — would explain near-zero signal
+      // reaching the browser despite the track reporting live/unmuted.
+      const audioTrack = stream.getAudioTracks()[0]
+      if (audioTrack) {
+        console.info(
+          `[VideoRecorder] selected audio device: label="${audioTrack.label}" settings=${JSON.stringify(audioTrack.getSettings())}`
+        )
+      }
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const inputs = devices.filter(d => d.kind === 'audioinput')
+        console.info(
+          `[VideoRecorder] available audio input devices: ${JSON.stringify(inputs.map(d => ({ label: d.label, deviceId: d.deviceId })))}`
+        )
+      } catch (e) {
+        console.warn('[VideoRecorder] could not enumerate audio devices:', e)
+      }
+
       if (isCancelled?.()) {
         // The effect that requested this was torn down before getUserMedia
         // resolved (React StrictMode's dev-mode mount→cleanup→remount, or a
