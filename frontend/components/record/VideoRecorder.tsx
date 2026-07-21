@@ -48,6 +48,40 @@ function pickMimeType(): string {
   return candidates.find(c => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported?.(c)) || ''
 }
 
+// Loopback/monitor devices capture whatever is currently playing OUT of
+// the computer (system audio), not the microphone — "Stereo Mix" being
+// the classic Windows/Realtek example, with equivalents across other
+// vendors/platforms. `audio: true` with no deviceId lets the browser pick
+// its own default, and on some systems that resolves to one of these
+// instead of the real mic (confirmed directly: Chrome selected "Stereo
+// Mix" while a working "Microphone (Brio 105)" sat unused, even though
+// Chrome's own reported "Default - Microphone (...)" alias pointed at the
+// right device). The recorded track ends up technically valid — live,
+// unmuted, a real Opus stream muxes in fine — just silent, since nothing
+// was playing through the speakers while the mic should have been
+// capturing speech.
+const LOOPBACK_DEVICE_PATTERNS = [
+  /stereo mix/i,
+  /loopback/i,
+  /what u hear/i,
+  /wave out mix/i,
+  /cable output/i,
+  /monitor of/i,
+]
+
+function isLikelyLoopbackDevice(label: string): boolean {
+  return LOOPBACK_DEVICE_PATTERNS.some(p => p.test(label))
+}
+
+// Prefer whichever real (non-loopback) input the browser itself labels as
+// "Default" (Chrome's own alias for the OS-designated default recording
+// device) over just taking the first non-loopback entry — that's the
+// signal that was actually correct on the system this bug was found on.
+function pickPreferredAudioDevice(devices: MediaDeviceInfo[]): MediaDeviceInfo | undefined {
+  const realInputs = devices.filter(d => d.kind === 'audioinput' && d.label && !isLikelyLoopbackDevice(d.label))
+  return realInputs.find(d => d.label.startsWith('Default')) || realInputs[0]
+}
+
 export function VideoRecorder({
   sessionId,
   questionIndex,
@@ -89,45 +123,51 @@ export function VideoRecorder({
     setPhase('acquiring')
     setCameraErrorMsg(null)
     try {
+      // Device labels are blank until permission has been granted at
+      // least once, so a quick audio-only probe unlocks them before we can
+      // enumerate and choose one explicitly. Immediately stopped — this
+      // isn't the stream we record with.
+      const probeStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      probeStream.getTracks().forEach(t => t.stop())
+      if (isCancelled?.()) return
+
+      const devices = await navigator.mediaDevices.enumerateDevices()
+      const audioInputs = devices.filter(d => d.kind === 'audioinput' && d.label)
+      console.info(
+        `[VideoRecorder] available audio input devices: ${JSON.stringify(audioInputs.map(d => ({ label: d.label, deviceId: d.deviceId })))}`
+      )
+      const preferredDevice = pickPreferredAudioDevice(audioInputs)
+      if (preferredDevice) {
+        console.info(`[VideoRecorder] preferring audio device: "${preferredDevice.label}"`)
+      } else {
+        console.warn('[VideoRecorder] no non-loopback audio input found — using browser default')
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-        // `audio: true` opts into Chrome's default voice-call DSP chain —
-        // echo cancellation, noise suppression, auto gain control — all
-        // tuned for a live call with simultaneous speaker playback to
-        // cancel against. There's no such playback here (a single-person
-        // monologue answer), and on some mic/driver combinations this
-        // processing chain can over-suppress the signal down to near-
-        // silence while the raw hardware signal is completely fine (which
-        // is why Windows' own Camera app, which doesn't apply this chain,
-        // captures audible sound from the exact same microphone). None of
-        // it is needed for this use case, so request the raw signal.
+        // `audio: true` (no deviceId) opts into the browser's own default
+        // device choice AND its default voice-call DSP chain — echo
+        // cancellation, noise suppression, auto gain control, all tuned
+        // for a live call with simultaneous speaker playback to cancel
+        // against (unneeded here: a single-person monologue answer, no
+        // such playback). Confirmed directly on one system: the unconstrained
+        // default resolved to "Stereo Mix" (a loopback device that captures
+        // system OUTPUT audio, not the mic) instead of the real microphone,
+        // even though Chrome's own "Default" alias correctly pointed at it -
+        // hence explicitly requesting preferredDevice's deviceId above
+        // rather than trusting the browser's unconstrained default.
         audio: {
+          ...(preferredDevice ? { deviceId: { exact: preferredDevice.deviceId } } : {}),
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
         },
       })
-      // Diagnostic only: which physical/virtual device did Chrome actually
-      // pick for audio (audio: true doesn't specify one), and what other
-      // input devices exist to pick from? A mismatch here — e.g. Chrome
-      // defaulting to a disconnected virtual mic (NVIDIA Broadcast, Discord
-      // Krisp, "Stereo Mix", etc.) while Windows' own default/Camera app
-      // uses the real physical mic — would explain near-zero signal
-      // reaching the browser despite the track reporting live/unmuted.
       const audioTrack = stream.getAudioTracks()[0]
       if (audioTrack) {
         console.info(
           `[VideoRecorder] selected audio device: label="${audioTrack.label}" settings=${JSON.stringify(audioTrack.getSettings())}`
         )
-      }
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices()
-        const inputs = devices.filter(d => d.kind === 'audioinput')
-        console.info(
-          `[VideoRecorder] available audio input devices: ${JSON.stringify(inputs.map(d => ({ label: d.label, deviceId: d.deviceId })))}`
-        )
-      } catch (e) {
-        console.warn('[VideoRecorder] could not enumerate audio devices:', e)
       }
 
       if (isCancelled?.()) {
