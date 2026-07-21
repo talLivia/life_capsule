@@ -77,7 +77,7 @@ export function VideoRecorder({
     streamRef.current = null
   }, [])
 
-  const acquireCamera = useCallback(async () => {
+  const acquireCamera = useCallback(async (isCancelled?: () => boolean) => {
     setPhase('acquiring')
     setCameraErrorMsg(null)
     try {
@@ -85,13 +85,22 @@ export function VideoRecorder({
         video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: true,
       })
-      streamRef.current = stream
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        await videoRef.current.play().catch(() => {})
+      if (isCancelled?.()) {
+        // The effect that requested this was torn down before getUserMedia
+        // resolved (React StrictMode's dev-mode mount→cleanup→remount, or a
+        // fast question navigation) — stop THIS call's own tracks and bail
+        // without touching streamRef/phase, which may already belong to a
+        // newer, still-live acquisition. Racing a teardown against a
+        // still-open acquisition on the SAME device is what leaves the
+        // microphone track silent while the camera recovers fine (mic
+        // drivers release far slower than camera hardware).
+        stream.getTracks().forEach(t => t.stop())
+        return
       }
+      streamRef.current = stream
       setPhase('ready')
     } catch (err) {
+      if (isCancelled?.()) return
       const msg =
         err instanceof DOMException && err.name === 'NotAllowedError'
           ? 'Camera/microphone access was denied. Please allow access and try again.'
@@ -101,9 +110,26 @@ export function VideoRecorder({
     }
   }, [])
 
+  // Keep the live-preview <video> element's srcObject in sync with the
+  // acquired stream. Deliberately NOT done inline in acquireCamera/
+  // discardAndReRecord: right after calling setPhase(...) to a value that
+  // first renders the <video> element, videoRef.current is still null in
+  // that same synchronous continuation (React hasn't committed the new
+  // render yet) — that left the preview permanently black. Effects run
+  // after commit, so this is guaranteed to see the element once it exists.
+  useEffect(() => {
+    if (phase !== 'ready' && phase !== 'recording' && phase !== 'paused') return
+    const video = videoRef.current
+    const stream = streamRef.current
+    if (!video || !stream || video.srcObject === stream) return
+    video.srcObject = stream
+    video.play().catch(() => {})
+  }, [phase])
+
   // Reset per-question state whenever the question changes (navigating
   // back/forward through the sequence).
   useEffect(() => {
+    let cancelled = false
     setElapsed(0)
     setUploadFraction(0)
     if (recordedUrlRef.current) {
@@ -117,10 +143,11 @@ export function VideoRecorder({
     if (existingSegment) {
       setPhase('reviewing_existing')
     } else {
-      acquireCamera()
+      acquireCamera(() => cancelled)
     }
 
     return () => {
+      cancelled = true
       stopTimer()
       teardownStream()
       if (recordedUrlRef.current) URL.revokeObjectURL(recordedUrlRef.current)
@@ -181,11 +208,8 @@ export function VideoRecorder({
     recordedBlobRef.current = null
     setElapsed(0)
     setPhase('ready')
-    // Live preview stream is still open — just re-show it.
-    if (videoRef.current && streamRef.current) {
-      videoRef.current.srcObject = streamRef.current
-      videoRef.current.play().catch(() => {})
-    }
+    // Live preview stream is still open — the srcObject-sync effect above
+    // reattaches it once the <video> element re-renders for 'ready'.
   }
 
   const acceptAndUpload = async () => {
@@ -253,7 +277,7 @@ export function VideoRecorder({
         <div className="flex flex-col items-center justify-center gap-4 py-20 px-6 text-center">
           <AlertTriangle size={28} className="text-amber-600" />
           <p className="text-sm text-calm-ink dark:text-calm-inkDark max-w-sm">{cameraErrorMsg}</p>
-          <button onClick={acquireCamera} className="calm-btn-primary">
+          <button onClick={() => acquireCamera()} className="calm-btn-primary">
             Try again
           </button>
         </div>
