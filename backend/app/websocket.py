@@ -522,7 +522,7 @@ class ConnectionManager:
         except asyncio.CancelledError:
             raise  # propagate barge-in cancellation cleanly
         except Exception as e:
-            logger.error(f"Audio error [{session_id}]: {e}")
+            logger.error(f"Audio error [{session_id}]: {type(e).__name__}: {e}", exc_info=True)
             await self.send_message(
                 session_id, {"type": "error", "message": "Audio processing failed"}
             )
@@ -614,8 +614,11 @@ class ConnectionManager:
                 await self._persist_message(session_id, "assistant", response_text, latency=latency)
 
         except Exception as e:
-            logger.error(f"Text error [{session_id}]: {e}")
-            await self.send_message(session_id, {"type": "error", "message": "Processing failed"})
+            logger.error(f"Text error [{session_id}]: {type(e).__name__}: {e}", exc_info=True)
+            await self.send_message(
+                session_id,
+                {"type": "error", "message": f"Processing failed: {type(e).__name__}: {e}"},
+            )
 
     # ── streaming pipeline ────────────────────────────────────────────────────
 
