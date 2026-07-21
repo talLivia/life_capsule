@@ -1,7 +1,17 @@
+import asyncio
 import logging
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+# psycopg3's async mode (LangGraph's AsyncPostgresSaver checkpointer,
+# app/analysis_graph.py) can't run under Windows' default ProactorEventLoop —
+# only matters for local Windows dev; production always runs Linux, where
+# this is a no-op. Must be set before uvicorn creates its event loop, so this
+# runs at import time, before any other asyncio-touching import below.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
