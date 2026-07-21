@@ -2,7 +2,7 @@
 Real-time retrieval pipeline (Prompt 6) — called when the avatar receives a
 question during a live conversation with a family member (Prompt 9).
 
-1. `primary_match` — two independent signals, unioned:
+1. `primary_match` — three independent signals, unioned:
    a. TOPIC: classify the question's topic (a lightweight Claude/Gemini
       call, temperature=0) and deterministically find 'ready' segments in
       Postgres, scoped to this producer's archive only, whose topic_tags
@@ -20,6 +20,17 @@ question during a live conversation with a family member (Prompt 9).
       happen to overlap with how that segment was tagged at ingestion
       time. Added in Prompt 10 after the QA harness surfaced exactly this
       gap against real data.
+   c. SEMANTIC: cosine similarity between the question's embedding and
+      each ready segment's precomputed transcript embedding (the exact
+      same mechanism Prompt 7's relevance_scorer.py already uses for
+      candidate scoring, `embeddings.py`) — catches phrasing/synonym gaps
+      exact topic-tag matching misses (e.g. "tell me about your wedding"
+      vs a segment topic-tagged "marriage"/"relationship": the topic
+      classifier's output for THIS phrasing just doesn't happen to
+      string-match the stored tag, even though the underlying topic is
+      obviously the same). SEMANTIC_MATCH_THRESHOLD was picked from real
+      cosine-similarity numbers measured against Prompt 10's QA questions,
+      not guessed — see the constant's own comment.
 2. `expand_graph` — pull the entities Graphiti recorded for the primary
    segment(s) (`graph_memory.get_episode_entity_names`) and call
    `find_related_episodes_scored` (Prompt 3/6) to find other segments
@@ -56,7 +67,7 @@ from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
 from app.models import InterviewSession, RawSegment
-from app.services import graph_memory
+from app.services import embeddings, graph_memory
 from app.services.cache import cache_service
 from app.services.llm import llm_service
 
@@ -67,6 +78,22 @@ logger = logging.getLogger(__name__)
 MIN_SHARED_ENTITY_COUNT = 1  # conservative default: any real shared entity counts
 MAX_CANDIDATES = 2
 _SUMMARY_MAX_CHARS = 160
+# Raw cosine similarity (not min-max normalized like Prompt 7's combined
+# score — there's no "candidate set" to normalize against here, just one
+# question against every ready segment). Calibrated against real Gemini
+# embeddings of Prompt 10's QA questions (all 30, against all 3 sample
+# segments): genuinely unrelated pairs (childhood/hobbies/travel/cooking/
+# pets/sports/food/parents/weekend/music questions vs any of the 3
+# segments) topped out at 0.654; the wedding/wife phrasing-gap questions
+# this threshold exists to catch scored 0.696-0.736 against the marriage
+# segment. 0.68 sits in that gap with a real margin above the unrelated
+# ceiling. One edge case ("מה הרגשת ביום החתונה?" / "how did you feel on
+# your wedding day", 0.647) lands BELOW even the unrelated ceiling and
+# stays unmatched by this signal — a genuine embedding-similarity limit,
+# not something a single global threshold can fix without risking false
+# positives on unrelated questions elsewhere; it may still match via the
+# topic or entity signals depending on phrasing.
+SEMANTIC_MATCH_THRESHOLD = 0.68
 
 _TOPIC_CLASSIFY_SYSTEM_PROMPT_TEMPLATE = """\
 You are a strict topic classifier for a personal life-story archive \
@@ -166,6 +193,17 @@ async def _extract_entity_names_from_question(question: str) -> List[str]:
     return _parse_json_array(raw)
 
 
+async def _embed_question_for_primary_match(question: str) -> Optional[List[float]]:
+    """Same embedder Prompt 7's relevance_scorer.py uses (embeddings.py) —
+    degrades to "no semantic signal" rather than failing primary_match
+    outright, matching how the topic/entity signals already degrade."""
+    try:
+        return await embeddings.embed_text(question)
+    except Exception as e:
+        logger.warning(f"Question embedding failed for semantic primary match: {e}")
+        return None
+
+
 async def _resolve_entity_names(names: List[str], group_id: str) -> List[str]:
     """Fuzzy-resolve each name extracted from the question against the
     graph's actual entity nodes (graph_memory.names_are_similar — the same
@@ -186,14 +224,17 @@ async def _resolve_entity_names(names: List[str], group_id: str) -> List[str]:
 async def primary_match(
     question: str, group_id: str, recording_language: str
 ) -> List[RawSegment]:
-    """Two independent signals, unioned — see module docstring:
+    """Three independent signals, unioned — see module docstring:
     (a) classify the question's topic, deterministically matched against
     'ready' segments' topic_tags; (b) extract any person/place named
     directly in the question and find segments that mention them in the
-    graph. Either signal alone is enough to surface a segment."""
-    topic, extracted_names = await asyncio.gather(
+    graph; (c) cosine similarity between the question's embedding and each
+    ready segment's embedding, catching phrasing/synonym gaps (a) misses.
+    Any signal alone is enough to surface a segment."""
+    topic, extracted_names, question_embedding = await asyncio.gather(
         _classify_topic(question, recording_language),
         _extract_entity_names_from_question(question),
+        _embed_question_for_primary_match(question),
     )
 
     async with AsyncSessionLocal() as db:
@@ -221,6 +262,15 @@ async def primary_match(
             for sid in entity_segment_ids:
                 if sid in segments_by_id:
                     matched[sid] = segments_by_id[sid]
+
+    if question_embedding:
+        for seg in segments:
+            if (
+                seg.embedding
+                and embeddings.cosine_similarity(question_embedding, seg.embedding)
+                >= SEMANTIC_MATCH_THRESHOLD
+            ):
+                matched[seg.id] = seg
 
     return list(matched.values())
 

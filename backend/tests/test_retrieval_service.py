@@ -124,6 +124,7 @@ async def test_primary_match_returns_only_ready_overlapping_segments(
 ):
     monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
     monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
 
     matches = await rsvc.primary_match("Tell me about the army", test_user.id, "en")
 
@@ -135,6 +136,7 @@ async def test_primary_match_scoped_to_producer(
 ):
     monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
     monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
 
     matches = await rsvc.primary_match("Tell me about the army", "someone-elses-id", "en")
 
@@ -146,6 +148,7 @@ async def test_primary_match_empty_when_topic_classification_fails(
 ):
     monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value=None))
     monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
     matches = await rsvc.primary_match("???", test_user.id, "en")
     assert matches == []
 
@@ -164,6 +167,7 @@ async def test_primary_match_finds_segment_by_entity_name_alone(
     monkeypatch.setattr(
         rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=["Gila"])
     )
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
     monkeypatch.setattr(
         rsvc.graph_memory,
         "get_entity_candidates",
@@ -189,6 +193,7 @@ async def test_primary_match_unions_topic_and_entity_signals_without_duplicates(
     monkeypatch.setattr(
         rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=["Gila"])
     )
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
     monkeypatch.setattr(
         rsvc.graph_memory,
         "get_entity_candidates",
@@ -215,6 +220,7 @@ async def test_primary_match_entity_extraction_ignores_unresolved_names(
     monkeypatch.setattr(
         rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=["Nobody"])
     )
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
     monkeypatch.setattr(rsvc.graph_memory, "get_entity_candidates", AsyncMock(return_value=[]))
     mock_find_related = AsyncMock()
     monkeypatch.setattr(rsvc.graph_memory, "find_related_episodes", mock_find_related)
@@ -223,6 +229,72 @@ async def test_primary_match_entity_extraction_ignores_unresolved_names(
 
     assert matches == []
     mock_find_related.assert_not_called()
+
+
+# ── primary_match: semantic (embedding) signal (Prompt 10 fix) ──────────────
+
+
+async def test_primary_match_finds_segment_by_semantic_similarity_alone(
+    test_user, producer_segments, retrieval_session_factory, db_session, monkeypatch
+):
+    """No topic overlap, no named entity — only the embedding-similarity
+    signal should surface the segment. This is the "wedding"/"wife"
+    phrasing-gap fix: a question whose topic classification doesn't
+    literal-match the segment's topic_tags, but whose semantic content
+    clearly is the same thing."""
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="unrelated-topic"))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    matching = producer_segments["matching"]
+    matching.embedding = [1.0, 0.0, 0.0]
+    db_session.add(matching)
+    await db_session.commit()
+    monkeypatch.setattr(
+        rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=[1.0, 0.0, 0.0])
+    )
+
+    matches = await rsvc.primary_match("Tell me about your wedding", test_user.id, "en")
+
+    assert [s.id for s in matches] == [matching.id]
+
+
+async def test_primary_match_semantic_signal_respects_threshold(
+    test_user, producer_segments, retrieval_session_factory, db_session, monkeypatch
+):
+    """A question embedding that's similar-but-not-similar-ENOUGH to any
+    segment (below SEMANTIC_MATCH_THRESHOLD) must not surface it — this is
+    exactly what separates the calibrated threshold from the "everything
+    is somewhat similar" noise floor real embeddings showed."""
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value=None))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    matching = producer_segments["matching"]
+    matching.embedding = [0.6, 0.8, 0.0]
+    db_session.add(matching)
+    await db_session.commit()
+    # cos([1,0,0], [0.6,0.8,0]) = 0.6, comfortably below the 0.68 threshold
+    monkeypatch.setattr(
+        rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=[1.0, 0.0, 0.0])
+    )
+
+    matches = await rsvc.primary_match("Something vaguely related", test_user.id, "en")
+
+    assert matches == []
+
+
+async def test_primary_match_semantic_signal_ignores_segments_without_embedding(
+    test_user, producer_segments, retrieval_session_factory, monkeypatch
+):
+    """producer_segments' fixture segments never set .embedding — the
+    semantic signal must skip them (treat as no signal for that segment)
+    rather than erroring on a None vs list comparison."""
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value=None))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=[1.0, 0.0, 0.0])
+    )
+
+    matches = await rsvc.primary_match("Anything", test_user.id, "en")
+
+    assert matches == []
 
 
 # ── expand_graph ─────────────────────────────────────────────────────────────
@@ -325,6 +397,7 @@ async def test_retrieve_returns_empty_result_when_no_primary_match(
 ):
     monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="nonexistent-topic"))
     monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
     result = await rsvc.retrieve("??", test_user.id, "en", "sess-1")
     assert result.primary == []
     assert result.candidates == []
@@ -335,6 +408,7 @@ async def test_retrieve_reads_visited_set_but_never_writes_it(
 ):
     monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
     monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
     monkeypatch.setattr(rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=[]))
     mock_get_visited = AsyncMock(return_value=set())
     mock_add_visited = AsyncMock()
