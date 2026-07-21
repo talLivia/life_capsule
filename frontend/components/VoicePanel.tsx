@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
+import { pickPreferredAudioDevice } from '@/lib/audioDevices'
 import type { VoiceApiResponse, ApiError } from '@/lib/types'
 
 interface VoiceProfile {
@@ -18,17 +19,38 @@ interface VoiceProfile {
   isDefault: boolean
 }
 
+// This list was previously a stale 10-language subset that dropped
+// Hebrew (and 12 others) despite the backend already fully supporting
+// them — voices.py's own _ALLOWED_LANGUAGES has always matched
+// Chatterbox Multilingual's real 23-language set (including "he"), so a
+// producer whose recording_language is Hebrew had no way to correctly
+// tag their own voice sample's language here even though nothing
+// backend-side was blocking it. Kept in sync with that same 23-language
+// set by listing every code voices.py accepts.
 const SUPPORTED_LANGUAGES: { code: string; label: string }[] = [
+  { code: 'ar', label: '🇸🇦 Arabic' },
+  { code: 'da', label: '🇩🇰 Danish' },
+  { code: 'de', label: '🇩🇪 German' },
+  { code: 'el', label: '🇬🇷 Greek' },
   { code: 'en', label: '🇺🇸 English' },
   { code: 'es', label: '🇪🇸 Spanish' },
+  { code: 'fi', label: '🇫🇮 Finnish' },
   { code: 'fr', label: '🇫🇷 French' },
-  { code: 'de', label: '🇩🇪 German' },
-  { code: 'zh', label: '🇨🇳 Chinese' },
-  { code: 'ja', label: '🇯🇵 Japanese' },
-  { code: 'pt', label: '🇧🇷 Portuguese' },
+  { code: 'he', label: '🇮🇱 Hebrew' },
   { code: 'hi', label: '🇮🇳 Hindi' },
   { code: 'it', label: '🇮🇹 Italian' },
+  { code: 'ja', label: '🇯🇵 Japanese' },
   { code: 'ko', label: '🇰🇷 Korean' },
+  { code: 'ms', label: '🇲🇾 Malay' },
+  { code: 'nl', label: '🇳🇱 Dutch' },
+  { code: 'no', label: '🇳🇴 Norwegian' },
+  { code: 'pl', label: '🇵🇱 Polish' },
+  { code: 'pt', label: '🇧🇷 Portuguese' },
+  { code: 'ru', label: '🇷🇺 Russian' },
+  { code: 'sv', label: '🇸🇪 Swedish' },
+  { code: 'sw', label: '🇰🇪 Swahili' },
+  { code: 'tr', label: '🇹🇷 Turkish' },
+  { code: 'zh', label: '🇨🇳 Chinese' },
 ]
 
 const PRESET_VOICES: VoiceProfile[] = [
@@ -38,9 +60,11 @@ const PRESET_VOICES: VoiceProfile[] = [
   { id: 'default-es', name: 'Sofia (Spanish)', language: 'es', duration: 0, createdAt: new Date(), isDefault: true },
 ]
 
-const LANG_FLAGS: Record<string, string> = {
-  en: '🇺🇸', es: '🇪🇸', fr: '🇫🇷', de: '🇩🇪', zh: '🇨🇳', ja: '🇯🇵', pt: '🇧🇷', hi: '🇮🇳',
-}
+// Derived from SUPPORTED_LANGUAGES (each label starts with its flag) so
+// the two can't drift out of sync the way the old hardcoded copy did.
+const LANG_FLAGS: Record<string, string> = Object.fromEntries(
+  SUPPORTED_LANGUAGES.map((l) => [l.code, l.label.split(' ')[0]])
+)
 
 function WaveformBar({ active, height }: { active: boolean; height: number }) {
   return (
@@ -163,7 +187,35 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
 
   const startRecording = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // Device labels are blank until permission has been granted at
+      // least once, so a quick probe unlocks them before we can enumerate
+      // and choose one explicitly. Immediately stopped — not the stream
+      // we record with. See lib/audioDevices.ts's module docstring: on at
+      // least one real system, unconstrained `audio: true` resolved to
+      // "Stereo Mix" (a loopback device capturing system OUTPUT audio,
+      // not the mic) instead of the real microphone, producing a
+      // technically-valid but silent recording.
+      const probeStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      probeStream.getTracks().forEach((t) => t.stop())
+
+      const devices = await navigator.mediaDevices.enumerateDevices()
+      const preferredDevice = pickPreferredAudioDevice(
+        devices.filter((d) => d.kind === 'audioinput' && d.label)
+      )
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          ...(preferredDevice ? { deviceId: { exact: preferredDevice.deviceId } } : {}),
+          // Voice-call DSP (echo cancellation, noise suppression, auto
+          // gain control) is tuned for a live call with simultaneous
+          // speaker playback to cancel against — there's none here, and
+          // on some mic/driver combos it can over-suppress the signal.
+          // Not needed for a one-shot voice-sample recording either way.
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      })
 
       const audioCtx = new AudioContext()
       const analyser = audioCtx.createAnalyser()

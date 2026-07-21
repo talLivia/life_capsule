@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api, uploadSegmentBlob } from '@/lib/api'
+import { pickPreferredAudioDevice } from '@/lib/audioDevices'
 import type { ApiError, RawSegment } from '@/lib/types'
 
 type Phase =
@@ -46,40 +47,6 @@ function pickMimeType(): string {
     'video/mp4',
   ]
   return candidates.find(c => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported?.(c)) || ''
-}
-
-// Loopback/monitor devices capture whatever is currently playing OUT of
-// the computer (system audio), not the microphone — "Stereo Mix" being
-// the classic Windows/Realtek example, with equivalents across other
-// vendors/platforms. `audio: true` with no deviceId lets the browser pick
-// its own default, and on some systems that resolves to one of these
-// instead of the real mic (confirmed directly: Chrome selected "Stereo
-// Mix" while a working "Microphone (Brio 105)" sat unused, even though
-// Chrome's own reported "Default - Microphone (...)" alias pointed at the
-// right device). The recorded track ends up technically valid — live,
-// unmuted, a real Opus stream muxes in fine — just silent, since nothing
-// was playing through the speakers while the mic should have been
-// capturing speech.
-const LOOPBACK_DEVICE_PATTERNS = [
-  /stereo mix/i,
-  /loopback/i,
-  /what u hear/i,
-  /wave out mix/i,
-  /cable output/i,
-  /monitor of/i,
-]
-
-function isLikelyLoopbackDevice(label: string): boolean {
-  return LOOPBACK_DEVICE_PATTERNS.some(p => p.test(label))
-}
-
-// Prefer whichever real (non-loopback) input the browser itself labels as
-// "Default" (Chrome's own alias for the OS-designated default recording
-// device) over just taking the first non-loopback entry — that's the
-// signal that was actually correct on the system this bug was found on.
-function pickPreferredAudioDevice(devices: MediaDeviceInfo[]): MediaDeviceInfo | undefined {
-  const realInputs = devices.filter(d => d.kind === 'audioinput' && d.label && !isLikelyLoopbackDevice(d.label))
-  return realInputs.find(d => d.label.startsWith('Default')) || realInputs[0]
 }
 
 export function VideoRecorder({
