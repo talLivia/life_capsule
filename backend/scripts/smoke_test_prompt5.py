@@ -6,18 +6,30 @@ checkpointer), and a real Gemini API key. Not part of the pytest suite
 one-off, human-readable validation that the whole live stack actually works
 together, including the human_confirm interrupt()/resume pause.
 
-Synthetic content only — three short Hebrew story segments in the same
-style as Prompt 3's integration test (test_graph_memory_int.py):
+Synthetic content only — six short Hebrew story segments in the same style
+as Prompt 3's integration test (test_graph_memory_int.py):
   1. Army story introducing an entity, "גילה" (Gila) — first mention, no
      existing graph data, so check_entities should auto-continue with no
      interrupt.
   2. An unrelated career story — shares no entities with segment 1, sanity
      check that independent segments ingest cleanly.
   3. A marriage story mentioning "גילה כהן" (Gila Cohen) — a fuzzy-but-not-
-     exact match against the "גילה" node segment 1 already created, which
-     should trigger human_confirm's interrupt(). The script answers "yes,
-     same person" (this Gila Cohen IS the army commander from segment 1),
-     resumes the paused pipeline, and confirms it reaches 'ready'.
+     exact match against the "גילה" node segment 1 already created (a
+     SINGLE-candidate ambiguity), which should trigger human_confirm's
+     interrupt(). The script answers "yes, same person" (this Gila Cohen IS
+     the army commander from segment 1), resumes the paused pipeline, and
+     confirms it reaches 'ready'.
+  4 & 5. Two segments each introducing a different full-named "Moshe" —
+     "משה כהן" (a colleague) and "משה לוי" (a neighbor) — both brand new,
+     no ambiguity (their token sets don't overlap with each other).
+  6. A segment mentioning bare "משה" with no surname — now genuinely
+     MULTI-candidate ambiguous against both Moshes from 4 & 5. This is the
+     exact bug the fix addresses: previously this would have silently
+     picked whichever candidate Graphiti's search ranked first and asked a
+     plain yes/no about only that one. Verifies human_confirm's interrupt
+     payload lists BOTH candidates, resolves by naming one of them, and
+     that finalize_ingest's custom_extraction_instructions reference the
+     FULLER resolved name ("משה כהן"), not the ambiguous bare "משה".
 
 Everything is cleaned up in a finally block: the throwaway Postgres rows
 (user/interview_session/raw_segments) and the Neo4j group_id's data.
@@ -66,6 +78,15 @@ SEG_CAREER_TRANSCRIPT = (
 SEG_MARRIAGE_TRANSCRIPT = (
     "כעבור כמה שנים התחתנתי עם גילה כהן, אותה גילה שהייתה המפקדת שלי בצבא. "
     "זו הייתה החתונה הכי משמחת שהייתה לי."
+)
+SEG_COLLEAGUE_TRANSCRIPT = (
+    "עבדתי עם משה כהן בחברת ההייטק. הוא היה מהנדס מצוין ותמכתי בו כל הזמן."
+)
+SEG_NEIGHBOR_TRANSCRIPT = (
+    "השכן שלי, משה לוי, תמיד עזר לי בגינה. היינו חברים טובים במשך שנים."
+)
+SEG_AMBIGUOUS_MOSHE_TRANSCRIPT = (
+    "פגשתי את משה השבוע ודיברנו הרבה על הימים הישנים."
 )
 
 
@@ -142,6 +163,27 @@ async def main() -> None:
                     transcript=SEG_MARRIAGE_TRANSCRIPT,
                     status="pending_analysis",
                 ),
+                "colleague": RawSegment(
+                    interview_session_id=session.id,
+                    question_asked="ספר לי על מישהו שעבדת איתו",
+                    question_index=3,
+                    transcript=SEG_COLLEAGUE_TRANSCRIPT,
+                    status="pending_analysis",
+                ),
+                "neighbor": RawSegment(
+                    interview_session_id=session.id,
+                    question_asked="ספר לי על שכן שהיה קרוב אליך",
+                    question_index=4,
+                    transcript=SEG_NEIGHBOR_TRANSCRIPT,
+                    status="pending_analysis",
+                ),
+                "ambiguous_moshe": RawSegment(
+                    interview_session_id=session.id,
+                    question_asked="מה עוד קרה השבוע",
+                    question_index=5,
+                    transcript=SEG_AMBIGUOUS_MOSHE_TRANSCRIPT,
+                    status="pending_analysis",
+                ),
             }
             for seg in segments.values():
                 db.add(seg)
@@ -184,16 +226,22 @@ async def main() -> None:
             print(f"  FAIL: status={segment.status!r} (expected 'pending_confirmation')")
         else:
             pc = segment.pending_confirmation
+            candidates = pc["candidates"]
             print("  PASS: pipeline paused on human_confirm. Live interrupt payload:")
-            print(f"    entity_name:       {pc['entity_name']}")
-            print(f"    candidate_name:    {pc['candidate_name']}")
-            print(f"    candidate_summary: {pc['candidate_summary']}")
-            print(f"    question:          {pc['question']}")
+            print(f"    entity_name: {pc['entity_name']}")
+            print(f"    candidates:  {candidates}")
+            print(f"    question:    {pc['question']}")
+
+            if len(candidates) != 1:
+                failures.append(
+                    f"marriage segment's ambiguity should have exactly 1 candidate ('גילה'), "
+                    f"got {len(candidates)}: {candidates}"
+                )
 
             print("\n  Answering: yes, same person (as designed in this synthetic story) …")
             await resume_segment_analysis(
                 marriage_id,
-                {"same_as_existing": True, "candidate_uuid": pc["candidate_uuid"]},
+                {"same_as_existing": True, "candidate_uuid": candidates[0]["uuid"]},
             )
             async with AsyncSessionLocal() as db:
                 result = await db.execute(select(RawSegment).where(RawSegment.id == marriage_id))
@@ -223,6 +271,94 @@ async def main() -> None:
             print(f"  FAIL: marriage segment missing from related episodes: {related}")
         if segment_ids["career"] in related:
             failures.append("career segment (unrelated) unexpectedly showed up as related to 'גילה'")
+
+        # ── Segments 4 & 5: two distinct, brand-new "Moshe"s ──
+        print("\n--- Segment 4: colleague story (introduces 'משה כהן') ---")
+        status = await _run_until_settled(segment_ids["colleague"], "colleague")
+        if status != "ready":
+            failures.append(f"colleague segment ended in status={status!r}, expected 'ready'")
+        else:
+            print("  PASS: reached 'ready' with no interrupt (brand new, distinct full name)\n")
+
+        print("--- Segment 5: neighbor story (introduces 'משה לוי') ---")
+        status = await _run_until_settled(segment_ids["neighbor"], "neighbor")
+        if status != "ready":
+            failures.append(f"neighbor segment ended in status={status!r}, expected 'ready'")
+        else:
+            print("  PASS: reached 'ready' with no interrupt (distinct from 'משה כהן')\n")
+
+        # ── Segment 6: bare "משה" — THE fix this session is about ──
+        print("--- Segment 6: bare 'משה' — should be MULTI-candidate ambiguous ---")
+        moshe_id = segment_ids["ambiguous_moshe"]
+        await run_segment_analysis(moshe_id)
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(RawSegment).where(RawSegment.id == moshe_id))
+            segment = result.scalar_one()
+
+        if segment.status != "pending_confirmation":
+            failures.append(
+                f"ambiguous_moshe segment ended in status={segment.status!r} instead of "
+                "pausing on 'pending_confirmation' — bare 'משה' should be ambiguous against "
+                "BOTH 'משה כהן' and 'משה לוי'"
+            )
+            print(f"  FAIL: status={segment.status!r} (expected 'pending_confirmation')")
+        else:
+            pc = segment.pending_confirmation
+            candidates = pc["candidates"]
+            print("  Live interrupt payload:")
+            print(f"    entity_name: {pc['entity_name']}")
+            print(f"    candidates:  {candidates}")
+            print(f"    question:    {pc['question']}")
+
+            candidate_names = {c["name"] for c in candidates}
+            if len(candidates) >= 2 and {"משה כהן", "משה לוי"} <= candidate_names:
+                print(f"  PASS: BOTH Moshes surfaced as candidates ({len(candidates)} total) — "
+                      "the multi-candidate fix works live.\n")
+            else:
+                failures.append(
+                    f"expected both 'משה כהן' and 'משה לוי' among candidates, got: "
+                    f"{candidate_names}"
+                )
+                print(f"  FAIL: candidates were {candidate_names}, expected both Moshes")
+
+            chosen = next(c for c in candidates if c["name"] == "משה כהן")
+            print(f"\n  Answering: same as \"{chosen['name']}\" (the colleague, not the neighbor) …")
+            await resume_segment_analysis(
+                moshe_id, {"same_as_existing": True, "candidate_uuid": chosen["uuid"]}
+            )
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(select(RawSegment).where(RawSegment.id == moshe_id))
+                segment = result.scalar_one()
+
+            if segment.status == "ready":
+                print("  PASS: resumed successfully, pipeline reached 'ready'\n")
+            else:
+                failures.append(
+                    f"ambiguous_moshe segment after resume ended in status={segment.status!r}, "
+                    "expected 'ready'"
+                )
+                print(f"  FAIL: status={segment.status!r} after resume (expected 'ready')\n")
+
+        # ── Verify retrieval now correctly distinguishes the two Moshes ──
+        print("--- Verifying the two Moshes stayed distinct in the graph ---")
+        related_to_colleague = await gm.find_related_episodes(
+            entity_names=["משה כהן"], exclude_ids=[segment_ids["colleague"]], group_id=group_id
+        )
+        if moshe_id in related_to_colleague:
+            print(f"  PASS: the bare-'משה' segment links to 'משה כהן' (the colleague), as confirmed.")
+        else:
+            failures.append(
+                f"expected segment {moshe_id} to be related to 'משה כהן' after confirming that "
+                f"resolution, got: {related_to_colleague}"
+            )
+        if segment_ids["neighbor"] in related_to_colleague:
+            failures.append(
+                "the neighbor segment ('משה לוי') incorrectly shows up as related to "
+                "'משה כהן' — the two Moshes got conflated"
+            )
+        else:
+            print("  PASS: the neighbor ('משה לוי') segment correctly stayed UNLINKED from "
+                  "'משה כהן' — the two Moshes were not confused with each other.")
 
     finally:
         print("\n--- Cleanup ---")

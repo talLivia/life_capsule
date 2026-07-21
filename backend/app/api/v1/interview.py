@@ -349,7 +349,18 @@ async def confirm_entity(
             detail="The pending question has moved on — refresh pending-confirmations",
         )
 
-    candidate_uuid = payload.candidate_uuid or segment.pending_confirmation.get("candidate_uuid")
+    candidates = segment.pending_confirmation.get("candidates") or []
+    candidate_uuid = payload.candidate_uuid
+    if payload.same_as_existing:
+        if not candidate_uuid and len(candidates) == 1:
+            # Only one plausible match was ever shown — a bare "yes" is
+            # unambiguous. With 2+ candidates the caller must say which one.
+            candidate_uuid = candidates[0]["uuid"]
+        if not candidate_uuid or candidate_uuid not in {c["uuid"] for c in candidates}:
+            raise HTTPException(
+                status_code=400,
+                detail="candidate_uuid must be one of the pending question's candidates",
+            )
 
     from app.analysis_graph import resume_segment_analysis
 

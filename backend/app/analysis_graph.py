@@ -26,10 +26,21 @@ real graph: querying a single-node graph for a totally unrelated name still
 returns that node as a "candidate", so a lexical-similarity gate
 (`_names_are_similar`) runs first — only a name that's actually similar to
 a candidate's name (substring or a high SequenceMatcher ratio) counts as a
-real match at all. Among real matches, an exact case-insensitive name match
-auto-resolves (no interrupt); a same-ish-but-not-identical one is ambiguous
-(interrupt and ask). A name with zero real matches is brand new and never
+real match at all. A name with zero real matches is brand new and never
 interrupts — Graphiti will just create it during finalize_ingest.
+
+Auto-resolve without asking ONLY when there is exactly one real match and
+it's an exact case-insensitive name match — anything else is ambiguous and
+interrupts, INCLUDING a first-name-only mention (e.g. "Moshe") that real-
+matches more than one existing entity (e.g. "Moshe Cohen" AND "Moshe
+Levi"). That case used to silently pick whichever candidate Graphiti's
+hybrid search ranked first and ask a plain yes/no against just that one —
+a real bug (the other equally-plausible candidate was never even
+mentioned). human_confirm now surfaces every real match at once so the
+storyteller can pick the right one (or say "someone new") instead of being
+asked about an arbitrary single guess, and the confirmed resolution stores
+the FULLER identifying name (e.g. "Moshe Cohen", not just "Moshe") so
+future retrieval never confuses the two people again.
 
 Entity name extraction here is our OWN lightweight Claude call (see
 _ENTITY_NAME_SYSTEM_PROMPT below), not graphiti_core's internal
@@ -181,11 +192,17 @@ def _build_custom_extraction_instructions(
     lines = []
     for name, resolution in resolutions.items():
         same_as_uuid = resolution.get("same_as_uuid")
+        resolved_name = resolution.get("resolved_name") or name
         if same_as_uuid:
+            # Use the FULLER identifying name (e.g. "Moshe Cohen", confirmed
+            # by the storyteller) rather than the bare mention ("Moshe") —
+            # so the entity's name in the graph stays disambiguated for
+            # future retrieval, not just linked by id.
             lines.append(
                 f'Treat the name "{name}" as referring to the existing entity with id '
-                f"{same_as_uuid} - this is the same real-world person, place, or event "
-                f"mentioned before. Do not create a duplicate node for it."
+                f'{same_as_uuid}, also known as "{resolved_name}" - this is the same '
+                f"real-world person, place, or event mentioned before. Do not create a "
+                f'duplicate node for it; use "{resolved_name}" as this entity\'s name.'
             )
         else:
             lines.append(
@@ -325,27 +342,49 @@ async def check_entities_node(state: AnalysisState) -> dict:
         if not relevant:
             continue  # brand-new entity — Graphiti will just create it
 
-        exact = next(
-            (c for c in relevant if c["name"].strip().lower() == key), None
-        )
-        if exact:
-            # Same name already in the graph verbatim — confident enough to
-            # auto-resolve without interrupting the storyteller every time a
-            # previously-confirmed name is mentioned again.
-            auto_resolutions[name] = {"same_as_uuid": exact["uuid"]}
+        if len(relevant) == 1 and relevant[0]["name"].strip().lower() == key:
+            # Exactly one real match AND it's the same name verbatim —
+            # confident enough to auto-resolve without interrupting the
+            # storyteller every time a previously-confirmed name recurs.
+            only = relevant[0]
+            auto_resolutions[name] = {"same_as_uuid": only["uuid"], "resolved_name": only["name"]}
             continue
 
-        top = relevant[0]
+        # Ambiguous: either 2+ real matches (even if one of them is an exact
+        # name match — a bare "Moshe" against both an existing "Moshe" and a
+        # "Moshe Cohen" is still genuinely ambiguous), or a single non-exact
+        # fuzzy match. Keep every real match so human_confirm can ask about
+        # all of them at once instead of an arbitrary single guess.
         to_check.append(
             {
                 "name": name,
-                "candidate_uuid": top["uuid"],
-                "candidate_name": top["name"],
-                "candidate_summary": top.get("summary") or "",
+                "candidates": [
+                    {
+                        "uuid": c["uuid"],
+                        "name": c["name"],
+                        "summary": c.get("summary") or "",
+                    }
+                    for c in relevant
+                ],
             }
         )
 
     return {"names_to_check": to_check, "entity_resolutions": auto_resolutions}
+
+
+def _confirmation_question(entity_name: str, candidates: List[Dict[str, str]]) -> str:
+    if len(candidates) == 1:
+        return (
+            f'Is "{entity_name}" mentioned in this new segment the same as '
+            f'"{candidates[0]["name"]}" already in your story archive?'
+        )
+    options = "; ".join(
+        f'{c["name"]} ({c["summary"]})' if c["summary"] else c["name"] for c in candidates
+    )
+    return (
+        f'You mentioned "{entity_name}" - is this the same person/place as one of '
+        f"these already in your story archive: {options}? Or is this someone new?"
+    )
 
 
 async def human_confirm_node(state: AnalysisState) -> dict:
@@ -354,23 +393,30 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         return {}
     current = queue[0]
     remaining = queue[1:]
+    candidates = current["candidates"]
 
     answer = interrupt(
         {
             "entity_name": current["name"],
-            "candidate_uuid": current["candidate_uuid"],
-            "candidate_name": current["candidate_name"],
-            "candidate_summary": current["candidate_summary"],
-            "question": (
-                f'Is "{current["name"]}" mentioned in this new segment the same as '
-                f'"{current["candidate_name"]}" already in your story archive?'
-            ),
+            "candidates": candidates,
+            "question": _confirmation_question(current["name"], candidates),
         }
     )
 
     resolutions = dict(state.get("entity_resolutions") or {})
-    same_as_uuid = answer.get("candidate_uuid") if answer.get("same_as_existing") else None
-    resolutions[current["name"]] = {"same_as_uuid": same_as_uuid}
+    if answer.get("same_as_existing"):
+        chosen_uuid = answer.get("candidate_uuid")
+        chosen = next((c for c in candidates if c["uuid"] == chosen_uuid), None)
+        resolutions[current["name"]] = {
+            "same_as_uuid": chosen_uuid,
+            # Fall back to the raw extracted name only if the resume
+            # payload names a uuid that isn't actually one of the pending
+            # candidates — shouldn't happen through the API (which
+            # validates this), but this keeps the node itself safe either way.
+            "resolved_name": chosen["name"] if chosen else current["name"],
+        }
+    else:
+        resolutions[current["name"]] = {"same_as_uuid": None, "resolved_name": current["name"]}
 
     return {"names_to_check": remaining, "entity_resolutions": resolutions}
 

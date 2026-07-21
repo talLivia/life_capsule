@@ -134,6 +134,17 @@ def test_build_custom_extraction_instructions_same_and_different():
     assert "Dan" in text
 
 
+def test_build_custom_extraction_instructions_uses_fuller_resolved_name():
+    """The whole point of this fix: a bare mention ("Moshe") resolved to an
+    existing fuller-named entity ("Moshe Cohen") must steer Graphiti using
+    the fuller name, not just the ambiguous bare one."""
+    text = ag._build_custom_extraction_instructions(
+        {"Moshe": {"same_as_uuid": "uuid-1", "resolved_name": "Moshe Cohen"}}
+    )
+    assert "Moshe Cohen" in text
+    assert "uuid-1" in text
+
+
 # ── Node-level tests ─────────────────────────────────────────────────────────
 
 
@@ -227,7 +238,7 @@ async def test_check_entities_node_auto_resolves_exact_match(segment, monkeypatc
     )
 
     assert result["names_to_check"] == []
-    assert result["entity_resolutions"] == {"Gila": {"same_as_uuid": "u1"}}
+    assert result["entity_resolutions"] == {"Gila": {"same_as_uuid": "u1", "resolved_name": "Gila"}}
 
 
 async def test_check_entities_node_flags_fuzzy_match(segment, monkeypatch):
@@ -245,7 +256,66 @@ async def test_check_entities_node_flags_fuzzy_match(segment, monkeypatch):
     assert result["entity_resolutions"] == {}
     assert len(result["names_to_check"]) == 1
     assert result["names_to_check"][0]["name"] == "Gila"
-    assert result["names_to_check"][0]["candidate_uuid"] == "u2"
+    assert result["names_to_check"][0]["candidates"] == [
+        {"uuid": "u2", "name": "Gila Cohen", "summary": "a neighbor"}
+    ]
+
+
+async def test_check_entities_node_multiple_candidates_stay_ambiguous(segment, monkeypatch):
+    """The bug this whole fix addresses: a first-name-only mention ("Moshe")
+    that real-matches MULTIPLE existing entities ("Moshe Cohen" AND "Moshe
+    Levi") must surface all of them, not silently pick one and ask a plain
+    yes/no against it."""
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value='["Moshe"]'))
+    monkeypatch.setattr(
+        ag.graph_memory,
+        "get_entity_candidates",
+        AsyncMock(
+            return_value=[
+                {"uuid": "u1", "name": "Moshe Cohen", "summary": "army friend"},
+                {"uuid": "u2", "name": "Moshe Levi", "summary": "neighbor"},
+            ]
+        ),
+    )
+
+    result = await ag.check_entities_node(
+        {"segment_id": segment.id, "group_id": "g1", "transcript": segment.transcript}
+    )
+
+    assert result["entity_resolutions"] == {}
+    assert len(result["names_to_check"]) == 1
+    assert result["names_to_check"][0]["name"] == "Moshe"
+    assert result["names_to_check"][0]["candidates"] == [
+        {"uuid": "u1", "name": "Moshe Cohen", "summary": "army friend"},
+        {"uuid": "u2", "name": "Moshe Levi", "summary": "neighbor"},
+    ]
+
+
+async def test_check_entities_node_exact_match_among_others_still_ambiguous(segment, monkeypatch):
+    """An exact-name match no longer short-circuits by itself if there's
+    ALSO another real (non-exact) match — e.g. a bare "Moshe" exactly
+    matching an existing bare "Moshe" node while ALSO fuzzy-matching
+    "Moshe Cohen" must still ask, since the exact match isn't necessarily
+    the right one."""
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value='["Moshe"]'))
+    monkeypatch.setattr(
+        ag.graph_memory,
+        "get_entity_candidates",
+        AsyncMock(
+            return_value=[
+                {"uuid": "u1", "name": "Moshe", "summary": "mentioned once before"},
+                {"uuid": "u2", "name": "Moshe Cohen", "summary": "army friend"},
+            ]
+        ),
+    )
+
+    result = await ag.check_entities_node(
+        {"segment_id": segment.id, "group_id": "g1", "transcript": segment.transcript}
+    )
+
+    assert result["entity_resolutions"] == {}
+    assert len(result["names_to_check"]) == 1
+    assert len(result["names_to_check"][0]["candidates"]) == 2
 
 
 async def test_check_entities_node_no_candidates_means_new_entity(segment, monkeypatch):
@@ -417,7 +487,9 @@ async def test_full_pipeline_pauses_then_resumes_on_ambiguous_entity(
     await db_session.refresh(segment)
     assert segment.status == "pending_confirmation"
     assert segment.pending_confirmation["entity_name"] == "Gila"
-    assert segment.pending_confirmation["candidate_uuid"] == "u2"
+    assert segment.pending_confirmation["candidates"] == [
+        {"uuid": "u2", "name": "Gila Cohen", "summary": "a neighbor"}
+    ]
 
     await ag.resume_segment_analysis(
         segment.id, {"same_as_existing": True, "candidate_uuid": "u2"}
@@ -426,7 +498,9 @@ async def test_full_pipeline_pauses_then_resumes_on_ambiguous_entity(
     await db_session.refresh(segment)
     assert segment.status == "ready"
     mock_add_episode.assert_awaited_once()
-    assert "u2" in mock_add_episode.call_args.kwargs["custom_extraction_instructions"]
+    instructions = mock_add_episode.call_args.kwargs["custom_extraction_instructions"]
+    assert "u2" in instructions
+    assert "Gila Cohen" in instructions  # the fuller resolved name, not just "Gila"
 
 
 async def test_full_pipeline_add_episode_failure_reaches_failed(
@@ -521,6 +595,79 @@ async def test_confirm_entity_rejects_stale_question(
         headers=auth_headers,
     )
     assert resp.status_code == 409
+
+
+async def test_confirm_entity_multi_candidate_flow(
+    client: AsyncClient,
+    db_session,
+    segment,
+    analysis_session_factory,
+    fake_checkpointer,
+    auth_headers,
+    monkeypatch,
+):
+    """End-to-end HTTP coverage for the fix: a bare "Moshe" ambiguous
+    against two existing entities surfaces both, rejects an unlisted
+    candidate_uuid, rejects an omitted one (no single-candidate default
+    applies with 2+ candidates), and succeeds when the right one is named."""
+
+    async def fake_generate(messages, system_prompt=None, thinking=False):
+        if system_prompt == ag._EXTRACT_TOPICS_SYSTEM_PROMPT:
+            return '["childhood"]'
+        if system_prompt == ag._ENTITY_NAME_SYSTEM_PROMPT:
+            return '["Moshe"]'
+        if system_prompt == ag._IMPORTANCE_SYSTEM_PROMPT:
+            return "8"
+        raise AssertionError(f"unexpected system_prompt: {system_prompt}")
+
+    monkeypatch.setattr(ag.llm_service, "generate_response", fake_generate)
+    monkeypatch.setattr(
+        ag.graph_memory,
+        "get_entity_candidates",
+        AsyncMock(
+            return_value=[
+                {"uuid": "u1", "name": "Moshe Cohen", "summary": "army friend"},
+                {"uuid": "u2", "name": "Moshe Levi", "summary": "neighbor"},
+            ]
+        ),
+    )
+    monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1, 0.2, 0.3]))
+    monkeypatch.setattr(ag.graph_memory, "add_episode", AsyncMock())
+    segment_id = segment.id
+
+    await ag.run_segment_analysis(segment_id)
+    db_session.expire_all()
+
+    pending = await client.get(
+        "/api/v1/interview/segments/pending-confirmations", headers=auth_headers
+    )
+    candidates = pending.json()[0]["pending_confirmation"]["candidates"]
+    assert {c["uuid"] for c in candidates} == {"u1", "u2"}
+
+    # Omitting candidate_uuid with 2+ candidates must not silently default.
+    resp = await client.post(
+        f"/api/v1/interview/segments/{segment_id}/confirm-entity",
+        json={"entity_name": "Moshe", "same_as_existing": True},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400
+
+    # A candidate_uuid not among the pending options must be rejected.
+    resp = await client.post(
+        f"/api/v1/interview/segments/{segment_id}/confirm-entity",
+        json={"entity_name": "Moshe", "same_as_existing": True, "candidate_uuid": "not-a-real-uuid"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400
+
+    # Naming the right one succeeds.
+    resp = await client.post(
+        f"/api/v1/interview/segments/{segment_id}/confirm-entity",
+        json={"entity_name": "Moshe", "same_as_existing": True, "candidate_uuid": "u1"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ready"
 
 
 async def test_confirm_entity_404_when_not_pending(client: AsyncClient, segment, auth_headers):

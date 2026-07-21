@@ -108,15 +108,22 @@ export interface SegmentPresign {
   content_type: string
 }
 
+export interface EntityCandidate {
+  uuid: string
+  name: string
+  summary: string
+}
+
 export interface PendingConfirmation {
   segment_id: string
   interview_session_id: string
   question_asked: string
   pending_confirmation: {
     entity_name: string
-    candidate_uuid: string
-    candidate_name: string
-    candidate_summary: string
+    // One candidate -> a simple yes/no question. Two or more -> the
+    // storyteller picks which existing person/place this is (or "someone
+    // new") instead of being asked a yes/no about an arbitrary single guess.
+    candidates: EntityCandidate[]
     question: string
   }
 }
