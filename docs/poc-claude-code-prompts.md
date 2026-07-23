@@ -264,7 +264,298 @@ score/reason for each. Flag any response where the LLM appears to have
 introduced content not present in the source transcripts (manual review 
 checklist, not automated).
 ```
+# Prompts 11–14 — Original-video-clip chat mode (parallel to the avatar, not a replacement)
 
+> Continues `docs/poc-claude-code-prompts.md` (Prompts 1–10). Give these to
+> Claude Code ONE AT A TIME, in order — each depends on the previous one's
+> work actually existing. Don't paste all four at once.
+
+## Shared context (applies to all four prompts below)
+
+Recordings are long, free-form, topic-based interviews — a single
+recording can span many unrelated topics, and even a single Whisper-
+detected phrase/sentence can itself contain more than one distinct idea
+(e.g. "אחרי הצבא חיפשתי עבודה והייתי נגר במשך כמה שנים" is one continuous
+phrase with no pause, but only "הייתי נגר" actually answers "what did you
+do for work?"). We need to retrieve and assemble the exact moment(s) that
+answer a question — down to the specific words, not just the surrounding
+sentence — inside a much longer recording, and play back real video
+clip(s) instead of (or alongside) the avatar.
+
+**Hard constraint, applies to ALL FOUR prompts — read this first: do NOT
+remove, replace, degrade, or refactor away the existing avatar pipeline
+(TTS + MuseTalk + Runpod, Prompt 9). This is an ADDITIONAL chat mode,
+selected by the user, living alongside the avatar as a second option.
+Both modes must keep working independently. We may use both avatar and
+video-clip modes going forward, so neither is being deprecated.**
+
+---
+
+## Prompt 11 — Data foundation: word-level timestamps, TranscriptChunk model, ingestion
+
+New feature, unrelated to any other work in progress. This is the first of
+four prompts building an original-video-clip chat mode alongside the
+existing avatar — see "Shared context" above before starting.
+
+### 1. Preserve STT timestamps at BOTH phrase and word level (currently discarded entirely)
+
+`stt.py` already gets phrase-level segments with `.start`/`.end` from
+faster-whisper internally, but `_transcribe_sync` collapses them into one
+joined string (`" ".join(seg.text for seg in segments)`), discarding all
+timing. Change this to also preserve, per phrase, faster-whisper's
+word-level timestamps (`word_timestamps=True`, giving each word its own
+`.start`/`.end`). Return both: the list of `(start_sec, end_sec, text)`
+phrase tuples, AND per-phrase word-level timing. Keep the joined string
+for any existing caller that needs plain text. Word-level timing is needed
+by Prompt 13 to pinpoint an exact sub-phrase answer, not just the whole
+phrase — it isn't used yet in this prompt, just captured and stored.
+
+### 2. New model: `TranscriptChunk` (sentence/phrase-level, NOT fixed-length windows)
+
+Add a table (with an Alembic migration) representing individual
+transcript phrases/sentences from a `RawSegment`'s recording — one row per
+Whisper-detected phrase, not grouped into fixed-duration windows:
+
+- `id`, `raw_segment_id` (FK to raw_segments, cascade delete)
+- `start_sec`, `end_sec` (float) — this phrase's own timing
+- `text` (this phrase's own text, verbatim)
+- `word_timestamps` (JSON: list of `{word, start_sec, end_sec}`) — from
+  step 1, needed later for precise sub-phrase pinpointing (Prompt 13)
+- `embedding` (JSON list of floats) — see note below on what text this is
+  actually computed from
+- `topic_tags` (JSON, nullable)
+- `sequence_index` (int) — this chunk's position among its parent
+  segment's chunks in chronological order, so neighbors can be looked up
+  cheaply (for context embedding here, and for boundary expansion in
+  Prompt 13) without a timestamp range query
+
+**IMPORTANT — embedding uses surrounding context, storage does not:** a
+short phrase in isolation can be too ambiguous on its own for a good
+embedding match. Compute each chunk's embedding from that phrase's text
+PLUS a small window of the immediately preceding and following phrase(s)
+(e.g. ±1-2 neighboring phrases via `sequence_index`, or ±10-15 seconds),
+so the embedding captures enough context to be found by a semantically
+related question. But store `start_sec`/`end_sec`/`text`/`word_timestamps`
+for the phrase ITSELF only — the context window used for embedding must
+never itself be what gets returned or played back.
+
+### 3. Update `analysis_graph.py`
+
+After `transcribe_node`, add a step that creates one `TranscriptChunk` per
+Whisper-detected phrase/sentence from step 1's now-preserved timestamps —
+do NOT pre-group into fixed-duration windows; each natural phrase boundary
+from Whisper becomes its own chunk. For each chunk, compute its embedding
+using the contextual window described in step 2, and run topic tagging
+per-chunk. Keep the existing whole-segment embedding/topics too, since the
+avatar path (Prompts 6-8 as they exist today) still depends on them —
+don't break that.
+
+Entity extraction (`check_entities`) can stay at the whole-segment level
+as today — but each entity's Graphiti episode/mention should also record
+which chunk id(s) it appeared in, so a matched entity/topic can be traced
+back to an exact moment, not just "somewhere in this recording."
+
+### 4. Tests
+
+Add tests for: phrase-level chunk creation with correct phrase AND
+word-level timestamps, contextual-embedding computation (verify it uses
+neighboring phrases but stores only the chunk's own boundaries), and
+correct `sequence_index` ordering. Include a case verifying the avatar-
+mode/existing Prompt 5 tests still pass unchanged.
+
+This prompt does NOT touch retrieval, response assembly, or the frontend —
+scope is data model + ingestion only. Stop here; Prompt 12 builds on this.
+
+---
+
+## Prompt 12 — Retrieval: perspective normalization, chunk-level matching
+
+New feature, continuing the original-video-clip chat mode (see "Shared
+context" above). This assumes Prompt 11 is done — `TranscriptChunk` rows
+with phrase/word timestamps and embeddings now exist.
+
+### 1. Perspective normalization (2nd-person question vs 1st-person transcript)
+
+The storyteller narrates in first person ("עבדתי כנגר" / "I worked as a
+carpenter"), but a family member's question is naturally phrased in
+second person ("מה עבדת?" / "what did you do for work?") or third person
+about the storyteller. Before running step 2's topic/entity/semantic
+signals, add a preprocessing step that generates a first-person-normalized
+version of the question (simple pronoun/verb-form substitution, or a
+lightweight LLM rewrite if substitution rules prove insufficient for
+Hebrew's verb conjugation) purely for search purposes. Use this normalized
+form for the embedding and topic classification calls in step 2, while
+keeping the ORIGINAL question text available for Prompt 13 (which must
+answer the question as actually asked, not the search-normalized version).
+
+### 2. Update `retrieval_service.py` and `relevance_scorer.py`
+
+Same three-signal logic (topic / entity / semantic) and the same
+Generative Agents scoring formula (recency + importance + relevance) as
+the existing avatar-mode retrieval — completely unchanged conceptually.
+Add a parallel path that operates over `TranscriptChunk` rows instead of
+whole `RawSegment` rows, for the new video-clip mode only, using the
+perspective-normalized question from step 1. Don't alter the existing
+avatar-mode functions or their behavior at all — add new functions
+(`primary_match_chunks`, `score_chunk_candidates`, or similar) rather than
+modifying the existing ones in place.
+
+### 3. Second-pass leniency (only if literally nothing matched)
+
+If step 2 returns zero candidate chunks across all three signals: before
+giving up, retry once with the semantic similarity threshold relaxed (e.g.
+half the normal bar) — surfacing borderline candidates a strict first pass
+filtered out. (Note: these candidates will still go through verification
+in Prompt 13 — this step only widens the net, it never fabricates or
+overrides content.) If still nothing qualifies after this retry, this is
+where Prompt 13's `NO_STORY_FALLBACK` path will eventually trigger — but
+that's built in the next prompt, not this one.
+
+### 4. Tests
+
+Add tests for: perspective normalization (Hebrew and English examples),
+chunk-level primary matching against each of the three signals
+independently and combined, and second-pass leniency triggering only when
+the first pass truly found nothing. Include a case verifying existing
+avatar-mode retrieval tests still pass unchanged.
+
+This prompt does NOT touch response assembly, ffmpeg, or the frontend —
+scope is retrieval only, returning candidate `TranscriptChunk`s. Stop
+here; Prompt 13 builds on this.
+
+---
+
+## Prompt 13 — Answer assembly: verification, pinpointing, clause coverage, ffmpeg
+
+New feature, continuing the original-video-clip chat mode (see "Shared
+context" above). This assumes Prompts 11-12 are done — chunk-level
+retrieval now returns candidate `TranscriptChunk`s for a given question.
+
+### 1. Per-candidate analysis: verification + sub-phrase pinpointing + clause coverage
+
+For each matched chunk from Prompt 12, run ONE lightweight, temperature=0
+LLM call (combine these three sub-tasks into a single call if practical,
+to save latency/cost — flag this as the preferred approach but use your
+judgment on the actual prompt design) that, given the chunk's `text` and
+the ORIGINAL (non-normalized) question, returns:
+
+  a. **Relevance verification** — is this chunk actually a good answer to
+     this question, or just a loose topic/embedding match? Reject chunks
+     below a configurable relevance bar rather than assembling video
+     around a weak/false match.
+  b. **Sub-phrase pinpointing** — the exact contiguous substring of `text`
+     that answers the question (or the whole chunk verbatim if no
+     meaningful narrowing applies — never invent text not present in the
+     chunk). Locate that substring's position in the chunk's
+     `word_timestamps` (from Prompt 11) to get precise
+     `answer_start_sec`/`answer_end_sec`, narrower than the full chunk's
+     boundaries.
+  c. **Clause coverage** (only relevant for multi-part questions, e.g.
+     "what did you do for work, did you enjoy it, tell me stories") —
+     which distinct clause(s) of the question this chunk actually
+     addresses.
+
+Fail-soft: if this call fails or returns text not found verbatim in the
+chunk, fall back to treating the whole chunk as relevant with its own full
+boundaries, rather than blocking the response.
+
+After processing all candidates: if the question had multiple clauses (1c)
+and one has zero coverage across every verified chunk, do NOT invent or
+force anything for it — just note internally (logging/QA, optionally a
+subtle UI cue like "no story found about X specifically") that it wasn't
+covered — same never-invent principle as `NO_STORY_FALLBACK`.
+
+### 2. Video clip assembly via ffmpeg
+
+Add a new function parallel to `response_assembler.assemble_response`
+(e.g. `assemble_video_clip_response`) that:
+
+- Takes the verified, pinpointed candidates from step 1.
+- For each, expand playback boundaries OUTWARD FROM THE PINPOINTED
+  SUB-RANGE (`answer_start_sec`/`answer_end_sec`, not the whole chunk's
+  boundaries) by walking to neighboring chunks via `sequence_index`
+  (Prompt 11), extending while: (a) under a configurable max clip
+  duration, (b) no topic drift detected (compare topic_tags or embedding
+  similarity against a threshold), (c) not crossing a long silence gap if
+  derivable from the timestamps.
+- Trims each expanded clip from its parent recording via ffmpeg
+  (`-ss`/`-to` on the source video, re-encode or stream-copy as
+  appropriate) and concatenates the resulting clips into a single output
+  video file, in primary→bridge order (mirroring the existing avatar
+  path's text-stitching order).
+- Uploads the assembled clip to storage (same storage service/bucket
+  convention as `RawSegment.video_url`) and returns its URL.
+- If no candidate survived retrieval (Prompt 12) or verification (step 1
+  above), return the same "no story" signal as the avatar path (reuse
+  `NO_STORY_FALLBACK` or an equivalent) — if nothing qualifies, no video
+  is assembled, full stop.
+- Consider whether assembled clips should be cached/reused for identical
+  question-derived chunk sets, since ffmpeg processing has real latency
+  and cost compared to the avatar path's near-instant text assembly —
+  flag this tradeoff and propose an approach rather than assuming one.
+
+Expose this via a new or extended API/WebSocket endpoint alongside the
+existing avatar one — don't repurpose the existing avatar endpoint's
+contract. (Prompt 14 will wire this into the actual UI.)
+
+### 3. Tests
+
+Add tests for: per-candidate verification/pinpointing/clause-coverage
+against a chunk containing multiple distinct ideas, fail-soft behavior
+when the LLM call fails or hallucinates non-verbatim text, boundary
+expansion from a pinpointed sub-range, and ffmpeg-based multi-chunk clip
+assembly (including a non-contiguous, multi-recording case). Include a
+case verifying the avatar-mode response assembler's tests still pass
+unchanged.
+
+This prompt does NOT touch the settings screen or frontend chat UI — scope
+is backend assembly only, exposed via API/WebSocket. Stop here; Prompt 14
+wires this to the UI.
+
+---
+
+## Prompt 14 — Settings toggle, frontend chat component, end-to-end tests
+
+New feature, continuing the original-video-clip chat mode (see "Shared
+context" above). This assumes Prompts 11-13 are done — there's now a
+working backend endpoint that returns an assembled video-clip response (or
+`NO_STORY_FALLBACK`) for a question.
+
+### 1. Settings screen
+
+Add a setting (per producer/family) with two mutually exclusive modes:
+
+- **"Avatar"** (existing behavior, default, unchanged) — TTS + MuseTalk
+  talking head, powered by `response_assembler`'s existing verbatim-text-
+  stitching output exactly as it works today.
+- **"Original video clips"** (new) — the family member's question returns
+  a real video clip (or a stitched sequence of clips from non-contiguous
+  moments, possibly across different recordings) instead of a synthesized
+  avatar, via Prompt 13's new endpoint.
+
+The `/talk` UI reads this setting and renders the corresponding chat
+component.
+
+### 2. Frontend: new chat component
+
+Add a new chat UI variant (alongside the existing avatar chat component)
+that, on receiving a clip response, plays the assembled video with normal
+playback controls, and falls back to a clear "no story about that" message
+if `NO_STORY_FALLBACK` was returned. Wire the settings toggle from step 1
+to choose which chat component renders on `/talk`.
+
+### 3. End-to-end tests
+
+Add an end-to-end test (mirroring `test_e2e_flow.py`'s style) that
+exercises the full path: record/ingest a sample long, multi-topic
+recording → ask a question naming something buried mid-recording → verify
+the returned clip's time range plausibly contains the right moment. Also
+verify: switching the settings toggle actually changes which chat
+component renders, and the existing avatar end-to-end test still passes
+unchanged with the setting left on "Avatar" (the default).
+
+This is the last of the four prompts — after this, both modes should be
+fully wired and independently testable end-to-end.
 ---
 
 ## Notes on sequencing
@@ -274,3 +565,8 @@ checklist, not automated).
 - Prompts 6-8 depend on Prompt 5 having real ingested data to query against.
 - Prompt 9 depends on Prompts 6-8 all working against test data first.
 - Run Prompt 10 continuously as you iterate on thresholds in Prompts 6-7.
+- Prompts 11-14 (original-video-clip mode) depend on Prompt 9 being complete 
+  (the avatar path must exist first, since 11-14 add a parallel mode 
+  alongside it, not before it). Run 11 → 12 → 13 → 14 strictly in order — 
+  each assumes the previous one's work already exists in the codebase.
+
