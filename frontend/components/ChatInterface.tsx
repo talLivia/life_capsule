@@ -10,17 +10,26 @@ import {
 import { useMutation } from '@tanstack/react-query'
 import { toast } from 'react-hot-toast'
 import { api, buildSessionWsUrl } from '@/lib/api'
+import { useContinuousVoiceInput } from '@/lib/useContinuousVoiceInput'
 import { useStore } from '@/store/useStore'
 import type { Avatar, ChatMessage, WsMessage } from '@/lib/types'
 
 const WS_AUTH_REJECT_CODE = 4401  // matches backend close code for auth/ownership failure
 const MAX_WS_RECONNECT_ATTEMPTS = 6
 
+// Kept in sync with the backend's canonical supported-language set
+// (backend/app/api/v1/voices.py's _ALLOWED_LANGUAGES / tts.py's _EDGE_VOICES)
+// — this was previously a separate, stale 10-language subset missing Hebrew
+// and 12 others even though the backend already handled all 23.
 const CHAT_LANGUAGES = [
-  { code: 'en', label: 'EN' }, { code: 'es', label: 'ES' }, { code: 'fr', label: 'FR' },
-  { code: 'de', label: 'DE' }, { code: 'zh', label: 'ZH' }, { code: 'ja', label: 'JA' },
-  { code: 'pt', label: 'PT' }, { code: 'hi', label: 'HI' }, { code: 'it', label: 'IT' },
-  { code: 'ko', label: 'KO' },
+  { code: 'ar', label: 'AR' }, { code: 'da', label: 'DA' }, { code: 'de', label: 'DE' },
+  { code: 'el', label: 'EL' }, { code: 'en', label: 'EN' }, { code: 'es', label: 'ES' },
+  { code: 'fi', label: 'FI' }, { code: 'fr', label: 'FR' }, { code: 'he', label: 'HE' },
+  { code: 'hi', label: 'HI' }, { code: 'it', label: 'IT' }, { code: 'ja', label: 'JA' },
+  { code: 'ko', label: 'KO' }, { code: 'ms', label: 'MS' }, { code: 'nl', label: 'NL' },
+  { code: 'no', label: 'NO' }, { code: 'pl', label: 'PL' }, { code: 'pt', label: 'PT' },
+  { code: 'ru', label: 'RU' }, { code: 'sv', label: 'SV' }, { code: 'sw', label: 'SW' },
+  { code: 'tr', label: 'TR' }, { code: 'zh', label: 'ZH' },
 ]
 
 interface Message {
@@ -84,8 +93,7 @@ function WaveformBars({ active }: { active: boolean }) {
             height: active ? `${_WAVE_HEIGHTS[i]}px` : '4px',
             background: 'linear-gradient(to top, #7c3aed, #3b82f6)',
             transition: 'height 0.15s ease',
-            animation: active ? 'waveform 1.2s ease-in-out infinite' : 'none',
-            animationDelay: `${i * 0.1}s`,
+            animation: active ? `waveform 1.2s ease-in-out ${i * 0.1}s infinite` : 'none',
           }}
         />
       ))}
@@ -164,7 +172,6 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
 
   const [messages, setMessages] = useState<Message[]>([])
   const [inputText, setInputText] = useState('')
-  const [isRecording, setIsRecording] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [ws, setWs] = useState<WebSocket | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
@@ -172,7 +179,6 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
   const [statusMsg, setStatusMsg] = useState('Almost ready…')
   const [isTyping, setIsTyping] = useState(false)
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
-  const [recordingLevel, setRecordingLevel] = useState(0)
   const [avatarImageUrl, setAvatarImageUrl] = useState<string | null>(null)
   // Streaming token accumulator — shown as a live bubble while LLM is generating
   const [streamingContent, setStreamingContent] = useState('')
@@ -214,11 +220,7 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
   const videoRef = useRef<HTMLVideoElement>(null)
   // Hidden video element used to preload the next chunk while the current one plays
   const preloadVideoRef = useRef<HTMLVideoElement>(null)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const audioContextRef = useRef<AudioContext | null>(null)
-  const analyserRef = useRef<AnalyserNode | null>(null)
-  const levelAnimRef = useRef<number | null>(null)
 
   // ── Fetch avatar image on mount ──────────────────────────────────────────
   useEffect(() => {
@@ -565,60 +567,30 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
     }
   }
 
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const audioCtx = new AudioContext()
-      const analyser = audioCtx.createAnalyser()
-      analyser.fftSize = 256
-      audioCtx.createMediaStreamSource(stream).connect(analyser)
-      audioContextRef.current = audioCtx
-      analyserRef.current = analyser
-
-      const updateLevel = () => {
-        const data = new Uint8Array(analyser.frequencyBinCount)
-        analyser.getByteFrequencyData(data)
-        setRecordingLevel(Math.min(100, (data.reduce((a, b) => a + b, 0) / data.length) * 2))
-        levelAnimRef.current = requestAnimationFrame(updateLevel)
-      }
-      updateLevel()
-
-      const mediaRecorder = new MediaRecorder(stream)
-      const audioChunks: Blob[] = []
-      mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data)
-      mediaRecorder.onstop = async () => {
-        cancelAnimationFrame(levelAnimRef.current!)
-        setRecordingLevel(0)
-        audioCtx.close()
-        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' })
-        const reader = new FileReader()
-        reader.onloadend = () => {
-          const base64Audio = (reader.result as string).split(',')[1]
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            setLatencyMs(null)
-            sendTimeRef.current = Date.now()
-            ws.send(JSON.stringify({ type: 'audio', audio: base64Audio }))
-            setIsProcessing(true)
-            chunkQueueRef.current = []
-            isPlayingRef.current = false
-            setShowVideo(false)
-          }
-        }
-        reader.readAsDataURL(audioBlob)
-        stream.getTracks().forEach(t => t.stop())
-      }
-      mediaRecorder.start()
-      mediaRecorderRef.current = mediaRecorder
-      setIsRecording(true)
-    } catch {
-      toast.error('Failed to access microphone')
+  const sendAudioSegment = useCallback((base64Audio: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      console.warn(
+        '[voice] sendAudioSegment: WS not open, dropping segment. readyState=',
+        wsRef.current?.readyState
+      )
+      return
     }
-  }
+    setLatencyMs(null)
+    sendTimeRef.current = Date.now()
+    wsRef.current.send(JSON.stringify({ type: 'audio', audio: base64Audio }))
+    console.info('[voice] sent over WS, bytes(b64)=', base64Audio.length)
+    setIsProcessing(true)
+    chunkQueueRef.current = []
+    isPlayingRef.current = false
+    setShowVideo(false)
+  }, [])
 
-  const stopRecording = () => {
-    mediaRecorderRef.current?.stop()
-    setIsRecording(false)
-  }
+  const { micMuted, setMicMuted, isListening, hearingSpeech, micLevel, permissionDenied } =
+    useContinuousVoiceInput(connectionStatus === 'connected', isProcessing || showVideo, sendAudioSegment)
+
+  useEffect(() => {
+    if (permissionDenied) toast.error('Microphone access denied — you can still type your questions')
+  }, [permissionDenied])
 
   const resetVideo = () => {
     chunkQueueRef.current = []
@@ -737,15 +709,11 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
       wsRef.current = null
       setWsConnected(false)
 
-      // Release media resources so navigating away mid-playback/recording
-      // doesn't leak: a still-playing <video>, an open AudioContext, and a
-      // running rAF loop all survive unmount otherwise.
+      // Release the still-playing <video> so navigating away mid-playback
+      // doesn't leak. The mic stream/AudioContext/rAF loop are owned by
+      // useContinuousVoiceInput, which cleans itself up independently.
       const video = videoRef.current
       if (video) { video.pause(); video.removeAttribute('src'); video.load() }
-      if (levelAnimRef.current !== null) cancelAnimationFrame(levelAnimRef.current)
-      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-        audioContextRef.current.close().catch(() => {})
-      }
 
       // Only end sessions WE created — leaving a resumed conversation should
       // not mark the user's existing session as ended.
@@ -1088,40 +1056,51 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
           <div ref={messagesEndRef} />
         </div>
 
-        {isRecording && (
+        {isListening && (
           <div className="px-4 pb-2">
             <div className="h-1 rounded-full bg-surface-700 overflow-hidden">
-              <div className="voice-level h-full" style={{ width: `${recordingLevel}%` }} />
+              <div
+                className="voice-level h-full"
+                style={{ width: `${Math.min(100, micLevel * 2)}%` }}
+              />
             </div>
           </div>
         )}
 
         <div className="border-t border-white/8 px-4 py-3">
-          {isRecording && (
+          {!micMuted && (
             <div className="flex items-center gap-2 mb-3 px-2">
-              <span className="text-xs text-red-400 font-medium animate-pulse">REC</span>
-              <WaveformBars active={isRecording} />
-              <span className="text-xs text-gray-500 ml-auto">Tap stop when done</span>
+              <span
+                className={`text-xs font-medium ${hearingSpeech ? 'text-red-400 animate-pulse' : 'text-gray-500'}`}
+              >
+                {hearingSpeech ? 'HEARING YOU' : isProcessing || showVideo ? 'AVATAR SPEAKING' : 'LISTENING'}
+              </span>
+              <WaveformBars active={hearingSpeech} />
             </div>
           )}
 
           <div className="flex gap-2 items-end">
             <button
-              onClick={isRecording ? stopRecording : startRecording}
-              disabled={isProcessing}
-              aria-label={isRecording ? 'Stop recording' : 'Start voice recording'}
-              aria-pressed={isRecording}
+              onClick={() => setMicMuted((m) => !m)}
+              aria-label={micMuted ? 'Unmute microphone' : 'Mute microphone'}
+              aria-pressed={micMuted}
+              title={
+                micMuted
+                  ? 'Microphone muted — click to resume hands-free listening'
+                  : 'Listening automatically — click to mute'
+              }
               className={`relative flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center
                 transition-all duration-200 active:scale-95
-                ${isRecording
+                ${hearingSpeech
                   ? 'bg-red-600 hover:bg-red-500 text-white shadow-[0_0_20px_rgba(239,68,68,0.5)]'
-                  : 'bg-surface-700 hover:bg-surface-600 border border-white/10 hover:border-primary-500/40 text-gray-400 hover:text-white'
+                  : !micMuted && isListening
+                    ? 'bg-primary-600 hover:bg-primary-500 text-white'
+                    : 'bg-surface-700 hover:bg-surface-600 border border-white/10 hover:border-primary-500/40 text-gray-400 hover:text-white'
                 }
-                ${isProcessing ? 'opacity-40 cursor-not-allowed' : ''}
               `}
             >
-              {isRecording ? <MicOff size={18} /> : <Mic size={18} />}
-              {isRecording && (
+              {micMuted ? <MicOff size={18} /> : <Mic size={18} />}
+              {hearingSpeech && (
                 <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-red-500 animate-ping" />
               )}
             </button>
@@ -1133,9 +1112,9 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
                 }}
-                placeholder={isRecording ? 'Recording…' : 'Message your avatar… (Enter to send)'}
+                placeholder="Message your avatar… (Enter to send)"
                 aria-label="Message your avatar"
-                disabled={isProcessing || isRecording}
+                disabled={isProcessing}
                 rows={1}
                 className="w-full px-4 py-2.5 rounded-xl bg-surface-700/80 border border-white/10 text-white text-sm
                            placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-primary-500/50
@@ -1158,7 +1137,7 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
             ) : (
               <button
                 onClick={sendMessage}
-                disabled={!inputText.trim() || isRecording}
+                disabled={!inputText.trim()}
                 aria-label="Send message"
                 className="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-primary-600 to-accent-600
                            flex items-center justify-center text-white hover:shadow-glow
@@ -1170,7 +1149,7 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
           </div>
 
           <p className="text-xs text-gray-600 text-center mt-2">
-            Shift+Enter for new line · Mic for voice · <kbd className="px-1 py-0.5 rounded bg-surface-700 text-gray-500">?</kbd> for shortcuts
+            Shift+Enter for new line · Mic listens automatically · <kbd className="px-1 py-0.5 rounded bg-surface-700 text-gray-500">?</kbd> for shortcuts
           </p>
         </div>
       </div>
