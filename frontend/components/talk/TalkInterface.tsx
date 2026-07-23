@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Send, Mic, MicOff, Loader2, Sparkles } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api, buildSessionWsUrl } from '@/lib/api'
+import { useContinuousVoiceInput } from '@/lib/useContinuousVoiceInput'
 import type { ApiError, WsMessage } from '@/lib/types'
 
 interface TalkMessage {
@@ -28,7 +29,6 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
   const [messages, setMessages] = useState<TalkMessage[]>([])
   const [inputText, setInputText] = useState('')
   const [isThinking, setIsThinking] = useState(false)
-  const [isRecording, setIsRecording] = useState(false)
   const [showVideo, setShowVideo] = useState(false)
   const [connected, setConnected] = useState(false)
 
@@ -40,9 +40,9 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
   const chunkQueueRef = useRef<VideoChunk[]>([])
   const isPlayingRef = useRef(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const streamingIdRef = useRef<string | null>(null)
   const wsInstanceCounterRef = useRef(0) // diagnostic only — labels each socket instance created
+  const startNewSessionRef = useRef<() => void>(() => {})
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -189,8 +189,21 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
           /* ignore malformed frames */
         }
       }
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         setConnected(false)
+        if (event.code === 4401) {
+          // Auth/ownership rejection (see main.py's _verify_ws_session): this
+          // session_id will NEVER accept the current token — e.g. it was
+          // created while unauthenticated (guest/demo) and the browser has
+          // since logged in for real, or the token belongs to a different
+          // account than whoever owns this session. Retrying with the same
+          // session_id is pointless; get a fresh, correctly-owned session
+          // under the current auth instead of retrying into a dead end.
+          reconnectAttemptsRef.current = 0
+          toast.error('Your session is no longer valid — starting a new conversation')
+          startNewSessionRef.current()
+          return
+        }
         if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) return
         reconnectAttemptsRef.current += 1
         reconnectTimerRef.current = setTimeout(
@@ -209,17 +222,23 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
     let cancelled = false
     console.info('[TalkInterface] session-creation effect running, cancelled=false at start')
 
-    api
-      .createSession(avatarId)
-      .then((session) => {
-        console.info(
-          `[TalkInterface] createSession resolved: session=${session.id} cancelled=${cancelled}`
-        )
-        if (cancelled) return
-        sessionIdRef.current = session.id
-        connectWs(session.id)
-      })
-      .catch(() => toast.error('Could not start a conversation — please try again'))
+    const startNewSession = () => {
+      const previousSessionId = sessionIdRef.current
+      api
+        .createSession(avatarId)
+        .then((session) => {
+          console.info(
+            `[TalkInterface] createSession resolved: session=${session.id} cancelled=${cancelled}`
+          )
+          if (cancelled) return
+          if (previousSessionId) api.endSession(previousSessionId).catch(() => {})
+          sessionIdRef.current = session.id
+          connectWs(session.id)
+        })
+        .catch(() => toast.error('Could not start a conversation — please try again'))
+    }
+    startNewSessionRef.current = startNewSession
+    startNewSession()
 
     return () => {
       console.info(`[TalkInterface] effect cleanup running for session=${sessionIdRef.current}`)
@@ -242,34 +261,20 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
     setInputText('')
   }
 
-  const toggleRecording = async () => {
-    if (isRecording) {
-      mediaRecorderRef.current?.stop()
-      setIsRecording(false)
-      return
+  const sendAudioSegment = useCallback((base64Audio: string) => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return
+    setIsThinking(true)
+    wsRef.current.send(JSON.stringify({ type: 'audio', audio: base64Audio }))
+  }, [])
+
+  const { micMuted, setMicMuted, isListening, hearingSpeech, permissionDenied } =
+    useContinuousVoiceInput(connected, isThinking || showVideo, sendAudioSegment)
+
+  useEffect(() => {
+    if (permissionDenied) {
+      toast.error('Microphone access denied — you can still type your questions')
     }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const recorder = new MediaRecorder(stream)
-      const chunks: Blob[] = []
-      recorder.ondataavailable = (e) => chunks.push(e.data)
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop())
-        const blob = new Blob(chunks, { type: 'audio/webm' })
-        const buffer = await blob.arrayBuffer()
-        const b64 = btoa(new Uint8Array(buffer).reduce((s, b) => s + String.fromCharCode(b), ''))
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          setIsThinking(true)
-          wsRef.current.send(JSON.stringify({ type: 'audio', audio: b64 }))
-        }
-      }
-      recorder.start()
-      mediaRecorderRef.current = recorder
-      setIsRecording(true)
-    } catch {
-      toast.error('Microphone access denied')
-    }
-  }
+  }, [permissionDenied])
 
   return (
     <div className="min-h-screen bg-calm-paper dark:bg-calm-paperDark text-calm-ink dark:text-calm-inkDark flex flex-col">
@@ -278,11 +283,17 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
         <p className="text-sm text-calm-inkmuted dark:text-calm-inkmutedDark">
           Talking with {producerName}&apos;s stories
         </p>
-        {!connected && (
-          <span className="ml-auto text-xs text-calm-inkmuted dark:text-calm-inkmutedDark">
-            Reconnecting…
-          </span>
-        )}
+        <span className="ml-auto text-xs text-calm-inkmuted dark:text-calm-inkmutedDark">
+          {!connected
+            ? 'Reconnecting…'
+            : micMuted
+              ? 'Mic muted'
+              : hearingSpeech
+                ? 'Hearing you…'
+                : isThinking || showVideo
+                  ? 'Avatar speaking…'
+                  : 'Listening…'}
+        </span>
       </header>
 
       <main className="max-w-2xl mx-auto w-full flex-1 flex flex-col px-6 gap-6">
@@ -332,12 +343,26 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
       {/* Input bar */}
       <div className="max-w-2xl mx-auto w-full px-6 pb-8 pt-2 flex items-center gap-2">
         <button
-          onClick={toggleRecording}
-          aria-label={isRecording ? 'Stop recording' : 'Ask by voice'}
+          onClick={() => setMicMuted((m) => !m)}
+          aria-label={micMuted ? 'Unmute microphone' : 'Mute microphone'}
+          aria-pressed={micMuted}
+          title={
+            micMuted
+              ? 'Microphone muted — click to resume hands-free listening'
+              : 'Listening automatically — click to mute'
+          }
           className={`w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 transition-all
-            ${isRecording ? 'bg-red-500 text-white' : 'calm-btn-secondary !rounded-full !p-0'}`}
+            ${
+              micMuted
+                ? 'calm-btn-secondary !rounded-full !p-0'
+                : hearingSpeech
+                  ? 'bg-red-500 text-white'
+                  : isListening
+                    ? 'bg-calm-sage-500 text-white'
+                    : 'calm-btn-secondary !rounded-full !p-0'
+            }`}
         >
-          {isRecording ? <MicOff size={18} /> : <Mic size={18} />}
+          {micMuted ? <MicOff size={18} /> : <Mic size={18} />}
         </button>
         <input
           value={inputText}
