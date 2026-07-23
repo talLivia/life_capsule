@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { isJwtExpired } from '@/lib/jwt'
 
 interface User {
   id: string
@@ -54,7 +55,14 @@ export const useStore = create<AppState>()(
           activeSessionId: null,
           selectedAvatarId: null,
         }),
-      isAuthenticated: () => get().token !== null,
+      // A merely-present token isn't enough — an expired one left over from
+      // a previous session must NOT read as "logged in", or every page that
+      // gates on this (e.g. /talk) renders straight past its login prompt
+      // into a flow that's guaranteed to fail once it hits the backend.
+      isAuthenticated: () => {
+        const token = get().token
+        return token !== null && !isJwtExpired(token)
+      },
 
       // Theme
       theme: 'dark',

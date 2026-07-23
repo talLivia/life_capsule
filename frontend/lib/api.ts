@@ -1,4 +1,5 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios'
+import { isJwtExpired } from './jwt'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -12,8 +13,10 @@ function readToken(): string | null {
     const { state } = JSON.parse(stored)
     const token = state?.token
     // Treat the synthetic guest token as "no auth" — the backend falls
-    // back to demo-user when no Authorization header is present.
-    if (!token || token === 'guest') return null
+    // back to demo-user when no Authorization header is present. Same for
+    // an expired token: sending it gets rejected anyway (WS auth closes
+    // with 4401), so there's no upside to attaching it over just omitting it.
+    if (!token || token === 'guest' || isJwtExpired(token)) return null
     return token
   } catch {
     return null
