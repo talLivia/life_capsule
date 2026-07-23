@@ -425,9 +425,15 @@ async def websocket_endpoint(
                 await websocket_manager.send_message(session_id, {"type": "pong"})
 
     except WebSocketDisconnect:
+        from app.websocket import _raw_trace
+
+        _raw_trace(f"websocket_endpoint WebSocketDisconnect {session_id}")
         logger.info(f"Client disconnected from session {session_id}")
         await websocket_manager.disconnect(session_id)
     except Exception as e:
+        from app.websocket import _raw_trace
+
+        _raw_trace(f"websocket_endpoint EXCEPTION {session_id} {type(e).__name__}: {e}")
         logger.error(f"WebSocket error in session {session_id}: {e}")
         await websocket_manager.disconnect(session_id)
 

@@ -112,6 +112,20 @@ def configure_logging() -> None:
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
+
+    # DEBUG-only: also mirror everything to a plain file so it can be
+    # inspected after the fact (grep/tail) without needing to watch the
+    # live terminal — temporary, for the current STT investigation.
+    if settings.DEBUG:
+        import tempfile
+        from pathlib import Path
+
+        file_handler = logging.FileHandler(
+            Path(tempfile.gettempdir()) / "avatar_backend_debug.log", encoding="utf-8"
+        )
+        file_handler.setFormatter(PlainFormatter())
+        root.addHandler(file_handler)
+
     root.setLevel(getattr(logging, settings.LOG_LEVEL, logging.INFO))
 
     # Tame noisy third-party loggers so production logs aren't swamped.

@@ -20,6 +20,19 @@ from app.telemetry import span
 logger = logging.getLogger(__name__)
 TMPDIR = Path(tempfile.gettempdir())
 
+_RAW_TRACE_PATH = TMPDIR / "avatar_raw_trace.log"
+
+
+def _raw_trace(msg: str) -> None:
+    """Logging-module-independent trace — bypasses configure_logging()
+    entirely, for the current investigation into why request-level log
+    lines weren't reaching the configured file handler."""
+    try:
+        with open(_RAW_TRACE_PATH, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now(timezone.utc).isoformat()} {msg}\n")
+    except OSError:
+        pass
+
 # Owner-only file/dir modes — keep another user on a shared host from
 # eavesdropping on raw audio inputs or in-flight video chunks.
 _OWNER_ONLY_FILE = stat.S_IRUSR | stat.S_IWUSR  # 0o600
@@ -47,7 +60,21 @@ def _write_private_bytes(path: Path, data: bytes) -> None:
     # os.open lets us set the mode at create time so there's no readable window
     # between create and chmod. O_CREAT|O_TRUNC|O_WRONLY is the standard "open
     # for writing, truncate, create if missing" combination.
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _OWNER_ONLY_FILE)
+    #
+    # O_BINARY is critical on Windows: without it, os.open()/os.write() can
+    # open the fd in TEXT mode, silently translating every 0x0A byte in the
+    # data to 0x0D 0x0A on write. For binary audio (WebM/Opus), 0x0A occurs
+    # by chance roughly every 256 bytes, and each occurrence corrupts the
+    # container's byte-precise structure — confirmed directly: a real
+    # recording written this way decoded via PyAV as 0.06s of audio instead
+    # of its actual ~2-6s, which faster-whisper then (correctly, per the
+    # corrupted input) transcribed as empty. os.O_BINARY doesn't exist on
+    # POSIX, hence the getattr fallback to 0 (no-op there).
+    fd = os.open(
+        str(path),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0),
+        _OWNER_ONLY_FILE,
+    )
     try:
         os.write(fd, data)
     finally:
@@ -478,11 +505,15 @@ class ConnectionManager:
             if self._active_turns.get(session_id) is t:
                 self._active_turns.pop(session_id, None)
             if t.cancelled():
+                _raw_trace(f"TURN {session_id} CANCELLED (barge-in or disconnect)")
                 logger.info(f"Turn for {session_id} cancelled (barge-in or disconnect)")
                 return
             exc = t.exception()
             if exc is not None:
+                _raw_trace(f"TURN {session_id} FAILED: {exc!r}")
                 logger.error(f"Turn task for {session_id} failed: {exc!r}")
+            else:
+                _raw_trace(f"TURN {session_id} completed normally")
 
         task.add_done_callback(_done)
 
@@ -496,12 +527,23 @@ class ConnectionManager:
         self._spawn_turn(session_id, self._handle_audio_inner(session_id, audio_data))
 
     async def _handle_audio_inner(self, session_id: str, audio_data: str) -> None:
-        tmp_audio = _private_session_dir(session_id) / "input.webm"
+        _raw_trace(f"_handle_audio_inner ENTER {session_id} audio_len={len(audio_data or '')}")
+        # Unique per call — continuous listening can fire a new audio message
+        # every few seconds, and interrupt_active_turn cancelling the OLD
+        # turn's asyncio Task does NOT stop its transcribe() call already
+        # running inside asyncio.to_thread (cancellation doesn't kill the
+        # underlying thread). With a fixed "input.webm" name shared by every
+        # message in the session, the OLD turn's `finally: tmp_audio.unlink()`
+        # could delete the file out from under a NEW turn's in-flight read
+        # (or the new write could land mid-read of the old one) — exactly
+        # the kind of race that silently yields empty transcriptions.
+        tmp_audio = _private_session_dir(session_id) / f"input-{uuid.uuid4().hex}.webm"
         try:
             await self.send_message(
                 session_id,
                 {"type": "status", "message": "Transcribing audio…", "stage": "transcription"},
             )
+            _raw_trace(f"_handle_audio_inner sent status {session_id}")
 
             try:
                 raw = base64.b64decode(audio_data, validate=False)
@@ -522,9 +564,21 @@ class ConnectionManager:
             # Transcribe in the session's selected language — otherwise Whisper
             # assumes English and garbles non-English speech.
             language = self.session_data.get(session_id, {}).get("language", "en")
+            logger.info(f"Transcribing audio [{session_id}]: {len(raw)} bytes, lang={language}")
+            _raw_trace(f"_handle_audio_inner about to transcribe {session_id} bytes={len(raw)} lang={language}")
             text = await gpu_client.transcribe(str(tmp_audio), language=language)
+            _raw_trace(f"_handle_audio_inner transcribe returned {session_id} text={text!r}")
 
             if not text:
+                # Keep a copy for offline debugging — the finally block below
+                # unlinks tmp_audio regardless, so without this an empty
+                # transcription can never be inspected after the fact.
+                debug_path = TMPDIR / f"debug-failed-transcribe-{session_id}-{int(datetime.now(timezone.utc).timestamp())}.webm"
+                try:
+                    debug_path.write_bytes(raw)
+                    logger.warning(f"Empty transcription [{session_id}]: saved audio to {debug_path}")
+                except OSError:
+                    pass
                 await self.send_message(
                     session_id, {"type": "error", "message": "Could not transcribe audio"}
                 )
@@ -535,14 +589,17 @@ class ConnectionManager:
             await self._handle_text_input_inner(session_id, text)
 
         except asyncio.CancelledError:
+            _raw_trace(f"_handle_audio_inner CANCELLED {session_id}")
             raise  # propagate barge-in cancellation cleanly
         except Exception as e:
+            _raw_trace(f"_handle_audio_inner EXCEPTION {session_id} {type(e).__name__}: {e}")
             logger.error(f"Audio error [{session_id}]: {type(e).__name__}: {e}", exc_info=True)
             await self.send_message(
                 session_id, {"type": "error", "message": "Audio processing failed"}
             )
         finally:
             tmp_audio.unlink(missing_ok=True)
+            _raw_trace(f"_handle_audio_inner EXIT {session_id}")
 
     async def handle_text_input(self, session_id: str, text: str):
         """
