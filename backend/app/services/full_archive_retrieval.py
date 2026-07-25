@@ -62,10 +62,16 @@ from app.services.video_clip_assembler import (
 
 logger = logging.getLogger(__name__)
 
-# Said when the archive DOES answer the question but every answering unit has
-# already been played in this conversation — distinct from NO_STORY_FALLBACK
-# ("there's nothing about that"), which would be untrue here.
-ALREADY_SHOWN_FALLBACK = "כבר סיפרתי לך את זה — אין לי עוד משהו חדש על זה"
+# NOTE: there is deliberately no "I already told you that" response. A
+# standalone question ALWAYS gets a real answer, even when the units that
+# answer it were played earlier in the conversation. As an archive grows
+# people naturally revisit the same subject from different angles ("tell me
+# about your family", then "who is your mother?"), and each angle deserves
+# its own answer — refusing one because the footage overlaps something shown
+# earlier reads as the system being broken. Repetition ACROSS different
+# questions is expected and fine; the only place already-shown material is
+# actually withheld is the follow-up SUGGESTION (see _validate_follow_up),
+# where the whole point is to offer something MORE.
 
 
 @dataclass
@@ -156,20 +162,23 @@ make an answer shorter, and never pad to make it longer - include exactly \
 the units that genuinely answer what was asked.
 
 ALREADY SHOWN: units marked [ALREADY SHOWN] were played earlier in THIS \
-conversation. This mark is a hint about ORDERING, never a reason to answer \
-with nothing:
-- A marked unit does NOT mean its topic is finished. Look for OTHER units \
-that answer the question - very often in a DIFFERENT recording, whose \
-interview question approaches the same person or period from another \
-angle. A follow-up like "tell me something else about her" is a request to \
-KEEP GOING on that subject, so search the whole archive for more about that \
-same subject rather than concluding it was covered.
-- Prefer unseen units when both an unseen and an already-shown unit answer \
-the question equally well.
-- If the only units that answer the question are already shown, select them \
-anyway - a separate step decides what to do about that. Returning an empty \
-selection is correct ONLY when no unit in the archive answers the question \
-at all.
+conversation. This mark is ONLY a tie-breaker about which units to prefer. \
+It NEVER makes a question unanswerable:
+- ALWAYS answer the question fully. If the units that best answer it are \
+already shown, select them anyway - a fresh question deserves a real \
+answer, and people naturally revisit the same subject from different \
+angles ("tell me about your family", then "who is your mother?"). Each \
+angle gets its own answer; repeating footage across DIFFERENT questions is \
+expected and correct.
+- When an unseen unit and an already-shown unit answer the question equally \
+well, prefer the unseen one. That is all this mark is for.
+- A marked unit does NOT mean its topic is finished. For a follow-up like \
+"tell me something else about her", look for OTHER units on that same \
+subject - very often in a DIFFERENT recording, whose interview question \
+approaches the same person or period from another angle - rather than \
+concluding it was covered.
+- Returning an empty selection is correct ONLY when no unit in the archive \
+answers the question at all.
 
 FOLLOW-UP SUGGESTION (optional): after choosing the answer, check whether \
 the archive holds OTHER material genuinely related to what you just \
@@ -779,7 +788,6 @@ class UnitSelection:
 
     clips: List[ExpandedClip]
     selected_units: List[UtteranceUnit]
-    all_already_shown: bool
     # {"question": str} when the model offered a follow-up that SURVIVED
     # validation, else None. Chat text only — never spoken, never in the video.
     follow_up: Optional[dict] = None
@@ -813,16 +821,8 @@ async def select_units(
     by_id = {u.unit_id: u for u in units}
     selected = [by_id[uid] for uid in dict.fromkeys(unit_ids) if uid in by_id]
     clips = resolve_units_to_clips(unit_ids, units)
-    all_shown = bool(selected) and all(
-        _unit_key(u.segment_id, u.start_sec) in shown_keys for u in selected
-    )
     follow_up = _validate_follow_up(raw_follow_up, by_id, selected, shown_keys)
-    return UnitSelection(
-        clips=clips,
-        selected_units=selected,
-        all_already_shown=all_shown,
-        follow_up=follow_up,
-    )
+    return UnitSelection(clips=clips, selected_units=selected, follow_up=follow_up)
 
 
 def _validate_follow_up(
@@ -869,14 +869,6 @@ async def assemble_video_clip_response_v2(
     clips = selection.clips
     if not clips:
         return VideoClipResult(video_url=None, no_story=True, fallback_text=NO_STORY_FALLBACK)
-
-    # Everything that answers this question has already been played in this
-    # conversation. Replaying the identical clip reads as the system being
-    # broken, so say so instead — a DIFFERENT answer from "no story exists".
-    if selection.all_already_shown:
-        return VideoClipResult(
-            video_url=None, no_story=True, fallback_text=ALREADY_SHOWN_FALLBACK
-        )
 
     cache_key = video_clip_assembler._clip_cache_key(group_id, clips)
     cached_url = await cache_service.get(cache_key)

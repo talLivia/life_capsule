@@ -421,8 +421,7 @@ async def test_read_and_validate_ranges_happy_path_returns_validated_clips(monke
 async def test_assemble_v2_no_ranges_returns_no_story(monkeypatch):
     monkeypatch.setattr(
         ar, "select_units",
-        AsyncMock(return_value=ar.UnitSelection(clips=[], selected_units=[],
-                                                all_already_shown=False)),
+        AsyncMock(return_value=ar.UnitSelection(clips=[], selected_units=[])),
     )
 
     result = await ar.assemble_video_clip_response_v2("q", "group", "he", "sess")
@@ -436,8 +435,7 @@ async def test_assemble_v2_cache_hit_skips_ffmpeg(monkeypatch):
                              source_chunk_id="archive-read:seg-a")]
     monkeypatch.setattr(
         ar, "select_units",
-        AsyncMock(return_value=ar.UnitSelection(clips=clips, selected_units=[],
-                                                all_already_shown=False)),
+        AsyncMock(return_value=ar.UnitSelection(clips=clips, selected_units=[])),
     )
     monkeypatch.setattr(ar.cache_service, "get", AsyncMock(return_value="https://cdn/cached.mp4"))
     assemble_mock = AsyncMock()
@@ -453,8 +451,7 @@ async def test_assemble_v2_happy_path_assembles_and_caches(monkeypatch):
                              source_chunk_id="archive-read:seg-a")]
     monkeypatch.setattr(
         ar, "select_units",
-        AsyncMock(return_value=ar.UnitSelection(clips=clips, selected_units=[],
-                                                all_already_shown=False)),
+        AsyncMock(return_value=ar.UnitSelection(clips=clips, selected_units=[])),
     )
     monkeypatch.setattr(ar.cache_service, "get", AsyncMock(return_value=None))
     set_mock = AsyncMock()
@@ -476,8 +473,7 @@ async def test_assemble_v2_assembly_failure_returns_no_story(monkeypatch):
                              source_chunk_id="archive-read:seg-a")]
     monkeypatch.setattr(
         ar, "select_units",
-        AsyncMock(return_value=ar.UnitSelection(clips=clips, selected_units=[],
-                                                all_already_shown=False)),
+        AsyncMock(return_value=ar.UnitSelection(clips=clips, selected_units=[])),
     )
     monkeypatch.setattr(ar.cache_service, "get", AsyncMock(return_value=None))
     monkeypatch.setattr(
@@ -552,25 +548,25 @@ async def test_read_archive_for_ranges_fails_soft_on_llm_error(monkeypatch):
 # ── already-shown handling (visited-set wired into v2) ───────────────────────
 
 
-async def test_assemble_v2_says_nothing_new_when_all_units_already_shown(monkeypatch):
-    """The reported bug: a second question about the same person replayed the
-    identical clip. Now it must say so instead."""
+async def test_assemble_v2_still_answers_when_units_were_already_shown(monkeypatch):
+    """A standalone question ALWAYS gets a real answer, even when the units
+    answering it were played earlier ("tell me about your family" then "who is
+    your mother?"). Already-shown is an ordering hint, never a block."""
     clips = [ar.ExpandedClip(raw_segment_id="seg-a", start_sec=0.0, end_sec=1.2,
                              source_chunk_id="archive-read:seg-a")]
     monkeypatch.setattr(
         ar, "select_units",
-        AsyncMock(return_value=ar.UnitSelection(clips=clips, selected_units=[],
-                                                all_already_shown=True)),
+        AsyncMock(return_value=ar.UnitSelection(clips=clips, selected_units=[])),
     )
-    assemble_mock = AsyncMock()
-    monkeypatch.setattr(ar.video_clip_assembler, "_assemble_and_upload_clip", assemble_mock)
+    monkeypatch.setattr(ar.cache_service, "get", AsyncMock(return_value=None))
+    monkeypatch.setattr(ar.cache_service, "set", AsyncMock(return_value=True))
+    monkeypatch.setattr(ar.cache_service, "add_visited", AsyncMock(return_value=True))
+    monkeypatch.setattr(ar.video_clip_assembler, "_assemble_and_upload_clip",
+                        AsyncMock(return_value="https://cdn/x.mp4"))
 
     result = await ar.assemble_video_clip_response_v2("q", "group", "he", "sess")
-    assert result.no_story is True
-    assert result.video_url is None
-    assert result.fallback_text == ar.ALREADY_SHOWN_FALLBACK
-    assert result.fallback_text != NO_STORY_FALLBACK  # a DIFFERENT answer
-    assemble_mock.assert_not_called()
+    assert result.no_story is False
+    assert result.video_url == "https://cdn/x.mp4"
 
 
 def test_transcript_marks_already_shown_units():
@@ -705,7 +701,7 @@ async def test_assemble_v2_passes_follow_up_through(monkeypatch):
     monkeypatch.setattr(
         ar, "select_units",
         AsyncMock(return_value=ar.UnitSelection(
-            clips=clips, selected_units=[], all_already_shown=False,
+            clips=clips, selected_units=[],
             follow_up={"question": "want to hear how I knew?"})),
     )
     monkeypatch.setattr(ar.cache_service, "get", AsyncMock(return_value=None))
