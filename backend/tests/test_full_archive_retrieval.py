@@ -11,6 +11,8 @@ modifying it).
 
 from unittest.mock import AsyncMock
 
+import asyncio
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -815,3 +817,44 @@ async def test_empty_archive_is_not_cached(monkeypatch):
     a, e, u = await ar._archive_bundle("group-empty")
     assert (a, e, u) == ([], {}, [])
     assert "group-empty" not in ar._ARCHIVE_CACHE
+
+
+async def test_warm_archive_cache_populates_so_the_next_question_is_warm(monkeypatch):
+    archive = _resolvable_archive()
+    loads = {"n": 0}
+
+    async def fake_load(_gid):
+        loads["n"] += 1
+        return archive
+
+    monkeypatch.setattr(ar, "_archive_version", AsyncMock(return_value=(2, "t1", "t0")))
+    monkeypatch.setattr(ar, "_load_archive", fake_load)
+    monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={}))
+
+    assert await ar.warm_archive_cache("group-1") is True
+    assert "group-1" in ar._ARCHIVE_CACHE
+
+    await ar._archive_bundle("group-1")
+    assert loads["n"] == 1, "the warm did the build; the question must reuse it"
+
+
+async def test_warm_archive_cache_is_fail_soft(monkeypatch):
+    """A failed warm must leave the old behaviour (next question rebuilds),
+    never break ingestion or poison the cache."""
+    monkeypatch.setattr(
+        ar, "_archive_bundle", AsyncMock(side_effect=RuntimeError("neo4j unreachable"))
+    )
+    assert await ar.warm_archive_cache("group-1") is False
+    assert "group-1" not in ar._ARCHIVE_CACHE
+
+
+async def test_warm_archive_cache_bounded_by_timeout(monkeypatch):
+    """A hung graph must not wedge the ingestion task forever."""
+    async def never(_gid):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(ar, "_archive_bundle", never)
+    monkeypatch.setattr(ar, "_WARM_TIMEOUT_SECONDS", 0.05)
+
+    assert await ar.warm_archive_cache("group-1") is False
+    assert "group-1" not in ar._ARCHIVE_CACHE

@@ -38,6 +38,7 @@ NO_STORY_FALLBACK as every other mode.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -664,6 +665,41 @@ def invalidate_archive_cache(group_id: Optional[str] = None) -> None:
         _ARCHIVE_CACHE.clear()
     else:
         _ARCHIVE_CACHE.pop(group_id, None)
+
+
+# Rebuilding costs up to ~15s, almost all of it Neo4j. Bounded so a hung or
+# unreachable graph can't wedge the ingestion task indefinitely — a failed
+# warm just means the next question rebuilds, which is the old behaviour.
+_WARM_TIMEOUT_SECONDS = 60
+
+
+async def warm_archive_cache(group_id: str) -> bool:
+    """Rebuild a producer's cache NOW, so the cost lands on ingestion (offline,
+    nobody waiting) instead of on whoever asks the first question afterwards —
+    that person was paying the full ~15s rebuild.
+
+    Fail-soft by design: if this doesn't succeed the cache is simply empty and
+    the next question rebuilds exactly as before, so warming can never make
+    things worse than not warming."""
+    started = time.perf_counter()
+    try:
+        archive, entity_map, units = await asyncio.wait_for(
+            _archive_bundle(group_id), timeout=_WARM_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"Archive cache warm for {group_id} timed out after "
+            f"{_WARM_TIMEOUT_SECONDS}s; next question will rebuild"
+        )
+        return False
+    except Exception as e:
+        logger.warning(f"Archive cache warm for {group_id} failed: {e}")
+        return False
+    logger.info(
+        f"Archive cache warmed for {group_id} in {time.perf_counter() - started:.2f}s "
+        f"({len(archive)} recordings, {len(units)} units, {len(entity_map)} entities)"
+    )
+    return True
 
 
 async def _build_entity_map(archive: List[ArchiveSegment], group_id: str) -> Dict[str, List[str]]:

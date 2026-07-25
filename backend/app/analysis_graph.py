@@ -631,12 +631,24 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
     # archive/entity-map/units so the very next question sees it, rather than
     # waiting for the version check to notice. A stale cache here would mean a
     # freshly recorded story silently not existing as far as answers go.
+    #
+    # Then REBUILD it here rather than leaving the next question to do it.
+    # Rebuilding costs up to ~15s (almost entirely the per-recording Neo4j
+    # fan-out), and ingestion is offline with nobody waiting — whereas the
+    # first person to ask afterwards very much is. Awaited rather than fired
+    # and forgotten, so it cannot race that first question into doing the same
+    # work twice; warm_archive_cache is internally bounded and fail-soft, so
+    # the worst case is simply the old behaviour.
     try:
-        from app.services.full_archive_retrieval import invalidate_archive_cache
+        from app.services.full_archive_retrieval import (
+            invalidate_archive_cache,
+            warm_archive_cache,
+        )
 
         invalidate_archive_cache(state["group_id"])
-    except Exception as e:  # never fail ingestion over a cache drop
-        logger.warning(f"Could not invalidate archive cache for {state['group_id']}: {e}")
+        await warm_archive_cache(state["group_id"])
+    except Exception as e:  # never fail ingestion over a cache refresh
+        logger.warning(f"Could not refresh archive cache for {state['group_id']}: {e}")
 
     return {"status": "ready"}
 
