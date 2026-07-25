@@ -112,6 +112,27 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     ELEVENLABS_API_KEY: Optional[str] = None
+    # MUST be declared even if unused: pydantic-settings defaults to
+    # extra="forbid", so an undeclared key sitting in .env makes Settings()
+    # raise at import time and takes the whole backend down on startup.
+    DEEPGRAM_API_KEY: str = ""
+
+    # Which engine transcribes the LIVE conversation ("local" | "deepgram").
+    # Ingestion is NOT affected by this and always uses local
+    # WHISPER_MODEL_INGESTION — it runs offline where accuracy beats latency
+    # and there is no reason to send an entire archive to a third party.
+    #
+    # Defaults to "local" so a deployment with no Deepgram key keeps working;
+    # .env opts in. Flipping this back to "local" is the instant rollback if
+    # Deepgram ever misbehaves, and the local model stays warm precisely so
+    # that rollback (and the automatic per-call fallback in stt.py) is real.
+    LIVE_STT_PROVIDER: str = "local"
+    # nova-3 is the only Deepgram model that supports Hebrew — flux-general-*
+    # returns HTTP 400 for language=he (verified), and nova-2 doesn't list it.
+    DEEPGRAM_MODEL: str = "nova-3"
+    # Bounded like every other network call here; a stuck request must never
+    # hang a /talk turn. Measured 1.6-2.6s round-trip on real archive audio.
+    DEEPGRAM_TIMEOUT_SECONDS: int = 30
 
     # Point the OpenAI-compatible client at a different server — Ollama
     # (http://localhost:11434/v1), vLLM, LM Studio, OpenRouter, etc.

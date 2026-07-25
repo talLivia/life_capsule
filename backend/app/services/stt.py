@@ -17,7 +17,9 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Union
+from urllib.parse import urlencode
 
+import aiohttp
 import numpy as np
 import soundfile as sf
 
@@ -97,6 +99,62 @@ class STTService:
         logger.info(f"Whisper model {model_name!r} loaded")
         return model
 
+    def _use_deepgram(self) -> bool:
+        """Live path only, and only when actually configured — a missing key
+        silently means 'stay local' rather than breaking every turn."""
+        return (
+            settings.LIVE_STT_PROVIDER.lower() == "deepgram"
+            and bool(settings.DEEPGRAM_API_KEY)
+        )
+
+    async def _transcribe_deepgram(
+        self, audio_data: Union[bytes, str], language: str
+    ) -> str:
+        """One batch request to Deepgram's pre-recorded endpoint.
+
+        Sends the audio as a binary body (the local-file form of the same
+        endpoint the URL form uses). smart_format is on: on this archive's
+        Hebrew it only ever added a trailing period — the digits-vs-words
+        difference from Whisper ("4 אחים" vs "ארבעה אחים") is inherent to
+        nova-3 and appears with the flag off too. Harmless either way,
+        because nothing matches this text literally: archive units come from
+        Whisper at ingestion, and the question is matched semantically by the
+        archive-read LLM."""
+        audio_bytes = (
+            audio_data if isinstance(audio_data, (bytes, bytearray))
+            else Path(audio_data).read_bytes()
+        )
+        params = urlencode({
+            "model": settings.DEEPGRAM_MODEL,
+            "language": language,
+            "smart_format": "true",
+        })
+        url = f"https://api.deepgram.com/v1/listen?{params}"
+
+        timeout = aiohttp.ClientTimeout(total=settings.DEEPGRAM_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                url,
+                data=audio_bytes,
+                headers={
+                    "Authorization": f"Token {settings.DEEPGRAM_API_KEY}",
+                    "Content-Type": "application/octet-stream",
+                },
+            ) as resp:
+                if resp.status != 200:
+                    # Body may carry the reason (e.g. an unsupported language)
+                    # but must never be logged with the request headers.
+                    detail = (await resp.text())[:200]
+                    raise RuntimeError(f"Deepgram HTTP {resp.status}: {detail}")
+                body = await resp.json()
+
+        try:
+            text = body["results"]["channels"][0]["alternatives"][0]["transcript"]
+        except (KeyError, IndexError) as e:
+            raise RuntimeError("Deepgram response missing transcript") from e
+        _raw_trace(f"[stt] deepgram RETURN chars={len(text)}")
+        return text.strip()
+
     async def initialize(self) -> None:
         """Eager warm-up for the LIVE-conversation model. Optional —
         `transcribe` will load on first call too. Does NOT load the
@@ -125,9 +183,25 @@ class STTService:
     async def transcribe(self, audio_data: Union[bytes, str], language: str = "en") -> str:
         """Live-conversation STT (websocket.py's _handle_audio_inner, via
         gpu_client.py) — always uses WHISPER_MODEL (fast), never
-        WHISPER_MODEL_INGESTION."""
+        WHISPER_MODEL_INGESTION.
+
+        With LIVE_STT_PROVIDER=deepgram this calls Deepgram instead, falling
+        back to the local model if that fails for any reason. BENCHMARKED on
+        this archive's real Hebrew audio: local medium produced an error in
+        4/4 samples (one total failure — 5.3s of clear speech came back as
+        "שירת איתי בחלב") at 8.9-14.5s per clip, while Deepgram nova-3 got
+        4/4 right in 1.6-2.6s. Ingestion is deliberately untouched."""
         if self.provider != "whisper":
             raise ValueError(f"Unsupported STT provider: {self.provider}")
+
+        if self._use_deepgram():
+            try:
+                return await self._transcribe_deepgram(audio_data, language)
+            except Exception as e:
+                # Never fail the turn on a third-party hiccup: the local model
+                # is kept warm exactly so this fallback is real, not notional.
+                logger.warning(f"Deepgram live STT failed, falling back to local: {e}")
+
         if self.model is None:
             await self.initialize()
         try:

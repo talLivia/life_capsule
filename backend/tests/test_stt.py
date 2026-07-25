@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 from faster_whisper.transcribe import Segment, Word
 
+from app.config import settings
 from app.services.stt import STTService
 
 pytestmark = pytest.mark.asyncio
@@ -43,6 +44,16 @@ def _segment(start, end, text, words=None):
 
 def _word(word, start, end):
     return Word(start=start, end=end, word=word, probability=0.9)
+
+
+@pytest.fixture(autouse=True)
+def _force_local_stt(monkeypatch):
+    """Pin every test to the LOCAL live path regardless of what .env says.
+    Without this, LIVE_STT_PROVIDER=deepgram would send the whole suite down
+    the Deepgram branch — tests would depend on a key and the network, and
+    would only "pass" because a fake path raises before the request goes out.
+    The Deepgram tests below opt in explicitly."""
+    monkeypatch.setattr(settings, "LIVE_STT_PROVIDER", "local")
 
 
 @pytest.fixture
@@ -227,3 +238,75 @@ async def test_transcribe_with_timestamps_lazily_loads_ingestion_model(monkeypat
 
     assert result["text"] == "hi"
     fake_model.transcribe.assert_called_once()
+
+
+# ── live-path provider routing (Deepgram batch swap) ────────────────────────
+
+
+async def test_use_deepgram_requires_both_flag_and_key(service, monkeypatch):
+    monkeypatch.setattr(settings, "LIVE_STT_PROVIDER", "deepgram")
+    monkeypatch.setattr(settings, "DEEPGRAM_API_KEY", "")
+    assert service._use_deepgram() is False, "no key must mean stay local"
+
+    monkeypatch.setattr(settings, "DEEPGRAM_API_KEY", "present")
+    assert service._use_deepgram() is True
+
+    monkeypatch.setattr(settings, "LIVE_STT_PROVIDER", "local")
+    assert service._use_deepgram() is False
+
+
+async def test_live_transcribe_uses_deepgram_and_skips_the_local_model(
+    service, monkeypatch
+):
+    monkeypatch.setattr(settings, "LIVE_STT_PROVIDER", "deepgram")
+    monkeypatch.setattr(settings, "DEEPGRAM_API_KEY", "present")
+
+    async def fake_dg(audio_data, language):
+        return "שירתתי בחיל האוויר"
+
+    monkeypatch.setattr(service, "_transcribe_deepgram", fake_dg)
+
+    result = await service.transcribe(b"audio", language="he")
+
+    assert result == "שירתתי בחיל האוויר"
+    service.model.transcribe.assert_not_called()  # local model untouched
+
+
+async def test_live_transcribe_falls_back_to_local_when_deepgram_fails(
+    service, monkeypatch
+):
+    """A third-party outage must never fail the turn — the local model is kept
+    warm precisely so this fallback is real."""
+    monkeypatch.setattr(settings, "LIVE_STT_PROVIDER", "deepgram")
+    monkeypatch.setattr(settings, "DEEPGRAM_API_KEY", "present")
+
+    async def boom(audio_data, language):
+        raise RuntimeError("Deepgram HTTP 503")
+
+    monkeypatch.setattr(service, "_transcribe_deepgram", boom)
+    segments = [_segment(0.0, 1.0, "fallback text", words=[_word("fallback", 0.0, 1.0)])]
+    service.model.transcribe.return_value = (segments, _fake_info(language="he"))
+
+    result = await service.transcribe(b"audio", language="he")
+
+    assert result == "fallback text"
+    service.model.transcribe.assert_called_once()
+
+
+async def test_ingestion_never_uses_deepgram(service, monkeypatch):
+    """The flag governs the LIVE path only. Ingestion runs offline where
+    accuracy beats latency, and must not ship the archive to a third party."""
+    monkeypatch.setattr(settings, "LIVE_STT_PROVIDER", "deepgram")
+    monkeypatch.setattr(settings, "DEEPGRAM_API_KEY", "present")
+
+    async def should_not_run(audio_data, language):
+        raise AssertionError("ingestion must never call Deepgram")
+
+    monkeypatch.setattr(service, "_transcribe_deepgram", should_not_run)
+    segments = [_segment(0.0, 1.0, "ingested", words=[_word("ingested", 0.0, 1.0)])]
+    service.ingestion_model.transcribe.return_value = (segments, _fake_info(language="he"))
+
+    result = await service.transcribe_with_timestamps(b"audio", language="he")
+
+    assert result["text"] == "ingested"
+    service.ingestion_model.transcribe.assert_called_once()
