@@ -142,6 +142,22 @@ class Settings(BaseSettings):
     # Empty string => fall back to LLM_MODEL (no override).
     ARCHIVE_READ_MODEL: str = ""
 
+    # Thinking budget for that same archive-read call. PINNED FOR LATENCY,
+    # NOT FOR DETERMINISM — do not assume this controls reproducibility.
+    # MEASURED (6 identical requests per question, seed + temperature=0 fixed):
+    #   * Gemini does NOT honour it as a hard limit: at budget=128 the call
+    #     actually spent 656-806 thinking tokens, and budgets 128 and 512
+    #     produced identical thinking. It is a soft hint.
+    #   * NO budget makes the output reproducible. Thinking-token counts vary
+    #     run to run at every setting, and where a unit choice is marginal the
+    #     answer varies with them.
+    #   * What it DOES buy: roughly 2x lower latency (~2.3s vs ~4.6s on the
+    #     pronoun follow-up; ~3.2s vs ~6.9s on a broad question) at identical
+    #     quality on every core case — the pronoun follow-up resolved 24/24
+    #     across budgets 128/512/1024 and dynamic.
+    # 0 is rejected by gemini-flash-latest (400); None/unset = dynamic.
+    ARCHIVE_READ_THINKING_BUDGET: int = 128
+
     # Avatar Engine
     AVATAR_ENGINE: str = "musetalk"  # musetalk, simple
     AVATAR_RESOLUTION: int = 512

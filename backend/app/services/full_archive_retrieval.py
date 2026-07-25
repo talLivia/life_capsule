@@ -698,6 +698,8 @@ async def _read_archive_for_ranges(
             # the one call in the pipeline doing hard reasoning over the whole
             # archive; the rest stay on the cheaper default. Empty => default.
             model=settings.ARCHIVE_READ_MODEL or None,
+            # Latency lever, NOT a determinism one — see the setting's comment.
+            thinking_budget=settings.ARCHIVE_READ_THINKING_BUDGET or None,
         )
     except Exception as e:
         logger.warning(f"Archive-read LLM call failed, treating as no-story: {e}")

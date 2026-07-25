@@ -94,6 +94,18 @@ LLM_CALL_TIMEOUT_SECONDS = 30
 # benchmark, so this is a minor lever — v2's real accuracy ceiling is its
 # phrase-level time resolution, not the seed. Accuracy = IoU vs
 # known-correct answers, "brothers" (tight 3.3-12.3 siblings range) primary.
+#
+# IMPORTANT LIMIT (measured, 2026-07): a fixed seed only makes output
+# reproducible for models that do NOT think. It holds for
+# gemini-flash-lite-latest (0 thinking tokens, 6/6 identical output on every
+# question tested). It does NOT hold for thinking models such as
+# gemini-flash-latest, now used for the archive-read call: identical
+# prompt+seed produced VARYING thinking-token counts (e.g. 1475 vs 1917) and,
+# where a selection was marginal, different answers. Pinning
+# thinking_budget does not fix this — see generate_response's docstring.
+# So: seed still pins every OTHER call here, but the archive-read call is
+# knowingly non-deterministic on marginal choices (CLAUDE.md records why that
+# tradeoff was accepted).
 _DETERMINISTIC_SEED = 7
 
 
@@ -224,6 +236,7 @@ class LLMService:
         thinking: bool = False,
         temperature: Optional[float] = None,
         model: Optional[str] = None,
+        thinking_budget: Optional[int] = None,
     ) -> str:
         """`temperature` overrides settings.LLM_TEMPERATURE for this call only
         — e.g. Prompt 6's topic classifier wants temperature=0 (deterministic)
@@ -234,7 +247,14 @@ class LLMService:
         where the small model is right, while one or two do hard reasoning over
         the whole archive and are worth a stronger (pricier, slower) model.
         Passing it per call keeps that choice explicit at each site instead of
-        forcing one global model on twelve very different jobs."""
+        forcing one global model on twelve very different jobs.
+
+        `thinking_budget` (Gemini only) caps the model's internal reasoning.
+        MEASURED: Gemini treats it as a SOFT hint, not a hard limit — at
+        budget=128 the archive-read call actually spent 656-806 thinking
+        tokens, and budgets of 128 and 512 produced identical thinking. It is
+        therefore a LATENCY lever only; it does NOT make output reproducible
+        (see full_archive_retrieval's ARCHIVE_READ_THINKING_BUDGET note)."""
         if self.provider == "anthropic":
             return await self._generate_anthropic(
                 messages, system_prompt, thinking, temperature, model
@@ -242,7 +262,9 @@ class LLMService:
         if self.provider == "openai":
             return await self._generate_openai(messages, system_prompt, temperature, model)
         if self.provider == "gemini":
-            return await self._generate_gemini(messages, system_prompt, temperature, model)
+            return await self._generate_gemini(
+                messages, system_prompt, temperature, model, thinking_budget
+            )
         raise LLMError(f"Unsupported LLM provider: {self.provider}")
 
     async def _generate_anthropic(
@@ -334,16 +356,23 @@ class LLMService:
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         model: Optional[str] = None,
+        thinking_budget: Optional[int] = None,
     ) -> str:
         if not system_prompt:
             raise LLMError("system_prompt is required — see module docstring")
 
-        config = genai_types.GenerateContentConfig(
+        config_kwargs: dict = dict(
             temperature=temperature if temperature is not None else self.temperature,
             max_output_tokens=self.max_tokens,
             system_instruction=system_prompt,
             seed=_DETERMINISTIC_SEED,  # reproducibility — see constant's comment
         )
+        if thinking_budget is not None:
+            # Soft cap, latency lever only — see generate_response's docstring.
+            config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
+                thinking_budget=thinking_budget
+            )
+        config = genai_types.GenerateContentConfig(**config_kwargs)
         try:
             response = await self.client.aio.models.generate_content(
                 model=model or self.model,

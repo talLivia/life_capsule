@@ -1,0 +1,110 @@
+# life_capsule — engineering notes
+
+A family story archive. A **producer** records life-story segments at `/record`;
+their **family** talk to the archive at `/talk`. Answers are always the
+producer's own recorded footage — the system never generates speech on their
+behalf.
+
+## Chat modes
+
+The producer's `User.chat_mode` selects one mode for everyone talking to them:
+
+| mode | how an answer is produced |
+| --- | --- |
+| `avatar` | LLM reply → TTS → MuseTalk lip-sync (`ChatInterface`, `TalkInterface`) |
+| `video_clips` | Prompt 11-14 chunk retrieval → trimmed original clips |
+| `video_clips_v2` | Prompt 15 whole-archive read → trimmed original clips |
+
+Both video-clip modes share one WS contract and one frontend behaviour hook
+(`frontend/lib/useVideoClipChat.ts`); `/talk` and the producer's own chat
+screen wrap it in **different layouts** — share the logic, not the layout.
+
+## video_clips_v2: selection is by utterance UNIT, not by time
+
+`backend/app/services/full_archive_retrieval.py` splits every recording into
+**utterance units** at the pauses the speaker actually took. The pause
+threshold is the 90th percentile of *that recording's own* inter-word gap
+distribution — not a constant — so it adapts to how fast someone speaks.
+
+The model returns **unit ids**; final times are derived from the units. Because
+half a unit cannot be selected, **cutting mid-sentence is structurally
+impossible**, which no prompt wording could guarantee back when the model
+emitted raw `{start_sec, end_sec}`. Units are numbered across the *whole*
+archive so one answer can draw on several recordings.
+
+Two things follow from this design and should not be "fixed":
+
+- **Breadth falls out of the question.** A narrow question selects one unit, a
+  broad one selects many. There is deliberately no duration cap, no
+  question-type classifier, and no length heuristic anywhere in the code.
+- **Repetition across different questions is expected.** A standalone question
+  always gets a real answer even if its footage was shown earlier — people
+  revisit a subject from different angles ("tell me about your family", then
+  "who is your mother?"). Already-shown material is only withheld from
+  *follow-up suggestions*, where the point is to offer something *more*.
+
+The **interview question** above each recording is load-bearing context, not
+metadata: it identifies people the words never name ("the right person", "my
+commander"). Unnamed referents cannot be resolved via the entity map — the
+extractor is a *named*-entity extractor, and it correctly returns `[]` for a
+spouse who is never named (verified identical across flash-lite, flash, and
+pro). The interview question is the anchor that works instead.
+
+## ACCEPTED: the archive-read call is non-deterministic on marginal units
+
+`ARCHIVE_READ_MODEL=gemini-flash-latest` is a **thinking** model, and Gemini's
+`seed` does not control the thinking path. Measured over 6 identical requests
+per question (seed and `temperature=0` fixed):
+
+- Thinking-token counts vary run to run at **every** setting (e.g. 1475 vs
+  1917), and where a unit choice is marginal the answer varies with them.
+- `ARCHIVE_READ_THINKING_BUDGET` does **not** fix this. Gemini treats it as a
+  soft hint: at `budget=128` the call actually spent 656-806 thinking tokens,
+  and 128 vs 512 produced identical thinking. `budget=0` is rejected (400).
+  **It is pinned for LATENCY (~2x faster), not for reproducibility.**
+
+**What varies:** ±1-2 *peripheral* units on broad questions — e.g. `family`
+gains/loses `u4`/`u16`, `army-broad` gains/loses `u10`.
+**What does not:** core answers. `brothers`, the pronoun follow-up, and
+`montreal` were identical across ~96 calls, and the 7 scored eval questions
+show stdev **0.000** over 5 runs.
+
+This is accepted deliberately. The reproducible alternative
+(`gemini-flash-lite-latest`, 0 thinking tokens, 6/6 identical everywhere)
+**loses the follow-up pronoun resolution** — "משהו מעניין נוסף שקשור אליה"
+finding the "moment I knew she was the one" recording — and regresses Montreal
+by dropping a unit. Determinism is not worth that.
+
+**Do not re-tune prompt wording to chase breadth changes.** Three apparent
+"narrowings" were investigated; the dominant cause was this run-to-run
+variance, not the wording. Reword only with a measured before/after across
+multiple runs.
+
+## Evals
+
+```bash
+python scripts/rebaseline_accuracy.py     # v2 accuracy as a MEAN over runs (use this)
+python scripts/compare_retrieval_modes.py # v1 vs v2, repeated-run consistency
+python scripts/seed_sweep.py              # single-run accuracy vs known-correct (IoU)
+```
+
+Quote accuracy as a **mean over runs**, not one figure. Current baseline:
+**v2 = 0.991 (stdev 0.000 over 5 runs, 7 scored questions)**. Note the scored
+set contains no *broad* question, which is exactly where the variance lives —
+a known gap in the eval, not a claim that nothing varies.
+
+## Local environment gotchas
+
+- **Redis is not running locally.** `cache_service` silently no-ops, so
+  anything built on it does nothing in dev. v2's shown-unit memory therefore
+  lives in `Message.message_metadata` (Postgres), not the Redis visited-set —
+  it also needs unit granularity, which the segment-level visited-set lacks.
+- **Whisper `medium` on CPU** costs ~9s per spoken question. Deliberate:
+  `small` garbles Hebrew badly enough to break retrieval. Loaded once at
+  startup (`main.py`), not per question.
+- Model strength is a **per-call** decision (`generate_response(model=...)`).
+  Only the archive-read call is upgraded; the other 11 LLM call sites stay on
+  `LLM_MODEL`. v1's coreference call and ingestion entity extraction are the
+  next candidates if they ever matter.
+- Windows: `asyncio.create_subprocess_exec` is unavailable under the pinned
+  event-loop policy — shell out via `asyncio.to_thread(subprocess.run, ...)`.
