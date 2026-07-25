@@ -29,9 +29,11 @@ import { pickPreferredAudioDevice } from '@/lib/audioDevices'
 //   without risking a normal sentence (which yields well over 400ms of
 //   above-threshold time). CUMULATIVE above-threshold, not wall-clock (see
 //   the onstop handler).
-// If speech still under-registers, it's the calibrated THRESHOLD being too
-// high for the room — check the "[voice] calibrated" / "segment ended
-// spokeMs=" console logs, not these two numbers.
+// If speech still mis-registers, the thing to look at is the ROLLING NOISE
+// FLOOR and the sustained-onset check below — not these two numbers, and not
+// AMBIENT_MARGIN. The "[voice] speech onset" log prints level, threshold and
+// the live floor together, which is what tells you whether the floor is
+// tracking the room correctly.
 const SILENCE_DURATION_MS = 1000
 const MIN_SPEECH_MS = 400
 // Hard ceiling on one segment. End-of-turn is only detected AFTER speech is
@@ -54,7 +56,26 @@ const HEARING_INDICATOR_GRACE_MS = 250
 // mics/rooms/gain settings.
 const FALLBACK_SPEECH_LEVEL_THRESHOLD = 10
 const AMBIENT_CALIBRATION_MS = 500
+// Kept at 8 ON PURPOSE. We have now been round the "raise/lower a constant"
+// loop three times and it never held, because the problem was never the
+// number — it was that the number was fixed FOREVER from a single 500ms
+// sample taken in the first moment of the stream. Two things guarantee that
+// sample is unrepresentative: autoGainControl is on, so the browser is still
+// ramping gain when we measure and keeps changing it afterwards (during quiet
+// it raises gain, lifting ambient above a threshold calibrated at lower
+// gain); and a room's noise simply changes after page load. The fix is
+// structural — a rolling floor plus a sustained-onset requirement, both
+// below — so this margin no longer has to be right for every room and every
+// moment, only reasonable relative to a floor that tracks reality.
 const AMBIENT_MARGIN = 8
+// How fast the rolling noise floor follows the room, as an EMA time constant.
+// Slow enough that a pause mid-sentence doesn't drag it up into the
+// speaker's voice; fast enough to follow a fan switching on within seconds.
+const NOISE_FLOOR_TAU_MS = 3000
+// Speech must hold above the threshold CONTINUOUSLY for this long before it
+// counts as a turn starting. This is what actually rejects background noise:
+// noise crosses the line in short spikes, speech does not.
+const SPEECH_ONSET_MS = 250
 // Human speech energy is concentrated below ~4kHz; averaging the FULL FFT
 // spectrum (up to ~24kHz with a typical 48kHz sample rate) dilutes the
 // signal with ~85% of bins that are near-zero regardless of speech, badly
@@ -118,6 +139,14 @@ export function useContinuousVoiceInput(
   const speechMsAccumulatedRef = useRef(0)
   const lastVadTickAtRef = useRef<number | null>(null)
   const speechThresholdRef = useRef(FALLBACK_SPEECH_LEVEL_THRESHOLD)
+  // Rolling estimate of the room's current noise level, seeded by the one-off
+  // calibration and then continuously updated from quiet frames. This is the
+  // thing that makes the threshold survive AGC drift and a room that gets
+  // noisier after page load.
+  const noiseFloorRef = useRef(0)
+  // When the current continuous run above the threshold began (null when
+  // below it) — drives the SPEECH_ONSET_MS sustained-onset check.
+  const onsetStartedAtRef = useRef<number | null>(null)
   const voiceBinCountRef = useRef(0)
   const avatarBusyRef = useRef(false)
   // Set the instant a segment is sent, cleared once `avatarBusy` actually
@@ -200,15 +229,37 @@ export function useContinuousVoiceInput(
       const dt = lastVadTickAtRef.current === null ? 0 : now - lastVadTickAtRef.current
       lastVadTickAtRef.current = now
 
-      if (level > speechThresholdRef.current) {
-        speechMsAccumulatedRef.current += dt
-        if (speechDetectedAtRef.current === null) {
-          console.info('[voice] speech detected, level=', level, 'threshold=', speechThresholdRef.current)
-          speechDetectedAtRef.current = now
+      // Threshold is derived from the ROLLING noise floor, not a number fixed
+      // once at page load — see noiseFloorRef.
+      const threshold = Math.max(
+        noiseFloorRef.current + AMBIENT_MARGIN,
+        FALLBACK_SPEECH_LEVEL_THRESHOLD
+      )
+      speechThresholdRef.current = threshold
+
+      if (level > threshold) {
+        // SUSTAINED onset: a single frame over the line is not speech. Room
+        // noise crosses the threshold in brief spikes, and the old code
+        // latched `speechDetectedAt` on the FIRST such frame, after which
+        // sporadic spikes accumulated toward MIN_SPEECH_MS until a segment of
+        // pure background noise got sent. Speech has to hold the line
+        // continuously for SPEECH_ONSET_MS before it counts.
+        if (onsetStartedAtRef.current === null) onsetStartedAtRef.current = now
+        if (now - onsetStartedAtRef.current >= SPEECH_ONSET_MS) {
+          speechMsAccumulatedRef.current += dt
+          if (speechDetectedAtRef.current === null) {
+            console.info(
+              '[voice] speech onset, level=', level.toFixed(1),
+              'threshold=', threshold.toFixed(1),
+              'noiseFloor=', noiseFloorRef.current.toFixed(1)
+            )
+            speechDetectedAtRef.current = now
+          }
+          silenceStartRef.current = null
+          setHearingSpeech(true)
         }
-        silenceStartRef.current = null
-        setHearingSpeech(true)
       } else if (speechDetectedAtRef.current !== null) {
+        onsetStartedAtRef.current = null
         if (silenceStartRef.current === null) {
           silenceStartRef.current = now
         } else if (now - silenceStartRef.current >= SILENCE_DURATION_MS) {
@@ -217,6 +268,16 @@ export function useContinuousVoiceInput(
         }
         if (silenceStartRef.current !== null && now - silenceStartRef.current >= HEARING_INDICATOR_GRACE_MS) {
           setHearingSpeech(false)
+        }
+      } else {
+        // Quiet frame with no speech in progress — this is what ambient noise
+        // actually sounds like right now, so it's what the floor tracks.
+        // Deliberately NOT updated while speech is in progress, or the
+        // speaker's own voice would drag the floor up and cut them off.
+        onsetStartedAtRef.current = null
+        if (dt > 0) {
+          const alpha = Math.min(1, dt / NOISE_FLOOR_TAU_MS)
+          noiseFloorRef.current += (level - noiseFloorRef.current) * alpha
         }
       }
       vadRafRef.current = requestAnimationFrame(runVadTick)
@@ -240,6 +301,7 @@ export function useContinuousVoiceInput(
       segmentChunksRef.current = []
       segmentStartedAtRef.current = Date.now()
       speechDetectedAtRef.current = null
+      onsetStartedAtRef.current = null
       silenceStartRef.current = null
       speechMsAccumulatedRef.current = 0
       lastVadTickAtRef.current = null
@@ -433,6 +495,10 @@ export function useContinuousVoiceInput(
           sample()
         })
         if (!cancelled) {
+          // SEED only — runVadTick keeps this moving from here on. A bad
+          // reading here (AGC still ramping, someone talking during load) is
+          // now self-correcting within a few seconds instead of permanent.
+          noiseFloorRef.current = ambientFloor
           speechThresholdRef.current = Math.max(
             ambientFloor + AMBIENT_MARGIN,
             FALLBACK_SPEECH_LEVEL_THRESHOLD
