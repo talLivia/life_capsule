@@ -78,15 +78,24 @@ export function VideoClipTalkInterface({ avatarId, producerName }: VideoClipTalk
               className={`max-w-[85%] ${m.role === 'user' ? 'self-end' : 'self-start'}`}
             >
               {m.videoUrl ? (
-                <video
-                  src={m.videoUrl}
-                  controls
-                  autoPlay
-                  onPlay={() => setIsClipPlaying(true)}
-                  onPause={() => setIsClipPlaying(false)}
-                  onEnded={() => setIsClipPlaying(false)}
-                  className="w-full rounded-2xl border border-calm-border dark:border-calm-borderDark"
-                />
+                <div className="flex flex-col gap-2">
+                  <video
+                    src={m.videoUrl}
+                    controls
+                    autoPlay
+                    onPlay={() => setIsClipPlaying(true)}
+                    onPause={() => setIsClipPlaying(false)}
+                    onEnded={() => setIsClipPlaying(false)}
+                    className="w-full rounded-2xl border border-calm-border dark:border-calm-borderDark"
+                  />
+                  {/* What the clip actually says. Without it a past turn is
+                      an unskimmable player you'd have to replay to recall. */}
+                  {m.content && (
+                    <p className="px-4 py-2.5 rounded-2xl text-sm leading-relaxed bg-calm-card dark:bg-calm-cardDark border border-calm-border dark:border-calm-borderDark">
+                      {m.content}
+                    </p>
+                  )}
+                </div>
               ) : (
                 <div
                   className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${

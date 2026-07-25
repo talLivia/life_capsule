@@ -402,16 +402,40 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
                       <p className="text-sm text-gray-500">No messages in this session.</p>
                     ) : (
                       <div className="space-y-2 max-h-72 overflow-y-auto messages-scroll">
-                        {msgs.map((m) => (
-                          <div key={m.id} className="flex gap-2 text-sm">
-                            <span className={`font-mono text-xs px-1.5 py-0.5 rounded ${
-                              m.role === 'user' ? 'bg-accent-700/40 text-accent-200' : 'bg-primary-700/40 text-primary-200'
-                            }`}>
-                              {m.role === 'user' ? 'YOU' : 'AI'}
-                            </span>
-                            <span className="text-gray-200 flex-1 leading-relaxed whitespace-pre-wrap">{m.content}</span>
-                          </div>
-                        ))}
+                        {msgs.map((m) => {
+                          // A video answer stores WHAT WAS SAID in content and
+                          // the clip in video_url. Older turns (and v1, which
+                          // has no unit text) stored the bare URL as content —
+                          // render those as a link rather than a wall of URL.
+                          const contentIsUrl = /^https?:\/\//.test(m.content || '')
+                          const clipUrl = m.video_url || (contentIsUrl ? m.content : null)
+                          return (
+                            <div key={m.id} className="flex gap-2 text-sm">
+                              <span className={`font-mono text-xs px-1.5 py-0.5 rounded ${
+                                m.role === 'user' ? 'bg-accent-700/40 text-accent-200' : 'bg-primary-700/40 text-primary-200'
+                              }`}>
+                                {m.role === 'user' ? 'YOU' : 'AI'}
+                              </span>
+                              <span className="text-gray-200 flex-1 leading-relaxed whitespace-pre-wrap">
+                                {contentIsUrl ? (
+                                  <em className="text-gray-500">(video clip — no transcript stored)</em>
+                                ) : (
+                                  m.content
+                                )}
+                                {clipUrl && (
+                                  <a
+                                    href={clipUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="ml-2 text-xs text-primary-400 hover:text-primary-300 underline whitespace-nowrap"
+                                  >
+                                    watch clip
+                                  </a>
+                                )}
+                              </span>
+                            </div>
+                          )
+                        })}
                       </div>
                     )}
                   </div>

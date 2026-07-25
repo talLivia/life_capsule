@@ -16,7 +16,11 @@ export interface Avatar {
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
+  /** Readable text of the turn. For a video answer this is what the clip
+   *  SAYS — the URL lives in video_url, so past conversations can be scanned
+   *  without opening every clip. */
   content: string
+  video_url?: string | null
   created_at: string
 }
 
@@ -71,6 +75,10 @@ export type WsMessage =
   | {
       type: 'video_clip_response'
       video_url: string
+      /** The verbatim words the clip speaks, so the chat can show what was
+       *  said next to the player instead of a bare video. Empty for v1,
+       *  which has no utterance-unit text to report. */
+      text?: string
       uncovered_clauses: string[]
       follow_up?: { question: string } | null
     }

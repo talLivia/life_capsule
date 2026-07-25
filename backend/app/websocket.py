@@ -430,8 +430,15 @@ class ConnectionManager:
         content: str,
         latency: Optional[float] = None,
         metadata: Optional[dict] = None,
+        video_url: Optional[str] = None,
     ) -> None:
-        """Best-effort persist a message; failure must not break the chat pipeline."""
+        """Best-effort persist a message; failure must not break the chat pipeline.
+
+        `content` is always the READABLE text of the turn. A video answer puts
+        its URL in `video_url` (the column that exists for it) rather than
+        stuffing it into `content` — otherwise the stored conversation is a
+        list of links that nobody, including the archive-read call's history
+        block, can read."""
         try:
             from app.database import AsyncSessionLocal
             from app.models import Message
@@ -442,7 +449,8 @@ class ConnectionManager:
                         session_id=session_id,
                         role=role,
                         content=content,
-                        content_type="text",
+                        content_type="video" if video_url else "text",
+                        video_url=video_url,
                         latency=latency,
                         message_metadata=metadata,
                     )
@@ -799,22 +807,30 @@ class ConnectionManager:
                 return
 
             latency = (datetime.now(timezone.utc) - started_at).total_seconds()
-            # v2 reports which utterance units it played; recording them here
-            # is what lets the NEXT turn avoid replaying them and lets a
-            # follow-up ("anything else about her?") resolve its referent
-            # against what was actually said. Empty for v1.
+            # v2 reports which utterance units it played. ONE source of truth:
+            # the spoken text stored as the message body, the text sent to the
+            # client, and the per-unit records the next turn reads are all
+            # derived from this same list — they cannot drift apart.
+            # v1 has no unit concept, so it falls back to the URL as before.
+            spoken_text = " ".join(
+                u.get("text", "").strip() for u in result.shown_units if u.get("text")
+            ).strip()
             await self._persist_message(
                 session_id,
                 "assistant",
-                result.video_url,
+                spoken_text or result.video_url,
                 latency=latency,
                 metadata={"shown_units": result.shown_units} if result.shown_units else None,
+                video_url=result.video_url,
             )
             await self.send_message(
                 session_id,
                 {
                     "type": "video_clip_response",
                     "video_url": result.video_url,
+                    # What the clip actually says, so the chat shows the words
+                    # alongside the video instead of a bare player.
+                    "text": spoken_text,
                     "uncovered_clauses": result.uncovered_clauses,
                     # v2's optional "want to hear more about X?" offer. Chat
                     # text only — the client renders it as a message with

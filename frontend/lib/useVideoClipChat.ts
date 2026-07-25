@@ -88,7 +88,14 @@ export function useVideoClipChat(avatarId: string) {
         const followUp = msg.follow_up?.question
         setMessages((prev) => [
           ...prev,
-          { id: `clip-${Date.now()}`, role: 'assistant', content: '', videoUrl: msg.video_url },
+          {
+            id: `clip-${Date.now()}`,
+            role: 'assistant',
+            // The clip's own words, shown WITH the player — a bare video
+            // can't be skimmed and tells you nothing once scrolled past.
+            content: msg.text || '',
+            videoUrl: msg.video_url,
+          },
           // The offer is a SEPARATE chat message, never mixed into the clip —
           // the video stays verbatim footage with nothing added to it.
           ...(followUp

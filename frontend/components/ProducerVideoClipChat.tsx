@@ -187,7 +187,12 @@ export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) 
                           : `bg-surface-700/80 border border-white/8 rounded-tl-sm ${m.noStory ? 'italic text-gray-400' : 'text-gray-200'}`
                       }`}
                     >
-                      {m.videoUrl ? 'Playing the matching clip →' : m.content}
+                      {/* The clip's words, not "Playing the matching clip →".
+                          The video panel already shows the clip; this panel's
+                          job is to be readable after the fact. */}
+                      {m.videoUrl && !m.content
+                        ? 'Playing the matching clip →'
+                        : m.content}
                       {/* Proactive offer — chat text with Yes/No. "Yes" re-asks
                           it as a normal question so it takes the same path. */}
                       {m.followUpQuestion && !m.followUpDismissed && (

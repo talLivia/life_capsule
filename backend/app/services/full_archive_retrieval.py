@@ -558,6 +558,12 @@ def _format_history_block(
                 f"{u.get('unit_id', '?')}: \"{u.get('text', '')}\"" for u in units
             )
             lines.append(f"assistant: (played {rendered})")
+        elif content and not content.startswith(("http://", "https://")):
+            # No per-unit record (a v1 turn, or one persisted before units were
+            # tracked) but the message body is the readable spoken text — same
+            # data, just without the unit ids. Still far better than a
+            # placeholder, which leaves a follow-up pronoun with no antecedent.
+            lines.append(f"assistant: {content}")
         else:
             lines.append("assistant: (showed a video clip)")
     return "\n".join(lines)
