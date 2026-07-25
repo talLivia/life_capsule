@@ -69,6 +69,10 @@ gains/loses `u4`/`u16`, `army-broad` gains/loses `u10`.
 `montreal` were identical across ~96 calls, and the 7 scored eval questions
 show stdev **0.000** over 5 runs.
 
+Independently corroborated by the comparison harness (3 runs × 12 questions):
+v2 was **10/12 stable**, and the two that varied were exactly `family` and
+`army-broad` — both broad questions, and only those. v1 was 12/12.
+
 This is accepted deliberately. The reproducible alternative
 (`gemini-flash-lite-latest`, 0 thinking tokens, 6/6 identical everywhere)
 **loses the follow-up pronoun resolution** — "משהו מעניין נוסף שקשור אליה"

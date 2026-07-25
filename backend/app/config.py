@@ -151,10 +151,13 @@ class Settings(BaseSettings):
     #   * NO budget makes the output reproducible. Thinking-token counts vary
     #     run to run at every setting, and where a unit choice is marginal the
     #     answer varies with them.
-    #   * What it DOES buy: roughly 2x lower latency (~2.3s vs ~4.6s on the
-    #     pronoun follow-up; ~3.2s vs ~6.9s on a broad question) at identical
-    #     quality on every core case — the pronoun follow-up resolved 24/24
-    #     across budgets 128/512/1024 and dynamic.
+    #   * What it DOES buy: lower latency at identical quality on every core
+    #     case (the pronoun follow-up resolved 24/24 across budgets
+    #     128/512/1024 and dynamic). Size the win honestly — it is MODEST, not
+    #     2x: isolated repeated single questions showed ~2x (2.3s vs 4.6s on
+    #     the pronoun follow-up), but over the full 12-question harness the
+    #     average moved only 6.89s -> 5.75s (~17%). The isolated figure was
+    #     measured under lighter load and overstated the effect.
     # 0 is rejected by gemini-flash-latest (400); None/unset = dynamic.
     ARCHIVE_READ_THINKING_BUDGET: int = 128
 
