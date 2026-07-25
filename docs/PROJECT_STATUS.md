@@ -37,7 +37,8 @@ updated as work lands.
   (`useVideoClipChat`) behind two different layouts.
 - Avatar/voice setup hidden outside `avatar` mode.
 - Hands-free mic with clip-playback gating; `SILENCE_DURATION_MS=1000`,
-  `MIN_SPEECH_MS=400`.
+  `MIN_SPEECH_MS=400`. Gating is enforced **during** a recording, not just at
+  its start — see the mic section below for why that mattered.
 
 **Tests:** 379 backend passing; frontend `tsc`, `eslint`, `next build` clean.
 
@@ -82,18 +83,52 @@ lighter load; the harness average is the one to trust.
 
 ## Not done / in progress
 
-- **Live end-to-end verification of the producer chat screen.** The routing fix
-  and shared-hook rewrite are committed and type-check, but have not been
-  exercised against a running backend in the browser.
-- **The mic send-wiring bug** reported live (segments recorded, `onSegment`
-  fires, nothing sent over the WS) was diagnosed but **not fixed**. Prime
-  suspect is the `?? avatars[0]` fallback in the producer avatar auto-resolve
-  handing `create_session` a non-`ready` avatar → 400 → WS never connects →
-  `sendAudioSegment` silently drops every segment. Needs: drop the fallback,
-  add symmetric logging so a drop is never silent, and buffer-or-reject rather
-  than discard when the socket isn't open.
+- **Retest after the mic fixes.** The clip-echo and gate-stranding fixes below
+  are committed and build clean but have not been exercised live.
+- **`מה עשית בצבא?` returns the whole army recording** (u6-u9, 19s), including
+  "I'd go home every two weeks". Traced and **stable 5/5**, so this is a
+  genuine relevance judgment, not the accepted marginal variance. The model
+  reads the question as a paraphrase of that recording's own interview
+  question ("tell me about your military service…") and matches at RECORDING
+  level rather than unit level — asked about the *role* specifically it
+  correctly returns u6 alone. Undecided how (or whether) to address; note it
+  is the interview-question anchor (which fixed the wife case) working
+  against us here.
 - **Follow-up suggestions have not been seen live**, only verified against the
   real archive through `select_units`.
+
+### Resolved: the mic bugs that were corrupting live testing
+
+The earlier hypothesis for the send-wiring bug — `?? avatars[0]` handing
+`create_session` a non-`ready` avatar — was **WRONG**. Verified against the DB:
+the producer has exactly one avatar, `status='ready'`, and every recent session
+created successfully against it. Sessions connect and messages flow.
+
+What was actually happening (found in the persisted `Message` rows):
+
+1. **The mic was transcribing playing clips and sending them back as
+   questions.** A 19-second answer was captured verbatim by the microphone and
+   submitted as the user's next turn; the system then answered *that*. This is
+   what made several "retrieval bugs" look real — retrieval was correct at
+   every step. **Cause:** `avatarBusy` was checked only when a segment
+   *started*, never during one, so a recording already in flight when playback
+   began kept running and captured the clip. Window opens whenever playback
+   starts late (e.g. autoplay blocked until the user clicks play).
+   **Fix:** abort and DISCARD any in-flight segment the moment playback starts
+   (`useContinuousVoiceInput.runVadTick`), plus `echoCancellation: true` as
+   defence in depth — the comment justifying it being off rested on the
+   assumption this bug disproved.
+2. **Producer screen only: `isClipPlaying` could strand at `true`.** That
+   screen replaces one keyed `<video>` in place; unmounting a *playing*
+   element fires neither `onPause` nor `onEnded`, so the gate never reopened
+   ("I speak and nothing gets in"). **Fix:** reset the gate when the clip id
+   changes. `/talk` mounts a player per answer and cannot hit this.
+3. **StrictMode creates two sessions per mount — investigated, benign.**
+   Effects re-run *sequentially on one component instance* with shared refs,
+   and the `cancelled` guard stops any late-resolving `getUserMedia`, so there
+   is **no** second live stream and **no** second `isClipPlaying`. The only
+   artifact is an orphaned, empty session row in dev; it has no WebSocket and
+   no messages, so it cannot pollute the shown-unit history either. No fix.
 
 ---
 

@@ -111,6 +111,9 @@ export function useContinuousVoiceInput(
   // still read stale/false for one tick, letting a second segment start
   // and barge-in-cancel the first turn before it ever produces a reply.
   const pendingSendRef = useRef(false)
+  // Set when a segment must be thrown away rather than sent — specifically
+  // when playback starts WHILE we're already recording. See runVadTick.
+  const discardSegmentRef = useRef(false)
   const micMutedRef = useRef(false)
   const connectedRef = useRef(false)
   const loopActiveRef = useRef(false)
@@ -141,6 +144,25 @@ export function useContinuousVoiceInput(
     const runVadTick = () => {
       const analyser = analyserRef.current
       if (!analyser || mediaRecorderRef.current?.state !== 'recording') return
+
+      // CONFIRMED LIVE: `avatarBusy` used to be checked only when a segment
+      // STARTED, never while one was running. So a recording already in
+      // flight when a clip began playing kept going and captured the clip's
+      // own audio out of the speakers — which STT then transcribed and sent
+      // back as the user's next "question". Real example from the DB: a
+      // 19-second answer was replayed verbatim as a user turn, and the
+      // system dutifully answered it, producing what looked like a
+      // retrieval bug. (The window opens whenever playback starts late —
+      // e.g. autoplay blocked until the user clicks play — because by then
+      // the mic has legitimately reopened.)
+      // Aborting and DISCARDING is the only correct move: audio captured
+      // while the storyteller is talking is never the user's question.
+      if (avatarBusyRef.current) {
+        discardSegmentRef.current = true
+        mediaRecorderRef.current?.stop()  // -> onstop, which drops it
+        return
+      }
+
       const data = new Uint8Array(analyser.frequencyBinCount)
       analyser.getByteFrequencyData(data)
       const level = computeVoiceLevel(data, voiceBinCountRef.current)
@@ -200,6 +222,14 @@ export function useContinuousVoiceInput(
       recorder.onstop = async () => {
         setIsListening(false)
         setMicLevel(0)
+        // Playback started mid-recording — this audio is the storyteller's
+        // own clip, not a question. Drop it and wait for playback to finish.
+        if (discardSegmentRef.current) {
+          discardSegmentRef.current = false
+          console.info('[voice] segment DISCARDED — playback started while recording')
+          beginSegment()
+          return
+        }
         // Real accumulated time above threshold, not just elapsed wall-clock
         // time since the first crossing — a single brief noise blip (mic
         // bump, breath) followed by the 750ms silence window would otherwise
@@ -264,19 +294,24 @@ export function useContinuousVoiceInput(
         // and autoGainControl directly help STT — a quiet mic's speech can
         // otherwise sit only ~8 points above its own noise floor on a 0-255
         // scale, barely distinguishable from ambient noise (confirmed live:
-        // ambient floor ~36, speech ~44-46 with these disabled). echoCancellation
-        // stays off since half-duplex already avoids the avatar's own audio
-        // reaching the mic (paused during playback), so there's nothing to
-        // cancel, and cancellation can subtly color the voice unnecessarily.
+        // ambient floor ~36, speech ~44-46 with these disabled).
+        // echoCancellation is now ON. It used to be off, justified by "half-
+        // duplex already keeps the storyteller's audio out of the mic, so
+        // there's nothing to cancel". That assumption was DISPROVEN live: the
+        // mic captured entire clips and fed them back as questions (see
+        // runVadTick). The gating hole itself is fixed there; this is
+        // defence in depth, because the cost of being wrong again is
+        // fabricated conversation turns, which is far worse than the slight
+        // voice colouring cancellation can introduce.
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: preferred
             ? {
                 deviceId: { exact: preferred.deviceId },
-                echoCancellation: false,
+                echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true,
               }
-            : { echoCancellation: false, noiseSuppression: true, autoGainControl: true },
+            : { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         })
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop())

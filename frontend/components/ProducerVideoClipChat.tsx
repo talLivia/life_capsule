@@ -51,6 +51,16 @@ export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) 
   // family layout). Keyed by message id so a new src autoplays.
   const latestClip = [...messages].reverse().find((m) => m.videoUrl)
 
+  // This screen shows ONE video that is replaced in place (keyed by clip id),
+  // unlike /talk which mounts a player per answer. Replacing a still-PLAYING
+  // element unmounts it, and an unmounted element fires neither onPause nor
+  // onEnded — so isClipPlaying would stay true forever and the mic would
+  // never reopen ("I speak and nothing gets in"). Reset the gate whenever the
+  // clip changes; the incoming video re-closes it via onPlay if it plays.
+  useEffect(() => {
+    setIsClipPlaying(false)
+  }, [latestClip?.id, setIsClipPlaying])
+
   const messagesEndRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
