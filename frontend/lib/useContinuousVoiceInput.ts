@@ -12,8 +12,28 @@ import { pickPreferredAudioDevice } from '@/lib/audioDevices'
 // on, there's no reason to have the mic live while there's nothing valid to
 // capture, and it sidesteps any chance of the avatar's own audio being
 // picked up and self-triggering.
-const SILENCE_DURATION_MS = 750
-const MIN_SPEECH_MS = 300
+//
+// End-of-turn tuning. Raised modestly from the original 750/300 (which fired
+// on a mid-sentence breath and let a cough count as a turn) — but NOT as high
+// as 1300/700, which overshot: in a real mic environment with a narrow
+// speech-vs-ambient contrast, a full sentence's CUMULATIVE above-threshold
+// time didn't reach 700ms and/or a genuine end-of-sentence pause didn't reach
+// 1300ms of continuous silence, so legitimate speech stopped registering at
+// all. These conservative values stay close enough to the known-working
+// baseline that normal speech comfortably clears them, while still requiring
+// a longer pause than before:
+// - SILENCE_DURATION_MS = 1000: end-of-sentence pauses are ~1s+, so this ends
+//   the turn on a real stop, not a mid-sentence breath (~500-900ms), but is
+//   low enough to still fire reliably.
+// - MIN_SPEECH_MS = 400: filters the briefest blips (a cough is ~200-400ms)
+//   without risking a normal sentence (which yields well over 400ms of
+//   above-threshold time). CUMULATIVE above-threshold, not wall-clock (see
+//   the onstop handler).
+// If speech still under-registers, it's the calibrated THRESHOLD being too
+// high for the room — check the "[voice] calibrated" / "segment ended
+// spokeMs=" console logs, not these two numbers.
+const SILENCE_DURATION_MS = 1000
+const MIN_SPEECH_MS = 400
 // The "hearing you" indicator flipping off on the very first frame below
 // threshold flickers constantly — natural speech has brief micro-pauses
 // between syllables/words that dip below the level even mid-sentence. This

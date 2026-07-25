@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { isJwtExpired } from '@/lib/jwt'
+import type { ChatMode } from '@/lib/types'
 
 interface User {
   id: string
@@ -10,6 +11,11 @@ interface User {
   role?: 'producer' | 'family'
   recording_language?: string
   producer_id?: string | null
+  // Prompt 14: producer-level /talk setting. Only meaningful on a
+  // producer's own row — a family account's copy of this field (if any)
+  // is never read, since /talk always renders based on the LINKED
+  // producer's setting (see TalkAvailability.chat_mode instead).
+  chat_mode?: ChatMode
 }
 
 interface AppState {

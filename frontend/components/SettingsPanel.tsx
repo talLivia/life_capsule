@@ -1,12 +1,18 @@
 'use client'
 
 import { useState } from 'react'
-import { Save, Loader2, User, KeyRound, Trash2 } from 'lucide-react'
+import { Save, Loader2, User, KeyRound, Trash2, Sparkles, Film } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
 import { useStore } from '@/store/useStore'
 import { FamilyInvitePanel } from '@/components/FamilyInvitePanel'
-import type { ApiError } from '@/lib/types'
+import type { ApiError, ChatMode } from '@/lib/types'
+
+const CHAT_MODE_LABELS: Record<ChatMode, string> = {
+  avatar: 'Avatar mode',
+  video_clips: 'Original video clips',
+  video_clips_v2: 'Original video clips (beta 2)',
+}
 
 export function SettingsPanel() {
   const { user, setAuth, token, clearAuth } = useStore()
@@ -17,8 +23,24 @@ export function SettingsPanel() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [savingProfile, setSavingProfile] = useState(false)
   const [savingPassword, setSavingPassword] = useState(false)
+  const [savingChatMode, setSavingChatMode] = useState(false)
 
   const isGuest = token === 'guest' || user?.id === 'demo-user'
+  const chatMode = user?.chat_mode || 'avatar'
+
+  const setChatMode = async (mode: ChatMode) => {
+    if (isGuest || mode === chatMode) return
+    setSavingChatMode(true)
+    try {
+      const updated = await api.updateProfile({ chat_mode: mode })
+      if (token) setAuth(token, updated)
+      toast.success(`Switched to ${CHAT_MODE_LABELS[mode]}`)
+    } catch (err: unknown) {
+      toast.error((err as ApiError)?.response?.data?.detail || 'Could not update talk mode')
+    } finally {
+      setSavingChatMode(false)
+    }
+  }
 
   const saveProfile = async () => {
     if (isGuest) {
@@ -182,6 +204,78 @@ export function SettingsPanel() {
           Update password
         </button>
       </div>
+
+      {/* Talk mode card (Prompt 14) — producer-level: picks which chat
+          experience EVERY family member gets on /talk. Not shown to family
+          accounts, since they never have their own copy of this setting. */}
+      {!isGuest && user?.role !== 'family' && (
+        <div className="card flex flex-col gap-5 mt-6">
+          <div className="flex items-center gap-2">
+            <Film size={16} className="text-primary-400" />
+            <h2 className="text-xl font-bold text-white">Talk mode</h2>
+          </div>
+          <div className="divider" />
+          <p className="text-sm text-gray-400">
+            Choose how family members experience your stories on /talk.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <button
+              onClick={() => setChatMode('avatar')}
+              disabled={savingChatMode}
+              aria-pressed={chatMode === 'avatar'}
+              className={`text-left p-4 rounded-xl border transition-colors ${
+                chatMode === 'avatar'
+                  ? 'border-primary-400 bg-primary-400/10'
+                  : 'border-white/10 hover:border-white/20'
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <Sparkles size={15} className="text-primary-400" />
+                <span className="font-semibold text-white">Avatar</span>
+              </div>
+              <p className="text-xs text-gray-400">
+                A talking-head avatar speaks your stories aloud (default).
+              </p>
+            </button>
+            <button
+              onClick={() => setChatMode('video_clips')}
+              disabled={savingChatMode}
+              aria-pressed={chatMode === 'video_clips'}
+              className={`text-left p-4 rounded-xl border transition-colors ${
+                chatMode === 'video_clips'
+                  ? 'border-primary-400 bg-primary-400/10'
+                  : 'border-white/10 hover:border-white/20'
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <Film size={15} className="text-primary-400" />
+                <span className="font-semibold text-white">Original video clips</span>
+              </div>
+              <p className="text-xs text-gray-400">
+                Family members see the real recorded moment that answers their question.
+              </p>
+            </button>
+            <button
+              onClick={() => setChatMode('video_clips_v2')}
+              disabled={savingChatMode}
+              aria-pressed={chatMode === 'video_clips_v2'}
+              className={`text-left p-4 rounded-xl border transition-colors ${
+                chatMode === 'video_clips_v2'
+                  ? 'border-primary-400 bg-primary-400/10'
+                  : 'border-white/10 hover:border-white/20'
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <Film size={15} className="text-primary-400" />
+                <span className="font-semibold text-white">Original video clips (beta 2)</span>
+              </div>
+              <p className="text-xs text-gray-400">
+                Experimental: an alternative way of finding the answering clips. Same result format.
+              </p>
+            </button>
+          </div>
+        </div>
+      )}
 
       {!isGuest && user?.role !== 'family' && <FamilyInvitePanel />}
 

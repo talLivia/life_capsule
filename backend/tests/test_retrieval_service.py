@@ -8,12 +8,15 @@ the module docstring's note that graph_memory.find_related_episodes_scored
 was spot-checked against a real instance).
 """
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import InterviewSession, RawSegment
+from app.models import Avatar, InterviewSession, Message, RawSegment
+from app.models import Session as SessionModel
+from app.models import TranscriptChunk
 from app.services import retrieval_service as rsvc
 
 pytestmark = pytest.mark.asyncio
@@ -72,6 +75,42 @@ async def producer_segments(db_session, test_user, retrieval_session_factory):
     return {"session_id": session.id, "matching": matching, "other_topic": other_topic, "not_ready": not_ready}
 
 
+@pytest.fixture
+async def chat_session_with_messages(db_session, test_user, retrieval_session_factory):
+    """A real WS Session (with the Avatar its FK requires) plus a helper to
+    add Message rows at controlled timestamps — _recent_turns' ORDER BY
+    (created_at, id) would otherwise tie-break on Message.id, a random
+    UUID, not a stable insertion-order key."""
+    avatar = Avatar(
+        user_id=test_user.id,
+        name="A",
+        image_url="http://x/i.jpg",
+        s3_key="avatars/x/i.jpg",
+        status="ready",
+    )
+    db_session.add(avatar)
+    await db_session.flush()
+    session = SessionModel(user_id=test_user.id, avatar_id=avatar.id, status="active")
+    db_session.add(session)
+    await db_session.flush()
+
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    async def add_message(role: str, content: str, minutes_offset: float):
+        msg = Message(
+            session_id=session.id,
+            role=role,
+            content=content,
+            content_type="text",
+            created_at=base + timedelta(minutes=minutes_offset),
+        )
+        db_session.add(msg)
+        await db_session.flush()
+        return msg
+
+    return {"session_id": session.id, "add_message": add_message}
+
+
 # ── _short_summary ───────────────────────────────────────────────────────────
 
 
@@ -116,6 +155,138 @@ async def test_classify_topic_passes_temperature_zero(monkeypatch):
     assert mock.call_args.kwargs["temperature"] == 0
 
 
+# ── _recent_turns / _render_turn_for_history ─────────────────────────────────
+
+
+async def test_recent_turns_returns_empty_for_session_with_no_messages(retrieval_session_factory):
+    turns = await rsvc._recent_turns("no-such-session", rsvc.COREFERENCE_HISTORY_TURNS)
+    assert turns == []
+
+
+async def test_recent_turns_returns_last_n_in_chronological_order(chat_session_with_messages):
+    add_message = chat_session_with_messages["add_message"]
+    await add_message("user", "who is Gila?", 0)
+    await add_message("assistant", "Gila was my neighbor growing up.", 1)
+    await add_message("user", "did you love her?", 2)
+
+    turns = await rsvc._recent_turns(chat_session_with_messages["session_id"], 2)
+
+    assert [t["content"] for t in turns] == ["Gila was my neighbor growing up.", "did you love her?"]
+    assert [t["role"] for t in turns] == ["assistant", "user"]
+
+
+async def test_recent_turns_respects_limit_even_with_more_history(chat_session_with_messages):
+    add_message = chat_session_with_messages["add_message"]
+    for i in range(5):
+        await add_message("user", f"question {i}", i)
+
+    turns = await rsvc._recent_turns(chat_session_with_messages["session_id"], 2)
+    assert [t["content"] for t in turns] == ["question 3", "question 4"]
+
+
+def test_render_turn_for_history_passes_through_plain_text():
+    assert rsvc._render_turn_for_history("user", "who is Gila?") == "user: who is Gila?"
+
+
+def test_render_turn_for_history_masks_video_clip_url():
+    """video_clip_assembler persists a raw video URL as the assistant's
+    Message.content — must never be fed to the coreference LLM call as if
+    it were narration."""
+    rendered = rsvc._render_turn_for_history(
+        "assistant", "http://localhost:8000/uploads/video-clips/abc123.mp4"
+    )
+    assert rendered == "assistant: (showed a video clip)"
+
+
+# ── _resolve_coreferences ─────────────────────────────────────────────────────
+
+
+async def test_resolve_coreferences_skips_llm_call_when_no_history(
+    monkeypatch, retrieval_session_factory
+):
+    """No prior turns (first question of a session) — nothing to resolve
+    against, so this must not even attempt an LLM call."""
+    mock = AsyncMock()
+    monkeypatch.setattr(rsvc.llm_service, "generate_response", mock)
+
+    result = await rsvc._resolve_coreferences("did you love her?", "fresh-session", "en")
+
+    assert result == "did you love her?"
+    mock.assert_not_called()
+
+
+async def test_resolve_coreferences_rewrites_pronoun_using_history(
+    monkeypatch, chat_session_with_messages
+):
+    add_message = chat_session_with_messages["add_message"]
+    await add_message("user", "who is Gila?", 0)
+    await add_message("assistant", "Gila was my neighbor growing up.", 1)
+
+    mock = AsyncMock(return_value="did you love Gila?")
+    monkeypatch.setattr(rsvc.llm_service, "generate_response", mock)
+
+    result = await rsvc._resolve_coreferences(
+        "did you love her?", chat_session_with_messages["session_id"], "en"
+    )
+
+    assert result == "did you love Gila?"
+    # The actual conversation text must reach the LLM call, not just a signal
+    # that history exists.
+    assert "Gila was my neighbor" in mock.call_args.kwargs["system_prompt"]
+    assert mock.call_args.kwargs["temperature"] == 0
+
+
+async def test_resolve_coreferences_leaves_self_contained_question_unchanged(
+    monkeypatch, chat_session_with_messages
+):
+    add_message = chat_session_with_messages["add_message"]
+    await add_message("user", "what did you do for work?", 0)
+    await add_message("assistant", "I was an engineer.", 1)
+
+    monkeypatch.setattr(
+        rsvc.llm_service, "generate_response", AsyncMock(return_value="what was your favorite food?")
+    )
+
+    result = await rsvc._resolve_coreferences(
+        "what was your favorite food?", chat_session_with_messages["session_id"], "en"
+    )
+    assert result == "what was your favorite food?"
+
+
+async def test_resolve_coreferences_fails_soft_on_llm_error(monkeypatch, chat_session_with_messages):
+    add_message = chat_session_with_messages["add_message"]
+    await add_message("user", "who is Gila?", 0)
+
+    monkeypatch.setattr(
+        rsvc.llm_service, "generate_response", AsyncMock(side_effect=RuntimeError("down"))
+    )
+
+    result = await rsvc._resolve_coreferences(
+        "did you love her?", chat_session_with_messages["session_id"], "en"
+    )
+    assert result == "did you love her?"
+
+
+async def test_resolve_coreferences_masks_video_url_in_history_sent_to_llm(
+    monkeypatch, chat_session_with_messages
+):
+    """End-to-end through _resolve_coreferences (not just _render_turn_for_
+    history in isolation): a video-clip-mode assistant turn's raw URL must
+    never appear in the prompt sent to the LLM."""
+    add_message = chat_session_with_messages["add_message"]
+    await add_message("user", "who is Gila?", 0)
+    await add_message("assistant", "http://localhost:8000/uploads/video-clips/abc123.mp4", 1)
+
+    mock = AsyncMock(return_value="did you love Gila?")
+    monkeypatch.setattr(rsvc.llm_service, "generate_response", mock)
+
+    await rsvc._resolve_coreferences("did you love her?", chat_session_with_messages["session_id"], "en")
+
+    system_prompt = mock.call_args.kwargs["system_prompt"]
+    assert "http://" not in system_prompt
+    assert "(showed a video clip)" in system_prompt
+
+
 # ── primary_match ────────────────────────────────────────────────────────────
 
 
@@ -126,7 +297,7 @@ async def test_primary_match_returns_only_ready_overlapping_segments(
     monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
     monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
 
-    matches = await rsvc.primary_match("Tell me about the army", test_user.id, "en")
+    matches = await rsvc.primary_match("Tell me about the army", test_user.id, "en", "sess-1")
 
     assert [s.id for s in matches] == [producer_segments["matching"].id]
 
@@ -138,7 +309,7 @@ async def test_primary_match_scoped_to_producer(
     monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
     monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
 
-    matches = await rsvc.primary_match("Tell me about the army", "someone-elses-id", "en")
+    matches = await rsvc.primary_match("Tell me about the army", "someone-elses-id", "en", "sess-1")
 
     assert matches == []
 
@@ -149,8 +320,54 @@ async def test_primary_match_empty_when_topic_classification_fails(
     monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value=None))
     monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
     monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
-    matches = await rsvc.primary_match("???", test_user.id, "en")
+    matches = await rsvc.primary_match("???", test_user.id, "en", "sess-1")
     assert matches == []
+
+
+async def test_primary_match_uses_coreference_resolved_question(
+    test_user, producer_segments, retrieval_session_factory, monkeypatch
+):
+    """A bare pronoun follow-up ("tell me more about it") carries no signal
+    of its own — primary_match must classify/extract/embed the RESOLVED
+    question, not the raw original."""
+    monkeypatch.setattr(
+        rsvc, "_resolve_coreferences", AsyncMock(return_value="Tell me about the army")
+    )
+    mock_classify = AsyncMock(return_value="military service")
+    monkeypatch.setattr(rsvc, "_classify_topic", mock_classify)
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
+
+    matches = await rsvc.primary_match("tell me more about it", test_user.id, "en", "sess-1")
+
+    assert [s.id for s in matches] == [producer_segments["matching"].id]
+    assert mock_classify.call_args.args[0] == "Tell me about the army"
+
+
+async def test_primary_match_caps_runaway_match_count(
+    test_user, producer_segments, retrieval_session_factory, db_session, monkeypatch, caplog
+):
+    """Confirmed live: an under-specified question can make every signal
+    (or just the semantic one) match nearly everything. MAX_PRIMARY_MATCHES
+    must reject that as untrustworthy rather than returning it."""
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value=None))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    matching = producer_segments["matching"]
+    other_topic = producer_segments["other_topic"]
+    matching.embedding = [1.0, 0.0, 0.0]
+    other_topic.embedding = [1.0, 0.0, 0.0]
+    db_session.add_all([matching, other_topic])
+    await db_session.commit()
+    monkeypatch.setattr(
+        rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=[1.0, 0.0, 0.0])
+    )
+    monkeypatch.setattr(rsvc, "MAX_PRIMARY_MATCHES", 1)  # both ready segments "match" -> 2 > 1
+
+    with caplog.at_level("WARNING"):
+        matches = await rsvc.primary_match("anything", test_user.id, "en", "sess-1")
+
+    assert matches == []
+    assert "MAX_PRIMARY_MATCHES" in caplog.text
 
 
 # ── primary_match: entity-based signal (Prompt 10 fix) ──────────────────────
@@ -176,7 +393,7 @@ async def test_primary_match_finds_segment_by_entity_name_alone(
     mock_find_related = AsyncMock(return_value=[producer_segments["matching"].id])
     monkeypatch.setattr(rsvc.graph_memory, "find_related_episodes", mock_find_related)
 
-    matches = await rsvc.primary_match("Tell me about Gila", test_user.id, "en")
+    matches = await rsvc.primary_match("Tell me about Gila", test_user.id, "en", "sess-1")
 
     assert [s.id for s in matches] == [producer_segments["matching"].id]
     assert mock_find_related.call_args.kwargs["entity_names"] == ["Gila"]
@@ -205,7 +422,7 @@ async def test_primary_match_unions_topic_and_entity_signals_without_duplicates(
         AsyncMock(return_value=[producer_segments["matching"].id]),
     )
 
-    matches = await rsvc.primary_match("Tell me about Gila in the army", test_user.id, "en")
+    matches = await rsvc.primary_match("Tell me about Gila in the army", test_user.id, "en", "sess-1")
 
     assert [s.id for s in matches] == [producer_segments["matching"].id]
 
@@ -225,7 +442,7 @@ async def test_primary_match_entity_extraction_ignores_unresolved_names(
     mock_find_related = AsyncMock()
     monkeypatch.setattr(rsvc.graph_memory, "find_related_episodes", mock_find_related)
 
-    matches = await rsvc.primary_match("Tell me about Nobody", test_user.id, "en")
+    matches = await rsvc.primary_match("Tell me about Nobody", test_user.id, "en", "sess-1")
 
     assert matches == []
     mock_find_related.assert_not_called()
@@ -252,7 +469,7 @@ async def test_primary_match_finds_segment_by_semantic_similarity_alone(
         rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=[1.0, 0.0, 0.0])
     )
 
-    matches = await rsvc.primary_match("Tell me about your wedding", test_user.id, "en")
+    matches = await rsvc.primary_match("Tell me about your wedding", test_user.id, "en", "sess-1")
 
     assert [s.id for s in matches] == [matching.id]
 
@@ -275,7 +492,7 @@ async def test_primary_match_semantic_signal_respects_threshold(
         rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=[1.0, 0.0, 0.0])
     )
 
-    matches = await rsvc.primary_match("Something vaguely related", test_user.id, "en")
+    matches = await rsvc.primary_match("Something vaguely related", test_user.id, "en", "sess-1")
 
     assert matches == []
 
@@ -292,7 +509,7 @@ async def test_primary_match_semantic_signal_ignores_segments_without_embedding(
         rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=[1.0, 0.0, 0.0])
     )
 
-    matches = await rsvc.primary_match("Anything", test_user.id, "en")
+    matches = await rsvc.primary_match("Anything", test_user.id, "en", "sess-1")
 
     assert matches == []
 
@@ -418,5 +635,629 @@ async def test_retrieve_reads_visited_set_but_never_writes_it(
     result = await rsvc.retrieve("Tell me about the army", test_user.id, "en", "sess-1")
 
     assert [s.segment_id for s in result.primary] == [producer_segments["matching"].id]
+    mock_get_visited.assert_awaited_once_with("sess-1")
+    mock_add_visited.assert_not_called()
+
+
+# ── Prompt 12: chunk-level retrieval (video-clip mode) ──────────────────────
+
+
+@pytest.fixture
+async def producer_chunks(db_session, producer_segments, retrieval_session_factory):
+    """One chunk on each of producer_segments' three RawSegments — 'matching'
+    (topic + entity signal), 'other_topic' (neither), and 'not_ready' (must
+    NEVER match regardless of signal, since its parent segment isn't
+    'ready')."""
+    matching_chunk = TranscriptChunk(
+        raw_segment_id=producer_segments["matching"].id,
+        start_sec=0.0,
+        end_sec=2.0,
+        text="I served in the army for three years.",
+        sequence_index=0,
+        topic_tags=["military service"],
+        mentioned_entities=["Gila"],
+    )
+    other_chunk = TranscriptChunk(
+        raw_segment_id=producer_segments["other_topic"].id,
+        start_sec=0.0,
+        end_sec=2.0,
+        text="I started working as an engineer.",
+        sequence_index=0,
+        topic_tags=["career"],
+        mentioned_entities=[],
+    )
+    not_ready_chunk = TranscriptChunk(
+        raw_segment_id=producer_segments["not_ready"].id,
+        start_sec=0.0,
+        end_sec=2.0,
+        text="Still being processed.",
+        sequence_index=0,
+        topic_tags=["military service"],
+        mentioned_entities=["Gila"],
+    )
+    for chunk in (matching_chunk, other_chunk, not_ready_chunk):
+        db_session.add(chunk)
+    await db_session.commit()
+    for chunk in (matching_chunk, other_chunk, not_ready_chunk):
+        await db_session.refresh(chunk)
+
+    return {"matching": matching_chunk, "other": other_chunk, "not_ready": not_ready_chunk}
+
+
+# ── _normalize_to_first_person ───────────────────────────────────────────────
+
+
+async def test_normalize_to_first_person_uses_llm_rewrite(monkeypatch):
+    mock = AsyncMock(return_value="what did I do for work?")
+    monkeypatch.setattr(rsvc.llm_service, "generate_response", mock)
+
+    result = await rsvc._normalize_to_first_person("what did you do for work?", "en")
+
+    assert result == "what did I do for work?"
+    assert mock.call_args.kwargs["temperature"] == 0
+
+
+async def test_normalize_to_first_person_falls_back_to_original_on_failure(monkeypatch):
+    monkeypatch.setattr(
+        rsvc.llm_service, "generate_response", AsyncMock(side_effect=RuntimeError("down"))
+    )
+    result = await rsvc._normalize_to_first_person("what did you do for work?", "en")
+    assert result == "what did you do for work?"
+
+
+async def test_normalize_to_first_person_strips_quotes(monkeypatch):
+    monkeypatch.setattr(
+        rsvc.llm_service, "generate_response", AsyncMock(return_value='"מה עבדתי?"')
+    )
+    result = await rsvc._normalize_to_first_person("מה עבדת?", "he")
+    assert result == "מה עבדתי?"
+
+
+# ── primary_match_chunks: topic signal ───────────────────────────────────────
+
+
+async def test_primary_match_chunks_topic_signal_scoped_to_ready(
+    test_user, producer_chunks, retrieval_session_factory, monkeypatch
+):
+    """The 'not_ready' chunk shares the SAME topic_tags and mentioned_entities
+    as 'matching', but its parent segment isn't 'ready' — must never match."""
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
+
+    matches = await rsvc.primary_match_chunks("Tell me about the army", test_user.id, "en", "sess-1")
+
+    assert [c.id for c in matches] == [producer_chunks["matching"].id]
+
+
+async def test_primary_match_chunks_scoped_to_producer(
+    test_user, producer_chunks, retrieval_session_factory, monkeypatch
+):
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
+
+    matches = await rsvc.primary_match_chunks("Tell me about the army", "someone-elses-id", "en", "sess-1")
+
+    assert matches == []
+
+
+async def test_primary_match_chunks_uses_coreference_resolved_question(
+    test_user, producer_chunks, retrieval_session_factory, monkeypatch
+):
+    """Coreference resolution runs BEFORE perspective normalization — the
+    NORMALIZED question passed to the three signals must be derived from
+    the RESOLVED question, not the raw pronoun-only original."""
+    monkeypatch.setattr(
+        rsvc, "_resolve_coreferences", AsyncMock(return_value="Tell me about the army")
+    )
+    mock_normalize = AsyncMock(side_effect=lambda q, lang: q)
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", mock_normalize)
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
+
+    matches = await rsvc.primary_match_chunks("tell me more about it", test_user.id, "en", "sess-1")
+
+    assert [c.id for c in matches] == [producer_chunks["matching"].id]
+    assert mock_normalize.call_args.args[0] == "Tell me about the army"
+
+
+# ── primary_match_chunks: entity signal (mentioned_entities) ────────────────
+
+
+async def test_primary_match_chunks_finds_by_mentioned_entities_alone(
+    test_user, producer_chunks, retrieval_session_factory, monkeypatch
+):
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="unrelated-topic"))
+    monkeypatch.setattr(
+        rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=["Gila"])
+    )
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        rsvc.graph_memory,
+        "get_entity_candidates",
+        AsyncMock(return_value=[{"uuid": "u1", "name": "Gila", "summary": ""}]),
+    )
+
+    matches = await rsvc.primary_match_chunks("Tell me about Gila", test_user.id, "en", "sess-1")
+
+    assert [c.id for c in matches] == [producer_chunks["matching"].id]
+
+
+async def test_primary_match_chunks_entity_signal_ignores_unresolved_names(
+    test_user, producer_chunks, retrieval_session_factory, monkeypatch
+):
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=["Nobody"])
+    )
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
+    monkeypatch.setattr(rsvc.graph_memory, "get_entity_candidates", AsyncMock(return_value=[]))
+
+    matches = await rsvc.primary_match_chunks("Tell me about Nobody", test_user.id, "en", "sess-1")
+
+    assert matches == []
+
+
+# ── primary_match_chunks: semantic signal ────────────────────────────────────
+
+
+async def test_primary_match_chunks_finds_by_semantic_similarity_alone(
+    test_user, producer_chunks, retrieval_session_factory, db_session, monkeypatch
+):
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="unrelated-topic"))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    matching = producer_chunks["matching"]
+    matching.embedding = [1.0, 0.0, 0.0]
+    db_session.add(matching)
+    await db_session.commit()
+    monkeypatch.setattr(
+        rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=[1.0, 0.0, 0.0])
+    )
+
+    matches = await rsvc.primary_match_chunks("Tell me about your wedding", test_user.id, "en", "sess-1")
+
+    assert [c.id for c in matches] == [matching.id]
+
+
+async def test_primary_match_chunks_semantic_signal_respects_threshold(
+    test_user, producer_chunks, retrieval_session_factory, db_session, monkeypatch
+):
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value=None))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    matching = producer_chunks["matching"]
+    # cos([1,0,0], [0.1,0.995,0]) ≈ 0.1 — below BOTH the full threshold
+    # (0.68) and the second-pass leniency's relaxed half (0.34), so this
+    # must not match even with the automatic leniency retry (unlike the
+    # dedicated leniency test above, which deliberately picks a value that
+    # only clears the relaxed bar).
+    matching.embedding = [0.1, 0.995, 0.0]
+    db_session.add(matching)
+    await db_session.commit()
+    monkeypatch.setattr(
+        rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=[1.0, 0.0, 0.0])
+    )
+
+    matches = await rsvc.primary_match_chunks("Something vaguely related", test_user.id, "en", "sess-1")
+
+    assert matches == []
+
+
+# ── primary_match_chunks: union without duplicates ───────────────────────────
+
+
+async def test_primary_match_chunks_unions_signals_without_duplicates(
+    test_user, producer_chunks, retrieval_session_factory, db_session, monkeypatch
+):
+    """Topic AND entity AND semantic all point at the same chunk — must
+    appear once."""
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
+    monkeypatch.setattr(
+        rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=["Gila"])
+    )
+    monkeypatch.setattr(
+        rsvc.graph_memory,
+        "get_entity_candidates",
+        AsyncMock(return_value=[{"uuid": "u1", "name": "Gila", "summary": ""}]),
+    )
+    matching = producer_chunks["matching"]
+    matching.embedding = [1.0, 0.0, 0.0]
+    db_session.add(matching)
+    await db_session.commit()
+    monkeypatch.setattr(
+        rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=[1.0, 0.0, 0.0])
+    )
+
+    matches = await rsvc.primary_match_chunks("Tell me about Gila in the army", test_user.id, "en", "sess-1")
+
+    assert [c.id for c in matches] == [matching.id]
+
+
+# ── primary_match_chunks: second-pass leniency ───────────────────────────────
+
+
+async def test_primary_match_chunks_second_pass_leniency_widens_net(
+    test_user, producer_chunks, retrieval_session_factory, db_session, monkeypatch
+):
+    """Strict pass finds nothing (topic/entity miss, semantic below the full
+    threshold); the relaxed (half-threshold) second pass should still
+    surface it."""
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value=None))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    matching = producer_chunks["matching"]
+    # cos([1,0,0], [0.5,0.866,0]) = 0.5 — below the full threshold (0.68)
+    # but above half of it (0.34), so only the relaxed second pass matches.
+    matching.embedding = [0.5, 0.866, 0.0]
+    db_session.add(matching)
+    await db_session.commit()
+    monkeypatch.setattr(
+        rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=[1.0, 0.0, 0.0])
+    )
+
+    matches = await rsvc.primary_match_chunks("Something borderline", test_user.id, "en", "sess-1")
+
+    assert [c.id for c in matches] == [matching.id]
+
+
+async def test_primary_match_chunks_second_pass_only_when_strict_pass_empty(
+    test_user, producer_chunks, retrieval_session_factory, db_session, monkeypatch
+):
+    """If the strict pass already found something, the relaxed second pass
+    must NOT run at all — confirmed by making the relaxed threshold match a
+    segment that should never appear (the strict pass already succeeded via
+    topic, so semantic leniency shouldn't even be attempted)."""
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    other = producer_chunks["other"]
+    other.embedding = [0.5, 0.866, 0.0]  # would match at the relaxed threshold
+    db_session.add(other)
+    await db_session.commit()
+    monkeypatch.setattr(
+        rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=[1.0, 0.0, 0.0])
+    )
+
+    matches = await rsvc.primary_match_chunks("Tell me about the army", test_user.id, "en", "sess-1")
+
+    # Only the topic-matched chunk, NOT the "other" chunk that only clears
+    # the relaxed (never-reached, because the strict pass already matched)
+    # threshold.
+    assert [c.id for c in matches] == [producer_chunks["matching"].id]
+
+
+async def test_primary_match_chunks_returns_empty_when_nothing_matches_even_leniently(
+    test_user, producer_chunks, retrieval_session_factory, monkeypatch
+):
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value=None))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
+
+    matches = await rsvc.primary_match_chunks("Totally unrelated", test_user.id, "en", "sess-1")
+
+    assert matches == []
+
+
+async def test_primary_match_chunks_caps_runaway_leniency_match_count(
+    test_user, producer_chunks, retrieval_session_factory, db_session, monkeypatch, caplog
+):
+    """The exact failure mode confirmed live: an under-specified follow-up
+    question, with no topic/entity signal of its own, made the relaxed
+    second pass match EVERY ready chunk in the archive (12 of 12 on the
+    real data). MAX_PRIMARY_MATCHES must reject that as untrustworthy
+    rather than flooding Prompt 13's per-candidate verification with it."""
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value=None))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    matching = producer_chunks["matching"]
+    other = producer_chunks["other"]
+    # Both below the full threshold (0.68) but above half of it (0.34) —
+    # only the relaxed second pass matches, and it matches BOTH ready chunks.
+    matching.embedding = [0.5, 0.866, 0.0]
+    other.embedding = [0.5, 0.866, 0.0]
+    db_session.add_all([matching, other])
+    await db_session.commit()
+    monkeypatch.setattr(
+        rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=[1.0, 0.0, 0.0])
+    )
+    monkeypatch.setattr(rsvc, "MAX_PRIMARY_MATCHES", 1)  # both chunks "match" -> 2 > 1
+
+    with caplog.at_level("WARNING"):
+        matches = await rsvc.primary_match_chunks("is he still alive?", test_user.id, "en", "sess-1")
+
+    assert matches == []
+    assert "MAX_PRIMARY_MATCHES" in caplog.text
+
+
+# ── expand_graph_chunks ──────────────────────────────────────────────────────
+
+
+@pytest.fixture
+async def related_chunks_setup(db_session, producer_segments, retrieval_session_factory):
+    """Two extra 'ready' segments in the same archive, beyond producer_chunks'
+    three: one whose chunk textually mentions the bridging entity "Gila"
+    (should be returned by expand_graph_chunks), and one whose chunk does
+    NOT (Graphiti's episode-level extraction might still record the segment
+    as sharing the entity, but no individual chunk substring-matched it —
+    must contribute nothing, not a whole segment's worth of unrelated
+    chunks)."""
+    session_id = producer_segments["session_id"]
+
+    related_with_mention = RawSegment(
+        interview_session_id=session_id,
+        question_asked="Q4",
+        question_index=3,
+        transcript="Gila and I went fishing that summer.",
+        status="ready",
+    )
+    related_without_mention = RawSegment(
+        interview_session_id=session_id,
+        question_asked="Q5",
+        question_index=4,
+        transcript="That was a good year overall.",
+        status="ready",
+    )
+    db_session.add(related_with_mention)
+    db_session.add(related_without_mention)
+    await db_session.commit()
+    await db_session.refresh(related_with_mention)
+    await db_session.refresh(related_without_mention)
+
+    mentioning_chunk = TranscriptChunk(
+        raw_segment_id=related_with_mention.id,
+        start_sec=0.0,
+        end_sec=2.0,
+        text="Gila and I went fishing that summer.",
+        sequence_index=0,
+        mentioned_entities=["Gila"],
+    )
+    non_mentioning_chunk = TranscriptChunk(
+        raw_segment_id=related_without_mention.id,
+        start_sec=0.0,
+        end_sec=2.0,
+        text="That was a good year overall.",
+        sequence_index=0,
+        mentioned_entities=[],
+    )
+    db_session.add(mentioning_chunk)
+    db_session.add(non_mentioning_chunk)
+    await db_session.commit()
+    await db_session.refresh(mentioning_chunk)
+    await db_session.refresh(non_mentioning_chunk)
+
+    return {
+        "related_with_mention": related_with_mention,
+        "related_without_mention": related_without_mention,
+        "mentioning_chunk": mentioning_chunk,
+        "non_mentioning_chunk": non_mentioning_chunk,
+    }
+
+
+async def test_expand_graph_chunks_no_entities_returns_empty(producer_chunks, monkeypatch):
+    monkeypatch.setattr(rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=[]))
+    result = await rsvc.expand_graph_chunks([producer_chunks["matching"]], set(), "g1")
+    assert result == []
+
+
+async def test_expand_graph_chunks_excludes_visited_and_primary_segment_ids(
+    producer_chunks, retrieval_session_factory, monkeypatch
+):
+    primary = producer_chunks["matching"]
+    monkeypatch.setattr(
+        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+    )
+    mock_find = AsyncMock(return_value=[])
+    monkeypatch.setattr(rsvc.graph_memory, "find_related_episodes_scored", mock_find)
+
+    await rsvc.expand_graph_chunks([primary], {"visited-1"}, "g1")
+
+    exclude_ids = set(mock_find.call_args.kwargs["exclude_ids"])
+    assert "visited-1" in exclude_ids
+    assert primary.raw_segment_id in exclude_ids
+
+
+async def test_expand_graph_chunks_only_returns_chunks_mentioning_the_bridging_entity(
+    producer_chunks, related_chunks_setup, retrieval_session_factory, monkeypatch
+):
+    """The core fix this addition exists for: a related segment qualifies at
+    the GRAPH/episode level, but only ITS chunk(s) that actually textually
+    mention the bridging entity should come back — not the whole segment's
+    chunks indiscriminately."""
+    monkeypatch.setattr(
+        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+    )
+    monkeypatch.setattr(
+        rsvc.graph_memory,
+        "find_related_episodes_scored",
+        AsyncMock(
+            return_value=[
+                {
+                    "segment_id": related_chunks_setup["related_with_mention"].id,
+                    "shared_entity_count": 1,
+                }
+            ]
+        ),
+    )
+
+    result = await rsvc.expand_graph_chunks([producer_chunks["matching"]], set(), "g1")
+
+    assert [c.id for c in result] == [related_chunks_setup["mentioning_chunk"].id]
+
+
+async def test_expand_graph_chunks_segment_with_no_matching_chunk_contributes_nothing(
+    producer_chunks, related_chunks_setup, retrieval_session_factory, monkeypatch
+):
+    """Fail-soft edge case: Graphiti's episode-level extraction says this
+    segment shares the entity, but no individual chunk's substring-tagging
+    (Prompt 11) caught it — must contribute NO chunks from that segment,
+    rather than falling back to including all of it."""
+    monkeypatch.setattr(
+        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+    )
+    monkeypatch.setattr(
+        rsvc.graph_memory,
+        "find_related_episodes_scored",
+        AsyncMock(
+            return_value=[
+                {
+                    "segment_id": related_chunks_setup["related_without_mention"].id,
+                    "shared_entity_count": 1,
+                }
+            ]
+        ),
+    )
+
+    result = await rsvc.expand_graph_chunks([producer_chunks["matching"]], set(), "g1")
+
+    assert result == []
+
+
+async def test_expand_graph_chunks_filters_below_min_shared_entity_count(
+    producer_chunks, related_chunks_setup, retrieval_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+    )
+    monkeypatch.setattr(
+        rsvc.graph_memory,
+        "find_related_episodes_scored",
+        AsyncMock(
+            return_value=[
+                {
+                    "segment_id": related_chunks_setup["related_with_mention"].id,
+                    "shared_entity_count": 0,
+                }
+            ]
+        ),
+    )
+
+    result = await rsvc.expand_graph_chunks([producer_chunks["matching"]], set(), "g1")
+
+    assert result == []
+
+
+async def test_expand_graph_chunks_caps_at_max_candidates(
+    db_session, producer_segments, producer_chunks, retrieval_session_factory, monkeypatch
+):
+    session_id = producer_segments["session_id"]
+    extra_segments = []
+    extra_chunks = []
+    for i in range(5, 9):
+        seg = RawSegment(
+            interview_session_id=session_id,
+            question_asked=f"Q{i}",
+            question_index=i,
+            transcript=f"Extra segment {i} with Gila.",
+            status="ready",
+        )
+        db_session.add(seg)
+        extra_segments.append(seg)
+    await db_session.commit()
+    for seg in extra_segments:
+        await db_session.refresh(seg)
+    for i, seg in enumerate(extra_segments):
+        chunk = TranscriptChunk(
+            raw_segment_id=seg.id,
+            start_sec=0.0,
+            end_sec=2.0,
+            text=f"Extra chunk {i} with Gila.",
+            sequence_index=0,
+            mentioned_entities=["Gila"],
+        )
+        db_session.add(chunk)
+        extra_chunks.append(chunk)
+    await db_session.commit()
+
+    monkeypatch.setattr(
+        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+    )
+    monkeypatch.setattr(
+        rsvc.graph_memory,
+        "find_related_episodes_scored",
+        AsyncMock(
+            return_value=[
+                {"segment_id": seg.id, "shared_entity_count": 5} for seg in extra_segments
+            ]
+        ),
+    )
+
+    result = await rsvc.expand_graph_chunks([producer_chunks["matching"]], set(), "g1")
+
+    assert len(result) == rsvc.MAX_CANDIDATES
+
+
+# ── retrieve_chunks (orchestration) ──────────────────────────────────────────
+
+
+async def test_retrieve_chunks_returns_empty_when_no_primary_match(
+    test_user, producer_chunks, retrieval_session_factory, monkeypatch
+):
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="nonexistent-topic"))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
+
+    result = await rsvc.retrieve_chunks("??", test_user.id, "en", "sess-1")
+
+    assert result == []
+
+
+async def test_retrieve_chunks_combines_primary_and_bridged_without_duplicates(
+    test_user, producer_chunks, related_chunks_setup, retrieval_session_factory, monkeypatch
+):
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+    )
+    monkeypatch.setattr(
+        rsvc.graph_memory,
+        "find_related_episodes_scored",
+        AsyncMock(
+            return_value=[
+                {
+                    "segment_id": related_chunks_setup["related_with_mention"].id,
+                    "shared_entity_count": 1,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(rsvc.cache_service, "get_visited", AsyncMock(return_value=set()))
+
+    result = await rsvc.retrieve_chunks("Tell me about the army", test_user.id, "en", "sess-1")
+
+    assert {c.id for c in result} == {
+        producer_chunks["matching"].id,
+        related_chunks_setup["mentioning_chunk"].id,
+    }
+
+
+async def test_retrieve_chunks_reads_visited_set_but_never_writes_it(
+    test_user, producer_chunks, retrieval_session_factory, monkeypatch
+):
+    monkeypatch.setattr(rsvc, "_normalize_to_first_person", AsyncMock(side_effect=lambda q, lang: q))
+    monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
+    monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
+    monkeypatch.setattr(rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=[]))
+    mock_get_visited = AsyncMock(return_value=set())
+    mock_add_visited = AsyncMock()
+    monkeypatch.setattr(rsvc.cache_service, "get_visited", mock_get_visited)
+    monkeypatch.setattr(rsvc.cache_service, "add_visited", mock_add_visited)
+
+    result = await rsvc.retrieve_chunks("Tell me about the army", test_user.id, "en", "sess-1")
+
+    assert [c.id for c in result] == [producer_chunks["matching"].id]
     mock_get_visited.assert_awaited_once_with("sess-1")
     mock_add_visited.assert_not_called()

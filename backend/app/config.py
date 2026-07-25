@@ -144,6 +144,19 @@ class Settings(BaseSettings):
     # only ~1% lower WER than large-v3. Falls back to base/small if VRAM is tight.
     STT_PROVIDER: str = "whisper"  # whisper, google, azure
     WHISPER_MODEL: str = "large-v3-turbo"  # tiny, base, small, medium, large-v3, large-v3-turbo
+    # Separate, independently-loaded model for analysis_graph.py's ingestion
+    # pipeline ONLY (Prompt 11's TranscriptChunk creation) — never the live
+    # /talk conversation path (WHISPER_MODEL above). Ingestion runs offline,
+    # so it can afford a bigger/slower/more accurate model even though
+    # WHISPER_MODEL must stay fast for live turns. Confirmed directly why
+    # these can't just be the same model: benchmarked "medium" against real
+    # short (2-7s) live-question-length clips — best case ~3x slower than
+    # "small" (already a noticeable conversational delay), and on one real
+    # clip it reproducibly took 31-62s AND produced a hallucinated, looping
+    # wrong transcription, which "small" did not. Fine offline (a 24.6s real
+    # segment transcribed cleanly in 14.9s and fixed real name-transcription
+    # errors "small" made), unacceptable live.
+    WHISPER_MODEL_INGESTION: str = "medium"  # tiny, base, small, medium, large-v3, large-v3-turbo
 
     # TTS Configuration
     # chatterbox: Resemble AI's open-source SOTA TTS (default, voice cloning + 23 langs)

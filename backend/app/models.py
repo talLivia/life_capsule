@@ -52,6 +52,17 @@ class User(Base):
     # layer (Prompt 9+) uses this to know what it's translating *from* when
     # a viewer's preferred language differs.
     recording_language = Column(String, nullable=False, default="he", server_default="he")
+    # Which chat mode /talk renders for anyone talking to THIS user's
+    # archive — "avatar" (TTS + MuseTalk, the original/default experience),
+    # "video_clips" (real recorded footage via chunk retrieval, Prompt
+    # 11-14), or "video_clips_v2" (Prompt 15's experimental full-archive-
+    # reading alternative, A/B'd against video_clips; same response shape,
+    # different range-decision backend). Producer-level only: a family
+    # account's own row never reads its own chat_mode, since /talk always
+    # renders based on the linked PRODUCER's setting (see
+    # TalkAvailabilityResponse) — all modes keep working independently,
+    # this just picks which one a given producer's viewers see.
+    chat_mode = Column(String, nullable=False, default="avatar", server_default="avatar")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -256,9 +267,76 @@ class RawSegment(Base):
 
     # Relationships
     interview_session = relationship("InterviewSession", back_populates="segments")
+    transcript_chunks = relationship(
+        "TranscriptChunk", back_populates="raw_segment", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_raw_segments_session_created", "interview_session_id", "created_at"),
+    )
+
+
+class TranscriptChunk(Base):
+    """
+    One Whisper-detected phrase/sentence from a `RawSegment`'s recording —
+    the data foundation for the original-video-clip chat mode (Prompts
+    11-14, alongside the existing avatar path, not replacing it). One row
+    per natural phrase boundary Whisper found, NOT grouped into
+    fixed-duration windows: a long, multi-topic recording needs retrieval
+    precise enough to isolate the few seconds that actually answer a
+    question, not just "somewhere in this segment" (RawSegment's own
+    whole-recording embedding/topic_tags, which the avatar path still uses
+    unchanged).
+    """
+
+    __tablename__ = "transcript_chunks"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    raw_segment_id = Column(
+        String, ForeignKey("raw_segments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # This chunk's OWN timing/text — never the contextual window used to
+    # compute its embedding (see `embedding` below). What gets returned/
+    # played back to a family member must be exactly this phrase, not the
+    # neighboring context that helped find it.
+    start_sec = Column(Float, nullable=False)
+    end_sec = Column(Float, nullable=False)
+    text = Column(Text, nullable=False)
+    # List of {"word": str, "start_sec": float, "end_sec": float}, from
+    # stt.py's transcribe_with_timestamps — lets Prompt 13 pinpoint a
+    # sub-phrase answer's exact start/end, narrower than this chunk's own
+    # start_sec/end_sec, instead of returning the whole phrase verbatim.
+    word_timestamps = Column(JSON, nullable=True)
+    # Computed from this chunk's text PLUS a small window of neighboring
+    # phrases (via sequence_index) for better semantic recall on a short,
+    # otherwise-ambiguous phrase — the embedded text is NOT what's stored
+    # above or ever played back, only what's compared against a question's
+    # embedding at retrieval time (Prompt 12).
+    embedding = Column(JSON, nullable=True)
+    topic_tags = Column(JSON, nullable=True)
+    # Position among this segment's own chunks in chronological order —
+    # lets Prompt 13's boundary expansion (and this table's own contextual-
+    # embedding window) look up immediate neighbors with an indexed
+    # equality lookup instead of a timestamp range query.
+    sequence_index = Column(Integer, nullable=False)
+    # Entity names (from analysis_graph.py's existing whole-segment
+    # check_entities_node) that textually appear in THIS chunk specifically
+    # — lets a matched entity/topic be traced back to an exact moment
+    # rather than just "mentioned somewhere in this recording". Populated
+    # by simple substring matching against already-extracted names, not a
+    # second LLM call, and not a change to check_entities_node's own
+    # disambiguation behavior.
+    mentioned_entities = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    raw_segment = relationship("RawSegment", back_populates="transcript_chunks")
+
+    __table_args__ = (
+        # Prompt 13's neighbor-walk (boundary expansion from a pinpointed
+        # sub-range) and this table's own contextual-embedding window both
+        # look up "this segment's chunks around sequence_index N".
+        Index("ix_transcript_chunks_segment_sequence", "raw_segment_id", "sequence_index"),
     )
 
 

@@ -6,6 +6,7 @@ import { Gift, Heart, Loader2 } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { AuthModal } from '@/components/AuthModal'
 import { TalkInterface } from '@/components/talk/TalkInterface'
+import { VideoClipTalkInterface } from '@/components/talk/VideoClipTalkInterface'
 import { api } from '@/lib/api'
 import { useStore } from '@/store/useStore'
 import type { ApiError, TalkAvailability } from '@/lib/types'
@@ -79,6 +80,14 @@ function TalkPageInner() {
   const [availability, setAvailability] = useState<TalkAvailability | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // Because this component reads useSearchParams(), Next renders the Suspense
+  // fallback (below) into the STATIC HTML for /talk — but the client's first
+  // render (store still at skip-hydration defaults) would produce <AuthModal/>
+  // instead, so server-HTML ≠ first-client-render → "hydration failed". This
+  // guard makes the first client render reproduce the SAME fallback the server
+  // emitted, then reveals the real (auth/availability-dependent) content only
+  // after mount + store rehydration, once client and server can't disagree.
+  const [mounted, setMounted] = useState(false)
 
   const loadAvailability = async () => {
     setLoading(true)
@@ -99,6 +108,18 @@ function TalkPageInner() {
   useEffect(() => {
     if (isAuthenticated() && isLinkedFamily) loadAvailability()
   }, [isAuthenticated, isLinkedFamily])
+
+  useEffect(() => setMounted(true), [])
+
+  // First client render must match the server's static Suspense fallback
+  // (identical markup) — see `mounted`'s declaration.
+  if (!mounted) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-calm-paper dark:bg-calm-paperDark">
+        <Loader2 size={26} className="animate-spin text-calm-sage-600" />
+      </div>
+    )
+  }
 
   if (!isAuthenticated()) {
     // A brand-new incognito visitor following an invite link almost
@@ -162,6 +183,21 @@ function TalkPageInner() {
           </button>
         </div>
       </div>
+    )
+  }
+
+  // Prompt 14/15: the PRODUCER's own setting picks which chat component
+  // renders here — every family member talking to this producer gets the
+  // same mode, there is no per-viewer override (see TalkAvailability.chat_mode).
+  // Both video-clip modes (v1 chunk-retrieval and v2 full-archive reading)
+  // use the SAME component — the response shape is identical, only the
+  // backend range-decision differs.
+  if (availability.chat_mode === 'video_clips' || availability.chat_mode === 'video_clips_v2') {
+    return (
+      <VideoClipTalkInterface
+        avatarId={availability.avatar_id}
+        producerName={availability.producer_name}
+      />
     )
   }
 

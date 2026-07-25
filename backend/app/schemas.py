@@ -20,6 +20,10 @@ class UserUpdate(BaseModel):
     username: Optional[str] = None
     full_name: Optional[str] = None
     password: Optional[str] = None
+    # Prompt 14: producer-level /talk chat mode. Validated against
+    # CHAT_MODES in app/api/v1/users.py rather than a Literal here, so the
+    # 400 response can name the invalid value explicitly.
+    chat_mode: Optional[str] = None
 
 
 class UserResponse(UserBase):
@@ -28,6 +32,7 @@ class UserResponse(UserBase):
     role: str
     recording_language: str
     producer_id: Optional[str] = None
+    chat_mode: str
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -250,6 +255,10 @@ class TalkAvailabilityResponse(BaseModel):
     ready_segment_count: int
     avatar_id: Optional[str] = None
     avatar_image_url: Optional[str] = None
+    # Prompt 14: which chat component /talk should render — the PRODUCER's
+    # own setting, never the family viewer's (there is no such thing; see
+    # User.chat_mode's docstring in app/models.py).
+    chat_mode: str = "avatar"
 
 
 # Internal GPU-inference Schemas (Prompt 9) — /internal/gpu/*, never called

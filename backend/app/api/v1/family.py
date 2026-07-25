@@ -211,4 +211,5 @@ async def talk_availability(
         # hand back the image URL directly here instead of relaxing that
         # unrelated permission model just for an idle-state preview image.
         avatar_image_url=avatar.image_url if avatar else None,
+        chat_mode=producer.chat_mode,
     )

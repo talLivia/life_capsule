@@ -558,6 +558,100 @@ This is the last of the four prompts — after this, both modes should be
 fully wired and independently testable end-to-end.
 ---
 
+
+## Prompt 15 — Experimental third chat mode: "Full-archive reading" (video clips v2)
+
+New feature. This adds a THIRD chat mode alongside the existing two
+(Avatar, Original video clips) — an experimental alternative retrieval
+approach we want to A/B against the current chunk-retrieval pipeline.
+
+**Hard constraint: do NOT remove, modify, or degrade either existing mode.
+This is purely additive. The existing video-clip pipeline (Prompts 11-14)
+stays exactly as is — we are comparing against it, not replacing it yet.**
+
+### Concept
+The current video-clip mode finds answer clips via a multi-step retrieval
+chain (coreference resolution → perspective normalization → three-signal
+chunk matching → leniency retry → per-candidate verification/pinpointing).
+The new mode replaces ALL of that with a single LLM call that READS the
+entire archive and directly returns the answering time ranges:
+
+1. Load ALL TranscriptChunks for this producer, grouped by RawSegment,
+   ordered by sequence_index — formatted as a full annotated transcript:
+   segment id, the segment's recorded interview question (if stored),
+   then each chunk's [start_sec–end_sec] text lines.
+2. Build an entity map section from Graphiti: for each entity known for
+   this producer, its name + which segment ids mention it (use the
+   existing get_episode_entity_names / graph access from
+   expand_graph_chunks — read-only, no graph changes).
+3. ONE LLM call: system prompt instructs the model to act as a precise
+   archival editor — given the full transcript, the entity map, the last
+   N conversation turns (reuse the same Message-table history loading
+   _resolve_coreferences uses), and the user's question, return ONLY a
+   JSON array of time ranges that answer the question:
+   [{"segment_id": "...", "start_sec": X, "end_sec": Y}, ...]
+   — multiple non-contiguous ranges allowed, across different segments,
+   in the order they should be stitched. Empty array if nothing in the
+   archive answers the question. The model NEVER writes answer text —
+   it only points at ranges. Handle pronouns/followups ("did you love
+   her?") naturally from the conversation history — no separate
+   coreference step.
+4. Deterministic validation (no LLM): every returned range must
+   reference a real segment_id belonging to this producer, with
+   0 <= start < end <= that segment's duration, and must overlap actual
+   transcribed speech (snap range edges to the nearest word/phrase
+   timestamp boundaries from word_timestamps). Drop any range that
+   fails. If all ranges drop or the array was empty → the existing
+   NO_STORY_FALLBACK, same as the other modes.
+5. Feed the validated ranges into the EXISTING ffmpeg trim/concat
+   assembly (assemble from ranges → upload → serving URL) — reuse
+   the existing clip assembly, caching, and storage code from Prompt 13's
+   pipeline; only the "which ranges" decision is new.
+
+### Settings + frontend
+Extend the chat_mode setting from 2 values to 3: "avatar",
+"video_clips", "video_clips_v2" (label in the Settings UI: something like
+"Original video clips (beta 2)"). The /talk page routes exactly as today —
+v2 uses the SAME VideoClipTalkInterface component (the response shape is
+identical: clip URL or no-story), just a different backend path for the
+question. Voice input routing (producer_chat_mode) must cover the new
+value too.
+
+### Prompt-caching awareness
+Structure the LLM call so the large static part (full transcript + entity
+map) comes FIRST in the prompt and the variable part (conversation
+history + question) comes LAST, to maximize provider-side prompt caching
+across questions. Add a code comment noting this ordering is intentional.
+
+### Comparison harness
+Add a script (scripts/compare_retrieval_modes.py) that runs the SAME set
+of questions through both video-clip paths (v1 chunk-retrieval and v2
+full-archive reading) WITHOUT going through the WebSocket — direct
+function calls — and prints a side-by-side table per question: returned
+ranges/clips, wall-clock latency, number of LLM calls made, and estimated
+tokens. Seed it with this question set (Hebrew, matching our real test
+history):
+- "ספר לי על המשפחה שלך"
+- "מי האחים שלך?"
+- "מי זאת אילנה?"
+- "מה עשית בצבא?"
+- "מי הדמות הכי משפיעה בילדות שלך?" followed by "הוא עדיין בחיים?"
+  (two-turn sequence — v2 gets the first turn as history for the second)
+- "מה למדת בבית הספר?"
+- A question with NO answer in the archive (e.g. "איזה חיות מחמד היו לך?")
+  — both modes should return no-story, not a forced clip.
+
+### Tests
+Unit tests for: the transcript formatting, the deterministic range
+validation (rejects out-of-bounds/foreign segment ids, snaps to word
+boundaries), empty-archive and no-answer handling, and settings routing
+for the third mode. Existing avatar and video_clips tests must pass
+unchanged.
+
+Start with the backend path (steps 1-5) and the comparison harness;
+settings/frontend wiring after the harness shows the path works.
+
+
 ## Notes on sequencing
 - Prompts 1-3 can run in parallel (infra + Graphiti integration).
 - Prompt 4 depends on Prompt 2 (needs live upload endpoint).

@@ -20,6 +20,11 @@ router = APIRouter()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/users/login", auto_error=False)
 
+# The mutually exclusive /talk chat modes — see User.chat_mode's docstring
+# in app/models.py. "video_clips_v2" is Prompt 15's experimental full-
+# archive-reading alternative to "video_clips", A/B'd against it.
+CHAT_MODES = {"avatar", "video_clips", "video_clips_v2"}
+
 # bcrypt only inspects the first 72 bytes of input and bcrypt>=4.1 raises
 # (rather than silently truncating) on longer input. We use the `bcrypt`
 # library directly because passlib 1.7.4 (last released 2020) is incompatible
@@ -256,6 +261,14 @@ async def update_current_user(
 
         if update_data.password is not None:
             user.hashed_password = get_password_hash(update_data.password)
+
+        if update_data.chat_mode is not None:
+            if update_data.chat_mode not in CHAT_MODES:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"chat_mode must be one of {sorted(CHAT_MODES)}",
+                )
+            user.chat_mode = update_data.chat_mode
 
         await db.commit()
         await db.refresh(user)

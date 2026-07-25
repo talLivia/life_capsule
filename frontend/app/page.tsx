@@ -1,16 +1,17 @@
 'use client'
 
-import { useState, type CSSProperties } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
+import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import { AvatarUpload } from '@/components/AvatarUpload'
 import { AvatarList } from '@/components/AvatarList'
 import { ConnectionStatus } from '@/components/ui/ConnectionStatus'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
 import { AuthModal } from '@/components/AuthModal'
-import Link from 'next/link'
 import { api } from '@/lib/api'
 import { toast } from 'react-hot-toast'
 import { useStore } from '@/store/useStore'
+import type { Avatar } from '@/lib/types'
 
 // Heavy panels (chat WebSocket pipeline, voice cloning recorder, history
 // list with TanStack queries, settings form) load on-demand instead of
@@ -18,6 +19,13 @@ import { useStore } from '@/store/useStore'
 // by ~150 KB and lets the marketing landing page paint sooner.
 const ChatInterface = dynamic(
   () => import('@/components/ChatInterface').then(m => m.ChatInterface),
+  { ssr: false, loading: () => <PanelLoader label="Connecting…" /> },
+)
+// Producer's video-clip chat screen — its OWN layout (side chat + single
+// video panel), but sharing the exact conversation behavior the family /talk
+// screen uses via the useVideoClipChat hook. See the chat_mode routing below.
+const ProducerVideoClipChat = dynamic(
+  () => import('@/components/ProducerVideoClipChat').then(m => m.ProducerVideoClipChat),
   { ssr: false, loading: () => <PanelLoader label="Connecting…" /> },
 )
 const VoicePanel = dynamic(
@@ -31,6 +39,12 @@ const HistoryPanel = dynamic(
 const SettingsPanel = dynamic(
   () => import('@/components/SettingsPanel').then(m => m.SettingsPanel),
   { ssr: false, loading: () => <PanelLoader label="Loading settings…" /> },
+)
+// Recording is now an in-shell view (like Settings) rather than a separate
+// /record route — see the `record` view below. The old route redirects here.
+const RecordPanel = dynamic(
+  () => import('@/components/RecordPanel').then(m => m.RecordPanel),
+  { ssr: false, loading: () => <PanelLoader label="Loading your story…" /> },
 )
 
 function PanelLoader({ label }: { label: string }) {
@@ -111,11 +125,37 @@ const STATS = [
   { value: '100%', label: 'Self-hostable' },
 ]
 
-type View = 'home' | 'avatars' | 'chat' | 'voice' | 'history' | 'settings'
+type View = 'home' | 'avatars' | 'chat' | 'voice' | 'history' | 'settings' | 'record'
 
 export default function Home() {
   const { isAuthenticated, user, clearAuth } = useStore()
+  const router = useRouter()
+
+  // Access-control fix: a family account has no legitimate use for this
+  // page at all (avatar upload, voice cloning, interview recording,
+  // producer settings) — before this, there was NO role-based redirect
+  // anywhere in the app (confirmed: AuthModal's login/register handlers
+  // never navigate, and this page's only role check just hid the
+  // "Record" nav link). A family account landing here for any reason
+  // (bookmark, browser back button, a stale link) rendered the full
+  // producer control panel with no gate at all. Redirect BEFORE the
+  // producer UI ever renders, not just after login, so every entry path
+  // is covered, not only the login flow.
+  const isFamilyUser = isAuthenticated() && user?.role === 'family'
+  // The producer's own chat_mode decides which chat component their /chat view
+  // renders — mirrors /talk's routing. Video-clip modes must NOT use the
+  // avatar-only ChatInterface (it can't handle video_clip_response).
+  const isVideoClipMode =
+    user?.chat_mode === 'video_clips' || user?.chat_mode === 'video_clips_v2'
+  useEffect(() => {
+    if (isFamilyUser) router.replace('/talk')
+  }, [isFamilyUser, router])
+
   const [selectedAvatar, setSelectedAvatar] = useState<string | null>(null)
+  // True while we're auto-resolving the producer's avatar for a video-clip
+  // mode (so the Chat view can show a loader instead of the "pick an avatar"
+  // redirect, which is meaningless when the Avatars tab is hidden).
+  const [avatarResolving, setAvatarResolving] = useState(false)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   // Session id to RESUME (set only when opening from history). Distinct from
   // activeSessionId (reported back after a session starts) so it can key the
@@ -123,6 +163,39 @@ export default function Home() {
   // arrives.
   const [resumeSessionId, setResumeSessionId] = useState<string | null>(null)
   const [view, setView] = useState<View>('home')
+
+  // In video-clip modes the producer never sees the Avatars tab, so silently
+  // resolve their existing avatar to satisfy the (avatar-bound) session that
+  // the chat still creates under the hood. The producer doesn't have to pick.
+  useEffect(() => {
+    if (!isVideoClipMode || selectedAvatar) return
+    let cancelled = false
+    setAvatarResolving(true)
+    api.getAvatars()
+      .then((avatars: Avatar[]) => {
+        if (cancelled) return
+        const ready = avatars.find((a) => a.status === 'ready') ?? avatars[0]
+        if (ready) setSelectedAvatar(ready.id)
+      })
+      .catch(() => { /* leave selectedAvatar null → chat view shows guidance */ })
+      .finally(() => { if (!cancelled) setAvatarResolving(false) })
+    return () => { cancelled = true }
+  }, [isVideoClipMode, selectedAvatar])
+
+  // Switching INTO a video-clip mode while parked on a now-hidden tab would
+  // leave a blank view — bounce to Chat.
+  useEffect(() => {
+    if (isVideoClipMode && (view === 'avatars' || view === 'voice')) setView('chat')
+  }, [isVideoClipMode, view])
+
+  // Deep-link support for the old /record route (now redirects here with
+  // ?view=record). Read post-mount from window.location to avoid a
+  // useSearchParams()-driven hydration mismatch. Producer-only.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const wanted = new URLSearchParams(window.location.search).get('view')
+    if (wanted === 'record' && user?.role === 'producer') setView('record')
+  }, [user])
 
   const handleVoiceSelect = async (voiceId: string) => {
     if (!selectedAvatar) {
@@ -155,14 +228,37 @@ export default function Home() {
     setView('chat')
   }
 
+  // Avatar + voice setup only make sense in avatar mode. In the video-clip
+  // modes the story clips carry the producer's real face/voice, so hide those
+  // tabs entirely (the avatar is auto-resolved under the hood — see below).
+  const isProducerUser = user?.role === 'producer'
   const navItems: { id: View; icon: typeof Sparkles; label: string; disabled?: boolean }[] = [
     { id: 'home', icon: Sparkles, label: 'Home' },
-    { id: 'avatars', icon: Camera, label: 'Avatars' },
-    { id: 'voice', icon: Mic2, label: 'Voice' },
-    { id: 'chat', icon: MessageCircle, label: 'Chat', disabled: !selectedAvatar },
+    // Recording lives inside the shell now (was the /record route). Producer-only.
+    ...(isProducerUser ? [{ id: 'record' as View, icon: Feather, label: 'Record' }] : []),
+    ...(isVideoClipMode
+      ? []
+      : [
+          { id: 'avatars' as View, icon: Camera, label: 'Avatars' },
+          { id: 'voice' as View, icon: Mic2, label: 'Voice' },
+        ]),
+    // Chat is reachable without manually picking an avatar in video-clip mode;
+    // the auto-resolve effect below fills selectedAvatar in.
+    { id: 'chat', icon: MessageCircle, label: 'Chat', disabled: !selectedAvatar && !isVideoClipMode },
     { id: 'history', icon: History, label: 'History' },
     { id: 'settings', icon: Settings, label: 'Settings' },
   ]
+
+  // Render nothing of the producer studio while the redirect above is in
+  // flight — router.replace fires from a useEffect (after this render),
+  // so without this the full producer UI would still flash for a frame.
+  if (isFamilyUser) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <span className="inline-block w-2 h-2 rounded-full bg-primary-500 animate-pulse" />
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen">
@@ -199,17 +295,7 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-3">
-            {user?.role === 'producer' && (
-              <Link
-                href="/record"
-                className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium
-                           text-gray-400 hover:text-white hover:bg-white/5 transition-all duration-200"
-                title="Record your life story"
-              >
-                <Feather size={14} />
-                Record
-              </Link>
-            )}
+            {/* "Record" now lives in the nav bar (left) as an in-shell view. */}
             <ConnectionStatus />
             <ThemeToggle />
             {user && (
@@ -367,7 +453,16 @@ export default function Home() {
         )}
 
         {/* ── CHAT VIEW ── */}
-        {view === 'chat' && selectedAvatar && (
+        {/* Video-clip modes keep the PRODUCER's own layout (side chat + single
+            video panel) but share /talk's conversation behavior via the
+            useVideoClipChat hook — this is what fixes the old hang on "Finding
+            a clip…" (ChatInterface, the avatar-only path, never handled
+            video_clip_response). Avatar mode stays on ChatInterface. */}
+        {view === 'chat' && selectedAvatar && isVideoClipMode && (
+          <ProducerVideoClipChat key={selectedAvatar} avatarId={selectedAvatar} />
+        )}
+
+        {view === 'chat' && selectedAvatar && !isVideoClipMode && (
           <div className="max-w-7xl mx-auto px-6 py-10 animate-fade-in">
             <div className="mb-6">
               <h1 className="text-3xl font-black gradient-text mb-2">Live Conversation</h1>
@@ -382,8 +477,33 @@ export default function Home() {
           </div>
         )}
 
-        {/* Redirect if no avatar selected for chat */}
-        {view === 'chat' && !selectedAvatar && (
+        {/* Video-clip mode, avatar still resolving — brief loader (the Avatars
+            tab is hidden, so the "pick an avatar" redirect below never applies). */}
+        {view === 'chat' && !selectedAvatar && isVideoClipMode && avatarResolving && (
+          <div className="max-w-7xl mx-auto px-6 py-10 flex justify-center">
+            <PanelLoader label="Loading your stories…" />
+          </div>
+        )}
+
+        {/* Video-clip mode but the producer has no avatar at all — clips still
+            need one to anchor a session. Guide them rather than dead-end. */}
+        {view === 'chat' && !selectedAvatar && isVideoClipMode && !avatarResolving && (
+          <div className="max-w-lg mx-auto px-6 py-10 text-center">
+            <p className="text-gray-300 mb-2 font-medium">One quick setup step left</p>
+            <p className="text-gray-500 mb-4 text-sm">
+              Your story clips play under your own face, but a conversation still
+              needs one avatar image on file. Add a photo in Avatar mode, then
+              switch back — you won&apos;t have to pick it each time.
+            </p>
+            <button onClick={() => setView('settings')} className="btn-primary">
+              <Settings size={18} />
+              Open Settings
+            </button>
+          </div>
+        )}
+
+        {/* Avatar mode, no avatar selected — redirect to Avatar Studio. */}
+        {view === 'chat' && !selectedAvatar && !isVideoClipMode && (
           <div className="max-w-7xl mx-auto px-6 py-10 text-center">
             <p className="text-gray-400 mb-4">Please select an avatar first.</p>
             <button onClick={() => setView('avatars')} className="btn-primary">
@@ -401,6 +521,13 @@ export default function Home() {
         {/* ── SETTINGS VIEW ── */}
         {view === 'settings' && (
           <SettingsPanel />
+        )}
+
+        {/* ── RECORD VIEW ── (was the standalone /record route) */}
+        {view === 'record' && (
+          <div className="max-w-4xl mx-auto animate-fade-in">
+            <RecordPanel />
+          </div>
         )}
       </main>
     </div>

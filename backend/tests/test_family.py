@@ -272,6 +272,24 @@ async def test_talk_availability_true_with_ready_segment_and_avatar(
     assert body["avatar_id"] is not None
     assert body["avatar_image_url"] == "http://x/i.jpg"
     assert body["producer_id"] == test_user.id
+    # Default chat_mode (Prompt 14) — no one's /talk experience changes
+    # until the producer opts into video-clip mode.
+    assert body["chat_mode"] == "avatar"
+
+
+async def test_talk_availability_reflects_producer_video_clip_mode(
+    client: AsyncClient, db_session, test_user, family_user_auth_headers
+):
+    """Prompt 14: the setting is producer-level — /talk-availability must
+    hand back whichever mode the LINKED PRODUCER chose, not a default,
+    since the family account never has its own copy of this setting."""
+    test_user.chat_mode = "video_clips"
+    db_session.add(test_user)
+    await db_session.commit()
+
+    resp = await client.get("/api/v1/family/talk-availability", headers=family_user_auth_headers)
+    assert resp.status_code == 200
+    assert resp.json()["chat_mode"] == "video_clips"
 
 
 # ── talk-availability ────────────────────────────────────────────────────────

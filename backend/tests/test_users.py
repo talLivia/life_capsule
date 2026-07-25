@@ -138,6 +138,53 @@ async def test_update_profile(client: AsyncClient, test_user, auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_update_profile_defaults_chat_mode_to_avatar(
+    client: AsyncClient, test_user, auth_headers
+):
+    """Prompt 14: every existing/new account defaults to the unchanged
+    avatar experience until a producer explicitly opts into video clips."""
+    response = await client.get("/api/v1/users/me", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["chat_mode"] == "avatar"
+
+
+@pytest.mark.asyncio
+async def test_update_profile_sets_chat_mode(client: AsyncClient, test_user, auth_headers):
+    response = await client.put(
+        "/api/v1/users/me",
+        headers=auth_headers,
+        json={"chat_mode": "video_clips"},
+    )
+    assert response.status_code == 200
+    assert response.json()["chat_mode"] == "video_clips"
+
+
+@pytest.mark.asyncio
+async def test_update_profile_sets_chat_mode_v2(client: AsyncClient, test_user, auth_headers):
+    """Prompt 15: the experimental full-archive-reading mode is a valid,
+    persistable chat_mode value."""
+    response = await client.put(
+        "/api/v1/users/me",
+        headers=auth_headers,
+        json={"chat_mode": "video_clips_v2"},
+    )
+    assert response.status_code == 200
+    assert response.json()["chat_mode"] == "video_clips_v2"
+
+
+@pytest.mark.asyncio
+async def test_update_profile_rejects_invalid_chat_mode(
+    client: AsyncClient, test_user, auth_headers
+):
+    response = await client.put(
+        "/api/v1/users/me",
+        headers=auth_headers,
+        json={"chat_mode": "something_else"},
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_list_users_requires_auth(client: AsyncClient, test_user):
     """Listing users without a token is rejected (401)."""
     response = await client.get("/api/v1/users/")

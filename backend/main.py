@@ -103,6 +103,15 @@ async def lifespan(app: FastAPI):
         await neo4j_client.initialize()
     except Exception as e:
         logger.warning(f"Neo4j client init failed: {e}")
+    try:
+        # Warm up the LIVE Whisper model at startup so the ~9s medium load is
+        # paid once here, not on the user's first spoken question. Non-fatal:
+        # transcribe() still lazy-loads on first use if this fails.
+        from app.services.stt import stt_service
+
+        await stt_service.initialize()
+    except Exception as e:
+        logger.warning(f"STT model warm-up failed (will load lazily on first turn): {e}")
 
     # Seed demo user ONLY in DEBUG/development mode. An empty-password user
     # in production would be a critical auth bypass.
@@ -397,6 +406,20 @@ async def websocket_endpoint(
                     )
                     continue
                 await websocket_manager.handle_text_input(session_id, text_data)
+
+            elif msg_type == "video_clip_question":
+                # Original-video-clip chat mode (Prompt 13) — parallel to
+                # "text" above, not a replacement. Own contract
+                # ("video_clip_response"/"video_clip_no_story" out) so it
+                # never collides with the avatar path's "token"/"video_chunk"
+                # streaming events.
+                text_data = data.get("text")
+                if not text_data:
+                    await websocket_manager.send_message(
+                        session_id, {"type": "error", "message": "Missing text data"}
+                    )
+                    continue
+                await websocket_manager.handle_video_clip_question(session_id, text_data)
 
             elif msg_type in ("stop", "interrupt"):
                 # Explicit barge-in from a "stop" button — cancel the current

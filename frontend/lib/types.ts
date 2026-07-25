@@ -41,6 +41,8 @@ export type WsMessageType =
   | 'pong'
   | 'tts_fallback'
   | 'interrupted'
+  | 'video_clip_response'
+  | 'video_clip_no_story'
 
 // Discriminated union — each WS event has a well-typed payload so the handler
 // can rely on field presence without optional-chaining everywhere.
@@ -56,6 +58,13 @@ export type WsMessage =
   | { type: 'pong' }
   | { type: 'tts_fallback'; engine: string; voice_cloned: boolean; message: string }
   | { type: 'interrupted'; message: string }
+  // Original-video-clip chat mode (Prompt 13/14) — a separate contract from
+  // the avatar path above, sent in response to a 'video_clip_question'
+  // outgoing message (see VideoClipTalkInterface). Never repurposes
+  // 'message'/'video_chunk': a clip response is a single finished video, not
+  // a streamed sequence of lip-sync chunks.
+  | { type: 'video_clip_response'; video_url: string; uncovered_clauses: string[] }
+  | { type: 'video_clip_no_story'; message: string }
 
 export interface VoiceApiResponse {
   id: string
@@ -148,6 +157,11 @@ export interface FamilyInvite {
   redeemed_at?: string | null
 }
 
+// Producer-level /talk chat mode. "video_clips_v2" (Prompt 15) is an
+// experimental full-archive-reading alternative to "video_clips"; both use
+// the same VideoClipTalkInterface (identical response shape).
+export type ChatMode = 'avatar' | 'video_clips' | 'video_clips_v2'
+
 export interface TalkAvailability {
   producer_id: string
   producer_name: string
@@ -155,4 +169,7 @@ export interface TalkAvailability {
   ready_segment_count: number
   avatar_id?: string | null
   avatar_image_url?: string | null
+  // Prompt 14: which chat mode /talk should render — the PRODUCER's own
+  // setting, never something the family viewer picks per-session.
+  chat_mode: ChatMode
 }

@@ -72,11 +72,11 @@ from typing import Any, Dict, List, Optional, TypedDict
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.models import InterviewSession, RawSegment, User
+from app.models import InterviewSession, RawSegment, TranscriptChunk, User
 from app.services import embeddings, graph_memory
 from app.services.graph_memory import names_are_similar as _names_are_similar
 from app.services.llm import llm_service
@@ -90,6 +90,15 @@ class AnalysisState(TypedDict, total=False):
     segment_id: str
     group_id: str
     transcript: str
+    # Phrase-level STT output (Prompt 11) — one dict per Whisper-detected
+    # phrase: {"start_sec", "end_sec", "text", "words": [{"word", "start_sec",
+    # "end_sec"}, ...]}. Only populated when transcribe_node actually ran
+    # Whisper this pass (empty when it reused an already-set
+    # segment.transcript — see transcribe_node's docstring) — the original-
+    # video-clip mode (Prompts 12-14) doesn't exist yet without this, but
+    # nothing here is used by the avatar path.
+    phrases: List[Dict[str, Any]]
+    chunk_ids: List[str]
     embedding: List[float]
     topic_tags: List[str]
     names_to_check: List[Dict[str, str]]
@@ -126,6 +135,13 @@ and 10 is a major, life-altering event (e.g. a marriage, a birth, a \
 death, a life-changing decision), rate how significant and memorable \
 the event described in this transcript is. Output ONLY a single \
 integer from 0 to 10, with no other text."""
+
+# Prompt 11's TranscriptChunk: how many neighboring phrases (each side) get
+# folded into the CONTEXT used only for computing a chunk's embedding — a
+# short phrase in isolation ("I was a carpenter") can be too ambiguous on
+# its own for a good semantic match. Never affects what's stored as the
+# chunk's own start_sec/end_sec/text, only the text handed to the embedder.
+_CHUNK_CONTEXT_WINDOW = 1
 
 
 def _parse_json_array(text: str) -> List[str]:
@@ -201,23 +217,122 @@ async def transcribe_node(state: AnalysisState) -> dict:
             return {"error": "segment not found"}
         if segment.transcript:
             # Already transcribed (e.g. Prompt 4's ingest-time transcription
-            # already ran) — don't burn a second Whisper pass on the same take.
+            # already ran) — don't burn a second Whisper pass on the same
+            # take. NOTE (Prompt 11): this shortcut means `phrases` stays
+            # empty for a segment transcribed this way, so
+            # create_transcript_chunks_node creates no chunks for it this
+            # pass — only segments actually transcribed via THIS node (the
+            # branch below) get phrase-level data and chunks. Retroactively
+            # backfilling chunks for already-transcribed segments is out of
+            # this prompt's stated scope (data model + ingestion only).
             return {"transcript": segment.transcript}
         if not segment.video_key:
             return {"error": "segment has no video_key"}
 
         try:
             video_bytes = await storage_service.download_file(segment.video_key)
-            transcript = await stt_service.transcribe(
+            result = await stt_service.transcribe_with_timestamps(
                 video_bytes, language=user.recording_language
             )
         except Exception as e:
             logger.error(f"transcribe_node failed for segment {segment_id}: {e}")
             return {"error": f"transcription failed: {e}"}
 
+        transcript = result["text"]
         segment.transcript = transcript
         await db.commit()
-        return {"transcript": transcript}
+        return {"transcript": transcript, "phrases": result["phrases"]}
+
+
+async def create_transcript_chunks_node(state: AnalysisState) -> dict:
+    """
+    Prompt 11: one TranscriptChunk per Whisper-detected phrase from
+    transcribe_node's `phrases` (empty — and this node a no-op — when that
+    node hit its "already transcribed" shortcut; see its docstring). Purely
+    additive to the existing avatar path: doesn't read or write
+    `segment.transcript`/`embedding`/`topic_tags` at all, only creates rows
+    in the new table.
+
+    Each chunk's OWN embedding is computed from its text PLUS a small window
+    of neighboring phrases (_CHUNK_CONTEXT_WINDOW) for better semantic
+    recall on a short, otherwise-ambiguous phrase — but the window is never
+    what's stored as the chunk's own text/boundaries, only what's handed to
+    the embedder. Topic tagging runs per-chunk (one LLM call per phrase) as
+    specified — worth flagging: a long, many-phrase recording means many
+    more LLM calls here than the single whole-segment call extract_topics_
+    node already makes, a real latency/cost cost of chunk-level precision.
+    """
+    segment_id = state["segment_id"]
+    phrases = state.get("phrases") or []
+    if not phrases:
+        return {}
+
+    texts = [p["text"] for p in phrases]
+
+    async with AsyncSessionLocal() as db:
+        segment, _user = await _load_segment_and_user(db, segment_id)
+        if segment is None:
+            return {}
+
+        # Idempotent re-run safety (e.g. a retried analysis pass) — mirrors
+        # every other node here overwriting rather than appending.
+        await db.execute(
+            delete(TranscriptChunk).where(TranscriptChunk.raw_segment_id == segment_id)
+        )
+
+        chunks: List[TranscriptChunk] = []
+        for i, phrase in enumerate(phrases):
+            window_start = max(0, i - _CHUNK_CONTEXT_WINDOW)
+            window_end = min(len(texts), i + _CHUNK_CONTEXT_WINDOW + 1)
+            context_text = " ".join(t for t in texts[window_start:window_end] if t).strip()
+
+            embedding: Optional[List[float]] = None
+            if context_text:
+                try:
+                    embedding = await embeddings.embed_text(context_text)
+                except Exception as e:
+                    # Fail-soft, same pattern as embed_transcript_node: a
+                    # missing chunk embedding just means Prompt 12's
+                    # semantic-similarity signal has nothing to compare for
+                    # this one chunk, not a reason to fail the whole segment.
+                    logger.warning(
+                        f"create_transcript_chunks_node embedding failed for "
+                        f"segment {segment_id} chunk {i}: {e}"
+                    )
+
+            topic_tags: List[str] = []
+            if phrase["text"]:
+                try:
+                    raw = await llm_service.generate_response(
+                        messages=[{"role": "user", "content": phrase["text"]}],
+                        system_prompt=_EXTRACT_TOPICS_SYSTEM_PROMPT,
+                        temperature=0,  # structured extraction — deterministic
+                    )
+                    topic_tags = _parse_json_array(raw)
+                except Exception as e:
+                    logger.warning(
+                        f"create_transcript_chunks_node topic tagging failed for "
+                        f"segment {segment_id} chunk {i}: {e}"
+                    )
+
+            chunk = TranscriptChunk(
+                raw_segment_id=segment_id,
+                start_sec=phrase["start_sec"],
+                end_sec=phrase["end_sec"],
+                text=phrase["text"],
+                word_timestamps=phrase["words"],
+                embedding=embedding,
+                topic_tags=topic_tags,
+                sequence_index=i,
+            )
+            db.add(chunk)
+            chunks.append(chunk)
+
+        await db.commit()
+        for chunk in chunks:
+            await db.refresh(chunk)
+
+        return {"chunk_ids": [chunk.id for chunk in chunks]}
 
 
 async def embed_transcript_node(state: AnalysisState) -> dict:
@@ -250,6 +365,7 @@ async def extract_topics_node(state: AnalysisState) -> dict:
             raw = await llm_service.generate_response(
                 messages=[{"role": "user", "content": transcript}],
                 system_prompt=_EXTRACT_TOPICS_SYSTEM_PROMPT,
+                temperature=0,  # structured extraction — deterministic
             )
             tags = _parse_json_array(raw)
         except Exception as e:
@@ -266,6 +382,69 @@ async def extract_topics_node(state: AnalysisState) -> dict:
     return {"topic_tags": tags}
 
 
+# Deterministic, known Hebrew ASR-confusion normalization for the substring
+# check in _tag_chunks_with_entities below ONLY — never applied to the
+# stored mentioned_entities value itself (that stays exactly as Graphiti/
+# check_entities_node extracted it), and never used anywhere near Prompt
+# 13's answer text (which pinpoints verbatim from the real chunk, so this
+# has zero effect on what a family member actually hears). Deliberately
+# NOT fuzzy/edit-distance matching (rejected on purpose — trades away
+# precision for convenience); each mapping below is a specific, confirmed
+# confusion, auditable on its own:
+#   - ט -> ת: faster-whisper transcribed "בטבריה" (correct) as "בתבריה" —
+#     confirmed live on segment 502fb283, a real ASR letter confusion
+#     between two Hebrew letters that can sound similar without nikud.
+#   - final letter forms -> base form (ם/מ, ן/נ, ץ/צ, ף/פ, ך/כ): a name's
+#     letter takes its final form only when it's the last letter of a
+#     word: whether that's true for a given occurrence depends on the
+#     surrounding text, not the name itself, so the SAME name can
+#     legitimately appear in either form depending on context.
+_HEBREW_MATCH_NORMALIZE_TABLE = str.maketrans(
+    {
+        "ט": "ת",
+        "ם": "מ",
+        "ן": "נ",
+        "ץ": "צ",
+        "ף": "פ",
+        "ך": "כ",
+    }
+)
+
+
+def _normalize_for_entity_match(text: str) -> str:
+    return text.translate(_HEBREW_MATCH_NORMALIZE_TABLE)
+
+
+async def _tag_chunks_with_entities(segment_id: str, names: List[str]) -> None:
+    """Side-effect only helper for check_entities_node (Prompt 11): stamps
+    TranscriptChunk.mentioned_entities with whichever of `names` textually
+    appear in each chunk's own text, via case-insensitive substring
+    matching (normalized through _normalize_for_entity_match first — see
+    its docstring for the specific, deterministic rules and why fuzzy
+    matching was rejected). Deliberately not an LLM call and not part of
+    this node's return value — this is traceability metadata on the new
+    table, not a change to entity disambiguation itself. The STORED
+    mentioned_entities value is always the original name from `names`,
+    never the normalized form — normalization is comparison-only."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(TranscriptChunk).where(TranscriptChunk.raw_segment_id == segment_id)
+        )
+        chunks = result.scalars().all()
+        if not chunks:
+            return
+        for chunk in chunks:
+            text_norm = _normalize_for_entity_match(chunk.text.lower())
+            mentioned = [
+                name
+                for name in names
+                if _normalize_for_entity_match(name.strip().lower()) in text_norm
+            ]
+            if mentioned:
+                chunk.mentioned_entities = mentioned
+        await db.commit()
+
+
 async def check_entities_node(state: AnalysisState) -> dict:
     segment_id = state["segment_id"]
     group_id = state["group_id"]
@@ -277,11 +456,21 @@ async def check_entities_node(state: AnalysisState) -> dict:
         raw = await llm_service.generate_response(
             messages=[{"role": "user", "content": transcript}],
             system_prompt=_ENTITY_NAME_SYSTEM_PROMPT,
+            temperature=0,  # structured extraction — deterministic
         )
         names = _parse_json_array(raw)
     except Exception as e:
         logger.warning(f"check_entities_node name extraction failed for segment {segment_id}: {e}")
         names = []
+
+    if names:
+        # Prompt 11: trace each extracted entity name back to the specific
+        # TranscriptChunk(s) it textually appears in — simple substring
+        # matching against already-created chunks, NOT a second LLM call,
+        # and no change to this node's own disambiguation behavior/return
+        # value below. A no-op when no chunks exist yet (already-transcribed
+        # segment that skipped chunk creation — see transcribe_node).
+        await _tag_chunks_with_entities(segment_id, names)
 
     to_check: List[Dict[str, str]] = []
     auto_resolutions: Dict[str, Dict[str, Optional[str]]] = {}
@@ -394,6 +583,7 @@ async def score_importance_node(state: AnalysisState) -> dict:
             raw = await llm_service.generate_response(
                 messages=[{"role": "user", "content": transcript}],
                 system_prompt=_IMPORTANCE_SYSTEM_PROMPT,
+                temperature=0,  # structured scoring — deterministic
             )
             score = float(_parse_importance_score(raw))
         except Exception as e:
@@ -463,6 +653,7 @@ def _has_pending_names(state: AnalysisState) -> str:
 def build_graph(checkpointer):
     graph = StateGraph(AnalysisState)
     graph.add_node("transcribe", transcribe_node)
+    graph.add_node("create_transcript_chunks", create_transcript_chunks_node)
     graph.add_node("embed_transcript", embed_transcript_node)
     graph.add_node("extract_topics", extract_topics_node)
     graph.add_node("check_entities", check_entities_node)
@@ -473,8 +664,12 @@ def build_graph(checkpointer):
 
     graph.add_edge(START, "transcribe")
     graph.add_conditional_edges(
-        "transcribe", _route_on_error, {"fail": "fail", "next": "embed_transcript"}
+        "transcribe", _route_on_error, {"fail": "fail", "next": "create_transcript_chunks"}
     )
+    # Prompt 11: purely additive — doesn't read/write anything the avatar
+    # path (embed_transcript onward) depends on, and never errors the whole
+    # segment (fail-soft internally; see create_transcript_chunks_node).
+    graph.add_edge("create_transcript_chunks", "embed_transcript")
     graph.add_edge("embed_transcript", "extract_topics")
     graph.add_edge("extract_topics", "check_entities")
     graph.add_conditional_edges(

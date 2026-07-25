@@ -39,9 +39,10 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 
 from app.database import AsyncSessionLocal
-from app.models import RawSegment
+from app.models import RawSegment, TranscriptChunk
 from app.services import embeddings, graph_memory
 from app.services.cache import cache_service
 from app.services.retrieval_service import _short_summary
@@ -164,6 +165,113 @@ async def score_candidates(
         scored.append(
             ScoredSegment(
                 segment_id=item["segment_id"],
+                summary=item["summary"],
+                score=combined,
+                recency_score=nr,
+                importance_score=ni,
+                relevance_score=nv,
+            )
+        )
+
+    scored.sort(key=lambda s: s.score, reverse=True)
+    if filter_by_threshold:
+        return [s for s in scored if s.score >= RELEVANCE_THRESHOLD]
+    return scored
+
+
+# ── Prompt 12: chunk-level scoring for the original-video-clip mode ────────
+#
+# Parallel to score_candidates above, for the new video-clip mode only —
+# does not change that function or its behavior. Same Generative Agents
+# formula, same weights/threshold (RELEVANCE_THRESHOLD, W_RECENCY/
+# W_IMPORTANCE/W_RELEVANCE above), same min-max normalization across the
+# candidate set.
+
+
+@dataclass
+class ScoredChunk:
+    chunk_id: str
+    raw_segment_id: str
+    summary: str
+    score: float
+    recency_score: float
+    importance_score: float
+    relevance_score: float
+
+
+async def score_chunk_candidates(
+    question: str,
+    candidate_chunk_ids: List[str],
+    session_id: str,
+    filter_by_threshold: bool = True,
+) -> List[ScoredChunk]:
+    """Score retrieval_service.primary_match_chunks's candidate chunks,
+    sorted by score descending. `group_id` isn't needed here (unlike
+    score_candidates) — recency uses the chunk's OWN mentioned_entities
+    (Prompt 11) rather than a fresh Graphiti lookup, so there's no graph
+    call to scope.
+
+    importance_score is inherited from the chunk's PARENT RawSegment: a
+    TranscriptChunk has no importance of its own — Prompt 5's
+    score_importance_node scores a whole recording, not a single phrase
+    within it, so every chunk from the same segment shares that segment's
+    score. relevance_score is cosine similarity between the question's
+    embedding and the chunk's own (contextually-computed, Prompt 11)
+    embedding — a shorter, more specific comparison than the whole-segment
+    version above."""
+    if not candidate_chunk_ids:
+        return []
+
+    question_embedding = await _embed_question(question)
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(TranscriptChunk)
+            .options(joinedload(TranscriptChunk.raw_segment))
+            .where(TranscriptChunk.id.in_(candidate_chunk_ids))
+        )
+        chunks_by_id = {c.id: c for c in result.unique().scalars().all()}
+
+    raw = []
+    for cid in candidate_chunk_ids:
+        chunk = chunks_by_id.get(cid)
+        if chunk is None:
+            continue
+
+        entity_names = chunk.mentioned_entities or []
+        recency = await _recency_raw_score(entity_names, session_id)
+        importance = (
+            chunk.raw_segment.importance_score
+            if chunk.raw_segment is not None and chunk.raw_segment.importance_score is not None
+            else 0.0
+        )
+        relevance = embeddings.cosine_similarity(question_embedding, chunk.embedding)
+
+        raw.append(
+            {
+                "chunk_id": cid,
+                "raw_segment_id": chunk.raw_segment_id,
+                "summary": _short_summary(chunk.text),
+                "recency": recency,
+                "importance": importance,
+                "relevance": relevance,
+            }
+        )
+
+    if not raw:
+        return []
+
+    norm_recency = _min_max_normalize([r["recency"] for r in raw])
+    norm_importance = _min_max_normalize([r["importance"] for r in raw])
+    norm_relevance = _min_max_normalize([r["relevance"] for r in raw])
+
+    scored: List[ScoredChunk] = []
+    for item, nr, ni, nv in zip(raw, norm_recency, norm_importance, norm_relevance):
+        combined = W_RECENCY * nr + W_IMPORTANCE * ni + W_RELEVANCE * nv
+        scored.append(
+            ScoredChunk(
+                chunk_id=item["chunk_id"],
+                raw_segment_id=item["raw_segment_id"],
                 summary=item["summary"],
                 score=combined,
                 recency_score=nr,

@@ -149,12 +149,16 @@ def test_build_custom_extraction_instructions_uses_fuller_resolved_name():
 
 
 async def test_transcribe_node_reuses_existing_transcript(segment, monkeypatch):
+    # Prompt 11: transcribe_node now calls transcribe_with_timestamps
+    # instead of transcribe (needs phrase/word timing for chunk creation) —
+    # the reuse-shortcut still skips STT entirely either way.
     mock_transcribe = AsyncMock()
-    monkeypatch.setattr(ag.stt_service, "transcribe", mock_transcribe)
+    monkeypatch.setattr(ag.stt_service, "transcribe_with_timestamps", mock_transcribe)
 
     result = await ag.transcribe_node({"segment_id": segment.id})
 
     assert result["transcript"] == segment.transcript
+    assert "phrases" not in result
     mock_transcribe.assert_not_awaited()
 
 
@@ -163,11 +167,29 @@ async def test_transcribe_node_runs_stt_when_missing(db_session, segment, monkey
     await db_session.commit()
 
     monkeypatch.setattr(ag.storage_service, "download_file", AsyncMock(return_value=b"bytes"))
-    monkeypatch.setattr(ag.stt_service, "transcribe", AsyncMock(return_value="a fresh transcript"))
+    monkeypatch.setattr(
+        ag.stt_service,
+        "transcribe_with_timestamps",
+        AsyncMock(
+            return_value={
+                "text": "a fresh transcript",
+                "phrases": [
+                    {
+                        "start_sec": 0.0,
+                        "end_sec": 1.5,
+                        "text": "a fresh transcript",
+                        "words": [{"word": "a", "start_sec": 0.0, "end_sec": 0.2}],
+                    }
+                ],
+            }
+        ),
+    )
 
     result = await ag.transcribe_node({"segment_id": segment.id})
 
     assert result["transcript"] == "a fresh transcript"
+    assert len(result["phrases"]) == 1
+    assert result["phrases"][0]["text"] == "a fresh transcript"
     await db_session.refresh(segment)
     assert segment.transcript == "a fresh transcript"
 
@@ -179,6 +201,196 @@ async def test_transcribe_node_errors_without_video_key(db_session, segment):
 
     result = await ag.transcribe_node({"segment_id": segment.id})
     assert "error" in result
+
+
+# ── create_transcript_chunks_node tests (Prompt 11) ─────────────────────────
+
+
+def _sample_phrases():
+    return [
+        {
+            "start_sec": 0.0,
+            "end_sec": 2.0,
+            "text": "I grew up in a small house.",
+            "words": [{"word": "I", "start_sec": 0.0, "end_sec": 0.2}],
+        },
+        {
+            "start_sec": 2.0,
+            "end_sec": 5.0,
+            "text": "After the army I worked as a carpenter for years.",
+            "words": [{"word": "After", "start_sec": 2.0, "end_sec": 2.3}],
+        },
+        {
+            "start_sec": 5.0,
+            "end_sec": 7.0,
+            "text": "It was hard work but I enjoyed it.",
+            "words": [{"word": "It", "start_sec": 5.0, "end_sec": 5.2}],
+        },
+    ]
+
+
+async def test_create_transcript_chunks_node_one_row_per_phrase(db_session, segment, monkeypatch):
+    monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1, 0.2, 0.3]))
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value='["carpentry"]'))
+
+    phrases = _sample_phrases()
+    result = await ag.create_transcript_chunks_node({"segment_id": segment.id, "phrases": phrases})
+
+    assert len(result["chunk_ids"]) == 3
+    await db_session.refresh(segment, attribute_names=["transcript_chunks"])
+    chunks = sorted(segment.transcript_chunks, key=lambda c: c.sequence_index)
+    assert len(chunks) == 3
+    assert chunks[0].text == "I grew up in a small house."
+    assert chunks[0].start_sec == 0.0
+    assert chunks[0].end_sec == 2.0
+    assert chunks[0].word_timestamps == phrases[0]["words"]
+    assert chunks[0].topic_tags == ["carpentry"]
+    assert [c.sequence_index for c in chunks] == [0, 1, 2]
+    assert chunks[1].text == "After the army I worked as a carpenter for years."
+
+
+async def test_create_transcript_chunks_node_no_phrases_is_noop(segment):
+    result = await ag.create_transcript_chunks_node({"segment_id": segment.id, "phrases": []})
+    assert result == {}
+
+
+async def test_create_transcript_chunks_node_embedding_uses_context_not_storage(
+    db_session, segment, monkeypatch
+):
+    """The embedding call for the MIDDLE phrase must include its neighbors
+    (window=1), but the chunk's own stored text must stay just that phrase —
+    the context window is search-time-only, never what's returned/played
+    back."""
+    captured_texts = []
+
+    async def fake_embed(text):
+        captured_texts.append(text)
+        return [0.5, 0.5]
+
+    monkeypatch.setattr(ag.embeddings, "embed_text", fake_embed)
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value="[]"))
+
+    phrases = _sample_phrases()
+    await ag.create_transcript_chunks_node({"segment_id": segment.id, "phrases": phrases})
+
+    middle_call_text = captured_texts[1]
+    assert "After the army I worked as a carpenter for years." in middle_call_text
+    assert "I grew up in a small house." in middle_call_text
+    assert "It was hard work but I enjoyed it." in middle_call_text
+
+    await db_session.refresh(segment, attribute_names=["transcript_chunks"])
+    middle = next(c for c in segment.transcript_chunks if c.sequence_index == 1)
+    assert middle.text == "After the army I worked as a carpenter for years."
+
+
+async def test_create_transcript_chunks_node_embedding_failure_is_fail_soft(
+    db_session, segment, monkeypatch
+):
+    monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(side_effect=RuntimeError("down")))
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value="[]"))
+
+    result = await ag.create_transcript_chunks_node(
+        {"segment_id": segment.id, "phrases": _sample_phrases()}
+    )
+    assert len(result["chunk_ids"]) == 3
+
+    await db_session.refresh(segment, attribute_names=["transcript_chunks"])
+    assert all(c.embedding is None for c in segment.transcript_chunks)
+
+
+async def test_create_transcript_chunks_node_rerun_replaces_old_chunks(
+    db_session, segment, monkeypatch
+):
+    monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1]))
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value="[]"))
+
+    await ag.create_transcript_chunks_node({"segment_id": segment.id, "phrases": _sample_phrases()})
+    await ag.create_transcript_chunks_node(
+        {"segment_id": segment.id, "phrases": _sample_phrases()[:1]}
+    )
+
+    await db_session.refresh(segment, attribute_names=["transcript_chunks"])
+    assert len(segment.transcript_chunks) == 1
+
+
+async def test_tag_chunks_with_entities_substring_match(db_session, segment, monkeypatch):
+    monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1]))
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value="[]"))
+    await ag.create_transcript_chunks_node({"segment_id": segment.id, "phrases": _sample_phrases()})
+
+    await ag._tag_chunks_with_entities(segment.id, ["carpenter"])
+
+    await db_session.refresh(segment, attribute_names=["transcript_chunks"])
+    tagged = [c for c in segment.transcript_chunks if c.mentioned_entities]
+    assert len(tagged) == 1
+    assert tagged[0].text == "After the army I worked as a carpenter for years."
+    assert tagged[0].mentioned_entities == ["carpenter"]
+
+
+def test_normalize_for_entity_match_merges_tet_and_tav():
+    """Confirmed live: faster-whisper transcribed "בטבריה" (correct) as
+    "בתבריה" — a real Hebrew ASR letter confusion, not a hypothetical."""
+    assert ag._normalize_for_entity_match("טבריה") == ag._normalize_for_entity_match("תבריה")
+
+
+def test_normalize_for_entity_match_merges_final_letter_forms():
+    """"כהן" (Cohen) naturally ends in the final-nun form (ן) since it's
+    word-final here — the SAME name could appear mid-word elsewhere with
+    the regular form (נ) instead, depending on surrounding text, so both
+    must normalize to the same comparison form."""
+    assert ag._normalize_for_entity_match("כהן") == ag._normalize_for_entity_match("כהנ")
+
+
+async def test_tag_chunks_with_entities_matches_through_tet_tav_confusion(
+    db_session, segment, monkeypatch
+):
+    """The exact real-world case: Graphiti extracted the correctly-spelled
+    "טבריה", but the chunk's own (medium-model-transcribed) text has the
+    ASR-confused "תבריה" — normalization must still find the match, and
+    the STORED mentioned_entities value must be the ORIGINAL name from
+    Graphiti, never the normalized form."""
+    monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1]))
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value="[]"))
+    phrases = [
+        {
+            "start_sec": 0.0,
+            "end_sec": 3.0,
+            "text": "גדלתי בתבריה עד גיל 14.",
+            "words": [{"word": "גדלתי", "start_sec": 0.0, "end_sec": 0.5}],
+        }
+    ]
+    await ag.create_transcript_chunks_node({"segment_id": segment.id, "phrases": phrases})
+
+    await ag._tag_chunks_with_entities(segment.id, ["טבריה"])
+
+    await db_session.refresh(segment, attribute_names=["transcript_chunks"])
+    tagged = [c for c in segment.transcript_chunks if c.mentioned_entities]
+    assert len(tagged) == 1
+    # Stored value is the ORIGINAL Graphiti spelling, not a normalized one.
+    assert tagged[0].mentioned_entities == ["טבריה"]
+
+
+async def test_check_entities_node_tags_chunks_with_entities(db_session, segment, monkeypatch):
+    """check_entities_node's own disambiguation return value/behavior is
+    completely unaffected — this only verifies the additive chunk-tagging
+    side effect runs alongside it."""
+    monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1]))
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value="[]"))
+    await ag.create_transcript_chunks_node({"segment_id": segment.id, "phrases": _sample_phrases()})
+
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value='["carpenter"]'))
+    monkeypatch.setattr(ag.graph_memory, "get_entity_candidates", AsyncMock(return_value=[]))
+
+    result = await ag.check_entities_node(
+        {"segment_id": segment.id, "group_id": "g1", "transcript": segment.transcript}
+    )
+    assert result["names_to_check"] == []
+    assert result["entity_resolutions"] == {}
+
+    await db_session.refresh(segment, attribute_names=["transcript_chunks"])
+    tagged = [c for c in segment.transcript_chunks if c.mentioned_entities]
+    assert len(tagged) == 1
+    assert "carpenter" in tagged[0].mentioned_entities
 
 
 async def test_embed_transcript_node_persists_vector(db_session, segment, monkeypatch):
@@ -437,7 +649,7 @@ async def test_finalize_ingest_node_marks_failed_on_error(db_session, segment, m
 
 
 async def _mock_all_llm_calls(monkeypatch, *, entity_candidates):
-    async def fake_generate(messages, system_prompt=None, thinking=False):
+    async def fake_generate(messages, system_prompt=None, thinking=False, temperature=None):
         if system_prompt == ag._EXTRACT_TOPICS_SYSTEM_PROMPT:
             return '["childhood"]'
         if system_prompt == ag._ENTITY_NAME_SYSTEM_PROMPT:
@@ -470,6 +682,62 @@ async def test_full_pipeline_no_ambiguity_reaches_ready(
     assert segment.embedding == [0.1, 0.2, 0.3]
     mock_add_episode.assert_awaited_once()
     assert mock_add_episode.call_args.kwargs["custom_extraction_instructions"] is None
+
+
+async def test_full_pipeline_creates_transcript_chunks_for_a_fresh_transcription(
+    db_session, segment, analysis_session_factory, fake_checkpointer, monkeypatch
+):
+    """Prompt 11 wired into the real graph end-to-end: a segment with no
+    pre-set transcript gets STT with timestamps, chunks get created from the
+    phrases, and the rest of the existing avatar-path pipeline (embedding,
+    topics, entities, importance, finalize) still completes exactly as
+    before — this new node sits in between without disturbing any of it."""
+    segment.transcript = None
+    await db_session.commit()
+
+    monkeypatch.setattr(ag.storage_service, "download_file", AsyncMock(return_value=b"video bytes"))
+    monkeypatch.setattr(
+        ag.stt_service,
+        "transcribe_with_timestamps",
+        AsyncMock(
+            return_value={
+                "text": "I grew up with my grandmother Gila. She was a carpenter.",
+                "phrases": [
+                    {
+                        "start_sec": 0.0,
+                        "end_sec": 2.0,
+                        "text": "I grew up with my grandmother Gila.",
+                        "words": [],
+                    },
+                    {
+                        "start_sec": 2.0,
+                        "end_sec": 4.0,
+                        "text": "She was a carpenter.",
+                        "words": [],
+                    },
+                ],
+            }
+        ),
+    )
+    await _mock_all_llm_calls(monkeypatch, entity_candidates=[])
+    monkeypatch.setattr(ag.graph_memory, "add_episode", AsyncMock())
+
+    result = await ag.run_segment_analysis(segment.id)
+
+    assert "__interrupt__" not in result
+    await db_session.refresh(segment)
+    assert segment.status == "ready"
+    # Existing avatar-path fields, unaffected by the new node.
+    assert segment.transcript == "I grew up with my grandmother Gila. She was a carpenter."
+    assert segment.topic_tags == ["childhood"]
+    assert segment.embedding == [0.1, 0.2, 0.3]
+
+    await db_session.refresh(segment, attribute_names=["transcript_chunks"])
+    chunks = sorted(segment.transcript_chunks, key=lambda c: c.sequence_index)
+    assert len(chunks) == 2
+    assert chunks[0].text == "I grew up with my grandmother Gila."
+    assert chunks[1].text == "She was a carpenter."
+    assert chunks[0].embedding == [0.1, 0.2, 0.3]
 
 
 async def test_full_pipeline_pauses_then_resumes_on_ambiguous_entity(
@@ -611,7 +879,7 @@ async def test_confirm_entity_multi_candidate_flow(
     candidate_uuid, rejects an omitted one (no single-candidate default
     applies with 2+ candidates), and succeeds when the right one is named."""
 
-    async def fake_generate(messages, system_prompt=None, thinking=False):
+    async def fake_generate(messages, system_prompt=None, thinking=False, temperature=None):
         if system_prompt == ag._EXTRACT_TOPICS_SYSTEM_PROMPT:
             return '["childhood"]'
         if system_prompt == ag._ENTITY_NAME_SYSTEM_PROMPT:

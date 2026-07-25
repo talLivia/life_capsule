@@ -192,6 +192,12 @@ class ConnectionManager:
             # chatting with someone else's avatar).
             "producer_id": None,
             "producer_recording_language": "en",
+            # Prompt 14's follow-up: which pipeline a transcribed "audio"
+            # message should feed into — the avatar path (default) or the
+            # video-clip path, per the PRODUCER's own Settings toggle (see
+            # _handle_audio_inner below). Never the family viewer's own
+            # setting; there isn't one (see User.chat_mode's docstring).
+            "producer_chat_mode": "avatar",
             "connected_at": datetime.now(timezone.utc),
             "last_activity": datetime.now(timezone.utc),
         }
@@ -276,6 +282,7 @@ class ConnectionManager:
                         self.session_data[session_id][
                             "producer_recording_language"
                         ] = producer.recording_language
+                        self.session_data[session_id]["producer_chat_mode"] = producer.chat_mode
                         # "language" (used by both STT transcription and TTS
                         # synthesis, see _handle_audio_inner/_animate_from_
                         # queue) defaulted to "en" in connect() — but every
@@ -585,8 +592,15 @@ class ConnectionManager:
                 return
 
             await self.send_message(session_id, {"type": "transcription", "text": text})
-            # Run the text turn directly (we're already inside the tracked task).
-            await self._handle_text_input_inner(session_id, text)
+            # Route the transcribed text to whichever pipeline the PRODUCER's
+            # own Settings toggle selects (Prompt 14) — same STT step either
+            # way, just a different destination. Run directly (we're already
+            # inside the tracked task).
+            chat_mode = self.session_data.get(session_id, {}).get("producer_chat_mode", "avatar")
+            if chat_mode in ("video_clips", "video_clips_v2"):
+                await self._handle_video_clip_question_inner(session_id, text)
+            else:
+                await self._handle_text_input_inner(session_id, text)
 
         except asyncio.CancelledError:
             _raw_trace(f"_handle_audio_inner CANCELLED {session_id}")
@@ -690,6 +704,118 @@ class ConnectionManager:
             await self.send_message(
                 session_id,
                 {"type": "error", "message": f"Processing failed: {type(e).__name__}: {e}"},
+            )
+
+    # ── original-video-clip chat mode (Prompt 13) ───────────────────────────────
+    #
+    # A SEPARATE mode from handle_text_input/_handle_text_input_inner above —
+    # returns a real, verbatim video clip assembled from the storyteller's own
+    # recordings instead of an avatar's synthesized TTS+lip-sync reply. Built
+    # alongside the avatar path, not replacing it (see docs/poc-claude-code-
+    # prompts.md's "Shared context" hard constraint) — this is why it gets its
+    # own message types ("video_clip_question" in, "video_clip_response"/
+    # "video_clip_no_story" out) rather than repurposing "text"/"token"/
+    # "video_chunk", whose contract belongs entirely to the avatar pipeline.
+
+    async def handle_video_clip_question(self, session_id: str, text: str):
+        """Non-blocking dispatcher, mirroring handle_text_input's shape:
+        validates inline, interrupts any in-flight turn (avatar or video-clip
+        — one active turn per session either way), then spawns the work as a
+        tracked task and returns immediately."""
+        text = (text or "").strip()
+        if not text:
+            await self.send_message(session_id, {"type": "error", "message": "Empty message"})
+            return
+        if len(text) > MAX_TEXT_INPUT_LEN:
+            await self.send_message(
+                session_id,
+                {
+                    "type": "error",
+                    "message": f"Message too long ({len(text)} chars). Limit is {MAX_TEXT_INPUT_LEN}.",
+                },
+            )
+            return
+
+        await self.interrupt_active_turn(session_id)
+        self._spawn_turn(session_id, self._handle_video_clip_question_inner(session_id, text))
+
+    async def _handle_video_clip_question_inner(self, session_id: str, text: str):
+        from app.services import full_archive_retrieval, video_clip_assembler
+
+        started_at = datetime.now(timezone.utc)
+        data = self.session_data.get(session_id, {})
+        data["last_activity"] = started_at
+        group_id = data.get("producer_id")
+        recording_language = data.get("producer_recording_language", "en")
+        # Both video-clip modes share this handler and an identical response
+        # contract (a clip URL or the no-story fallback); only the range-
+        # decision backend differs. Prompt 15's experimental full-archive
+        # reader ("video_clips_v2") is selected here, otherwise the Prompt
+        # 11-14 chunk-retrieval assembler.
+        chat_mode = data.get("producer_chat_mode", "avatar")
+        assembler = (
+            full_archive_retrieval.assemble_video_clip_response_v2
+            if chat_mode == "video_clips_v2"
+            else video_clip_assembler.assemble_video_clip_response
+        )
+
+        # The try below must wrap EVERYTHING from here, not just the
+        # assemble_video_clip_response call — _persist_message/
+        # _ensure_conversation_title used to sit outside it (mirrored from
+        # an earlier draft), meaning an unexpected failure in either would
+        # propagate uncaught out of this task with no "error" message ever
+        # sent, leaving the frontend stuck on "Finding a clip…" forever with
+        # nothing in the browser console. Matches _handle_text_input_inner's
+        # own convention (its try already wraps its persist/title calls too).
+        try:
+            await self._persist_message(session_id, "user", text)
+            await self._ensure_conversation_title(session_id, text)
+            await self.send_message(
+                session_id, {"type": "status", "message": "Finding a clip…", "stage": "video_clip"}
+            )
+
+            if not group_id:
+                await self.send_message(
+                    session_id,
+                    {"type": "video_clip_no_story", "message": self._NO_PIPELINE_MSG},
+                )
+                return
+
+            with span("video_clip.assemble"):
+                result = await assembler(
+                    question=text,
+                    group_id=group_id,
+                    recording_language=recording_language,
+                    session_id=session_id,
+                )
+
+            if result.no_story or not result.video_url:
+                await self.send_message(
+                    session_id,
+                    {"type": "video_clip_no_story", "message": result.fallback_text},
+                )
+                return
+
+            latency = (datetime.now(timezone.utc) - started_at).total_seconds()
+            await self._persist_message(
+                session_id, "assistant", result.video_url, latency=latency
+            )
+            await self.send_message(
+                session_id,
+                {
+                    "type": "video_clip_response",
+                    "video_url": result.video_url,
+                    "uncovered_clauses": result.uncovered_clauses,
+                },
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Video clip error [{session_id}]: {type(e).__name__}: {e}", exc_info=True
+            )
+            await self.send_message(
+                session_id,
+                {"type": "error", "message": f"Video clip assembly failed: {type(e).__name__}: {e}"},
             )
 
     # ── streaming pipeline ────────────────────────────────────────────────────

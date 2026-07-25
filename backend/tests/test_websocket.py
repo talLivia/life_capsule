@@ -243,6 +243,194 @@ async def test_audio_transcribed_in_session_language(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_audio_routes_to_avatar_pipeline_by_default(monkeypatch):
+    """Prompt 14's audio follow-up: with no producer_chat_mode set (or set
+    to the "avatar" default), transcribed speech must still reach the
+    existing avatar turn — unchanged behavior for every session that
+    hasn't opted into video-clip mode."""
+    import base64
+
+    from app.services import stt as stt_module
+
+    m = ConnectionManager()
+    _wire_session(m)
+
+    async def fake_transcribe(audio, language="en"):
+        return "hello there"
+
+    monkeypatch.setattr(stt_module.stt_service, "transcribe", fake_transcribe)
+
+    calls = {"text": 0, "video_clip": 0}
+
+    async def fake_text_turn(session_id, text):
+        calls["text"] += 1
+
+    async def fake_video_clip_turn(session_id, text):
+        calls["video_clip"] += 1
+
+    m._handle_text_input_inner = fake_text_turn  # type: ignore[assignment]
+    m._handle_video_clip_question_inner = fake_video_clip_turn  # type: ignore[assignment]
+
+    await m._handle_audio_inner("s1", base64.b64encode(b"x" * 2000).decode())
+
+    assert calls == {"text": 1, "video_clip": 0}
+
+
+@pytest.mark.asyncio
+async def test_audio_routes_to_video_clip_pipeline_when_producer_opted_in(monkeypatch):
+    """When the linked producer's chat_mode is "video_clips", transcribed
+    audio must feed the video-clip turn instead of the avatar turn — same
+    STT step, different destination, per the producer's own Settings
+    toggle (never the family viewer's own preference)."""
+    import base64
+
+    from app.services import stt as stt_module
+
+    m = ConnectionManager()
+    _wire_session(m)
+    m.session_data["s1"]["producer_chat_mode"] = "video_clips"
+
+    async def fake_transcribe(audio, language="en"):
+        return "tell me about your brothers"
+
+    monkeypatch.setattr(stt_module.stt_service, "transcribe", fake_transcribe)
+
+    calls = {"text": 0, "video_clip": 0}
+
+    async def fake_text_turn(session_id, text):
+        calls["text"] += 1
+
+    async def fake_video_clip_turn(session_id, text):
+        calls["video_clip"] += 1
+        assert text == "tell me about your brothers"
+
+    m._handle_text_input_inner = fake_text_turn  # type: ignore[assignment]
+    m._handle_video_clip_question_inner = fake_video_clip_turn  # type: ignore[assignment]
+
+    await m._handle_audio_inner("s1", base64.b64encode(b"x" * 2000).decode())
+
+    assert calls == {"text": 0, "video_clip": 1}
+
+
+@pytest.mark.asyncio
+async def test_audio_routes_to_video_clip_pipeline_for_v2_mode(monkeypatch):
+    """Prompt 15: "video_clips_v2" is a video-clip mode too — transcribed
+    audio must feed the video-clip turn (which then picks the v2 assembler
+    internally), NOT the avatar turn."""
+    import base64
+
+    from app.services import stt as stt_module
+
+    m = ConnectionManager()
+    _wire_session(m)
+    m.session_data["s1"]["producer_chat_mode"] = "video_clips_v2"
+
+    async def fake_transcribe(audio, language="en"):
+        return "who is Ilana"
+
+    monkeypatch.setattr(stt_module.stt_service, "transcribe", fake_transcribe)
+
+    calls = {"text": 0, "video_clip": 0}
+
+    async def fake_text_turn(session_id, text):
+        calls["text"] += 1
+
+    async def fake_video_clip_turn(session_id, text):
+        calls["video_clip"] += 1
+
+    m._handle_text_input_inner = fake_text_turn  # type: ignore[assignment]
+    m._handle_video_clip_question_inner = fake_video_clip_turn  # type: ignore[assignment]
+
+    await m._handle_audio_inner("s1", base64.b64encode(b"x" * 2000).decode())
+
+    assert calls == {"text": 0, "video_clip": 1}
+
+
+@pytest.mark.asyncio
+async def test_video_clip_inner_selects_v2_assembler_for_v2_mode(monkeypatch):
+    """The shared video-clip handler must dispatch to full_archive_retrieval's v2
+    assembler when producer_chat_mode is "video_clips_v2", and to the v1
+    assembler otherwise — both have the identical response contract."""
+    from app.services import full_archive_retrieval, video_clip_assembler
+    from app.services.video_clip_assembler import VideoClipResult
+
+    called = {"v1": 0, "v2": 0}
+
+    async def fake_v1(question, group_id, recording_language, session_id):
+        called["v1"] += 1
+        return VideoClipResult(video_url="http://x/v1.mp4")
+
+    async def fake_v2(question, group_id, recording_language, session_id):
+        called["v2"] += 1
+        return VideoClipResult(video_url="http://x/v2.mp4")
+
+    monkeypatch.setattr(video_clip_assembler, "assemble_video_clip_response", fake_v1)
+    monkeypatch.setattr(full_archive_retrieval, "assemble_video_clip_response_v2", fake_v2)
+
+    m = ConnectionManager()
+    ws = _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+    m.session_data["s1"]["producer_chat_mode"] = "video_clips_v2"
+
+    await m._handle_video_clip_question_inner("s1", "who is Ilana")
+
+    assert called == {"v1": 0, "v2": 1}
+    urls = [msg.get("video_url") for msg in ws.sent if msg["type"] == "video_clip_response"]
+    assert urls == ["http://x/v2.mp4"]
+
+
+@pytest.mark.asyncio
+async def test_video_clip_inner_selects_v1_assembler_for_default_video_clips_mode(monkeypatch):
+    from app.services import full_archive_retrieval, video_clip_assembler
+    from app.services.video_clip_assembler import VideoClipResult
+
+    called = {"v1": 0, "v2": 0}
+
+    async def fake_v1(question, group_id, recording_language, session_id):
+        called["v1"] += 1
+        return VideoClipResult(video_url="http://x/v1.mp4")
+
+    async def fake_v2(question, group_id, recording_language, session_id):
+        called["v2"] += 1
+        return VideoClipResult(video_url="http://x/v2.mp4")
+
+    monkeypatch.setattr(video_clip_assembler, "assemble_video_clip_response", fake_v1)
+    monkeypatch.setattr(full_archive_retrieval, "assemble_video_clip_response_v2", fake_v2)
+
+    m = ConnectionManager()
+    _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+    m.session_data["s1"]["producer_chat_mode"] = "video_clips"
+
+    await m._handle_video_clip_question_inner("s1", "tell me about your family")
+
+    assert called == {"v1": 1, "v2": 0}
+
+
+@pytest.mark.asyncio
+async def test_handle_video_clip_question_inner_sends_error_on_early_failure(monkeypatch):
+    """Confirmed live bug: _persist_message/_ensure_conversation_title/the
+    initial "status" send used to sit OUTSIDE the try/except — an
+    unexpected failure there would propagate out of the task uncaught,
+    with no "error" message ever sent, leaving the frontend stuck on
+    "Finding a clip…" forever with nothing in the browser console. The
+    try must wrap the ENTIRE chain, not just assemble_video_clip_response."""
+    m = ConnectionManager()
+    ws = _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+
+    async def fake_persist_message(session_id, role, content, latency=None):
+        raise RuntimeError("DB connection lost")
+
+    m._persist_message = fake_persist_message  # type: ignore[assignment]
+
+    await m._handle_video_clip_question_inner("s1", "tell me about your family")
+
+    types = [msg["type"] for msg in ws.sent]
+    assert "error" in types, f"expected an error message, got {types}"
+
+
+@pytest.mark.asyncio
 async def test_animate_from_queue_tolerates_locked_temp_file_cleanup(monkeypatch):
     """A PermissionError deleting tmp_audio/tmp_video (Windows can briefly
     hold a file lock after the ffmpeg subprocess behind synthesize/animate
