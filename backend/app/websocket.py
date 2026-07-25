@@ -816,6 +816,11 @@ class ConnectionManager:
                     "type": "video_clip_response",
                     "video_url": result.video_url,
                     "uncovered_clauses": result.uncovered_clauses,
+                    # v2's optional "want to hear more about X?" offer. Chat
+                    # text only — the client renders it as a message with
+                    # Yes/No; Yes re-asks it through this same handler so the
+                    # answer goes through the normal validation/assembly path.
+                    "follow_up": result.follow_up,
                 },
             )
 

@@ -63,7 +63,17 @@ export type WsMessage =
   // outgoing message (see VideoClipTalkInterface). Never repurposes
   // 'message'/'video_chunk': a clip response is a single finished video, not
   // a streamed sequence of lip-sync chunks.
-  | { type: 'video_clip_response'; video_url: string; uncovered_clauses: string[] }
+  // `follow_up` (v2 only, optional) offers to continue with related material
+  // that genuinely exists in the archive and hasn't been shown yet. It is
+  // CHAT TEXT ONLY — never spoken and never part of the video, which stays
+  // the storyteller's verbatim footage. Accepting it re-asks the question
+  // through the normal path so it gets the same validation/assembly.
+  | {
+      type: 'video_clip_response'
+      video_url: string
+      uncovered_clauses: string[]
+      follow_up?: { question: string } | null
+    }
   | { type: 'video_clip_no_story'; message: string }
 
 export interface VoiceApiResponse {

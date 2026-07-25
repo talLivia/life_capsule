@@ -390,7 +390,7 @@ async def test_read_and_validate_ranges_no_answer_returns_empty(monkeypatch):
     monkeypatch.setattr(ar, "_load_archive", AsyncMock(return_value=archive))
     monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={}))
     monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
-    monkeypatch.setattr(ar, "_read_archive_for_ranges", AsyncMock(return_value=[]))
+    monkeypatch.setattr(ar, "_read_archive_for_ranges", AsyncMock(return_value=([], None)))
 
     result = await ar.read_and_validate_ranges("q", "group", "he", "sess")
     assert result == []
@@ -404,7 +404,7 @@ async def test_read_and_validate_ranges_happy_path_returns_validated_clips(monke
     monkeypatch.setattr(
         ar,
         "_read_archive_for_ranges",
-        AsyncMock(return_value=["u1"]),
+        AsyncMock(return_value=(["u1"], None)),
     )
 
     result = await ar.read_and_validate_ranges("q", "group", "he", "sess")
@@ -546,7 +546,7 @@ async def test_read_archive_for_ranges_fails_soft_on_llm_error(monkeypatch):
         ar.llm_service, "generate_response", AsyncMock(side_effect=RuntimeError("down"))
     )
     result = await ar._read_archive_for_ranges("q", "T", "E", "", "he")
-    assert result == []
+    assert result == ([], None)  # (unit_ids, follow_up) — fail-soft on both
 
 
 # ── already-shown handling (visited-set wired into v2) ───────────────────────
@@ -632,3 +632,87 @@ def test_history_block_aligns_units_to_the_most_recent_turns():
     out = ar._format_history_block(turns, per_turn)
     assert "newer answer" in out
     assert "older answer" not in out
+
+
+# ── proactive follow-up suggestion ──────────────────────────────────────────
+
+
+def test_parse_follow_up_valid():
+    raw = '{"unit_ids": ["u1"], "follow_up": {"question": "want more?", "unit_ids": ["u9"]}}'
+    assert ar._parse_follow_up(raw) == {"question": "want more?", "unit_ids": ["u9"]}
+
+
+def test_parse_follow_up_absent_or_null():
+    assert ar._parse_follow_up('{"unit_ids": ["u1"]}') is None
+    assert ar._parse_follow_up('{"unit_ids": ["u1"], "follow_up": null}') is None
+
+
+def test_parse_follow_up_rejects_malformed():
+    assert ar._parse_follow_up('{"follow_up": {"question": "", "unit_ids": ["u9"]}}') is None
+    assert ar._parse_follow_up('{"follow_up": {"question": "q", "unit_ids": []}}') is None
+    assert ar._parse_follow_up('{"follow_up": {"question": "q"}}') is None
+    assert ar._parse_follow_up("not json") is None
+
+
+def _fu_units():
+    archive = [
+        ar.ArchiveSegment(
+            segment=_segment("seg-a", "Q1"),
+            chunks=[_chunk_with("seg-a", 0, _paced_words(21, break_after=[6, 13]), "a")],
+        ),
+    ]
+    return ar._build_units(archive)  # u1, u2, u3
+
+
+def test_follow_up_kept_when_it_points_at_real_unseen_units():
+    units = _fu_units()
+    by_id = {u.unit_id: u for u in units}
+    out = ar._validate_follow_up(
+        {"question": "want to hear more?", "unit_ids": ["u3"]}, by_id, [units[0]], set()
+    )
+    assert out == {"question": "want to hear more?"}
+
+
+def test_follow_up_dropped_when_unit_unknown():
+    """Never offer something the archive cannot actually show."""
+    units = _fu_units()
+    by_id = {u.unit_id: u for u in units}
+    assert ar._validate_follow_up(
+        {"question": "q", "unit_ids": ["u999"]}, by_id, [units[0]], set()
+    ) is None
+
+
+def test_follow_up_dropped_when_it_only_repeats_the_answer():
+    units = _fu_units()
+    by_id = {u.unit_id: u for u in units}
+    assert ar._validate_follow_up(
+        {"question": "q", "unit_ids": ["u1"]}, by_id, [units[0]], set()
+    ) is None
+
+
+def test_follow_up_dropped_when_material_already_shown():
+    units = _fu_units()
+    by_id = {u.unit_id: u for u in units}
+    shown = {ar._unit_key(units[2].segment_id, units[2].start_sec)}
+    assert ar._validate_follow_up(
+        {"question": "q", "unit_ids": ["u3"]}, by_id, [units[0]], shown
+    ) is None
+
+
+async def test_assemble_v2_passes_follow_up_through(monkeypatch):
+    clips = [ar.ExpandedClip(raw_segment_id="seg-a", start_sec=0.0, end_sec=1.2,
+                             source_chunk_id="archive-read:seg-a")]
+    monkeypatch.setattr(
+        ar, "select_units",
+        AsyncMock(return_value=ar.UnitSelection(
+            clips=clips, selected_units=[], all_already_shown=False,
+            follow_up={"question": "want to hear how I knew?"})),
+    )
+    monkeypatch.setattr(ar.cache_service, "get", AsyncMock(return_value=None))
+    monkeypatch.setattr(ar.cache_service, "set", AsyncMock(return_value=True))
+    monkeypatch.setattr(ar.cache_service, "add_visited", AsyncMock(return_value=True))
+    monkeypatch.setattr(ar.video_clip_assembler, "_assemble_and_upload_clip",
+                        AsyncMock(return_value="https://cdn/x.mp4"))
+
+    result = await ar.assemble_video_clip_response_v2("q", "group", "he", "sess")
+    assert result.follow_up == {"question": "want to hear how I knew?"}

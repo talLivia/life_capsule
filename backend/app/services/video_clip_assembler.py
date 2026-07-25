@@ -183,6 +183,10 @@ class VideoClipResult:
     # the next turn knows what was already shown and what it said. Left empty
     # by v1, which has no unit concept.
     shown_units: List[dict] = field(default_factory=list)
+    # v2 only: {"question": str} offering to continue with related material
+    # that exists in the archive and hasn't been shown. Chat text ONLY — it is
+    # never spoken and never part of the video, which stays verbatim footage.
+    follow_up: Optional[dict] = None
 
 
 def _parse_json_object(text: str) -> Optional[dict]:

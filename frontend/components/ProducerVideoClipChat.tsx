@@ -37,6 +37,8 @@ export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) 
     setIsClipPlaying,
     clipGrace,
     sendText,
+    acceptFollowUp,
+    declineFollowUp,
     micMuted,
     setMicMuted,
     isListening,
@@ -173,6 +175,28 @@ export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) 
                       }`}
                     >
                       {m.videoUrl ? 'Playing the matching clip →' : m.content}
+                      {/* Proactive offer — chat text with Yes/No. "Yes" re-asks
+                          it as a normal question so it takes the same path. */}
+                      {m.followUpQuestion && !m.followUpDismissed && (
+                        <div className="flex items-center gap-2 mt-2.5">
+                          <button
+                            onClick={() => acceptFollowUp(m.id, m.followUpQuestion!)}
+                            className="px-3 py-1 rounded-lg text-xs font-medium text-white
+                                       bg-gradient-to-br from-primary-600 to-accent-600
+                                       hover:shadow-glow transition-all active:scale-95"
+                          >
+                            כן
+                          </button>
+                          <button
+                            onClick={() => declineFollowUp(m.id)}
+                            className="px-3 py-1 rounded-lg text-xs font-medium text-gray-300
+                                       bg-surface-700 border border-white/10 hover:bg-surface-600
+                                       transition-all active:scale-95"
+                          >
+                            לא
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )

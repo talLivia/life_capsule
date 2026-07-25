@@ -12,6 +12,11 @@ export interface TalkMessage {
   content: string
   videoUrl?: string
   noStory?: boolean
+  // A proactive "want to hear more about X?" offer. Rendered as chat text
+  // with Yes/No; it is never spoken and never part of any video. Cleared
+  // (dismissed) once answered either way, so it can't be actioned twice.
+  followUpQuestion?: string
+  followUpDismissed?: boolean
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5
@@ -78,11 +83,22 @@ export function useVideoClipChat(avatarId: string) {
           { id: `user-voice-${Date.now()}`, role: 'user', content: msg.text },
         ])
         break
-      case 'video_clip_response':
+      case 'video_clip_response': {
         setIsThinking(false)
+        const followUp = msg.follow_up?.question
         setMessages((prev) => [
           ...prev,
           { id: `clip-${Date.now()}`, role: 'assistant', content: '', videoUrl: msg.video_url },
+          // The offer is a SEPARATE chat message, never mixed into the clip —
+          // the video stays verbatim footage with nothing added to it.
+          ...(followUp
+            ? [{
+                id: `followup-${Date.now()}`,
+                role: 'assistant' as const,
+                content: followUp,
+                followUpQuestion: followUp,
+              }]
+            : []),
         ])
         // Hold the mic gated briefly on arrival even if autoplay is blocked
         // (see clipGrace) — autoplay engaging isClipPlaying takes over for the
@@ -91,6 +107,7 @@ export function useVideoClipChat(avatarId: string) {
         if (clipGraceTimerRef.current) clearTimeout(clipGraceTimerRef.current)
         clipGraceTimerRef.current = setTimeout(() => setClipGrace(false), CLIP_GRACE_MS)
         break
+      }
       case 'video_clip_no_story':
         setIsThinking(false)
         setMessages((prev) => [
@@ -191,6 +208,26 @@ export function useVideoClipChat(avatarId: string) {
     setInputText('')
   }, [inputText])
 
+  /** Accept a suggestion: ask it as a NORMAL question over the same WS
+   *  contract, so it goes through identical validation and assembly — no
+   *  shortcut that could bypass the never-invent guarantees. */
+  const acceptFollowUp = useCallback((messageId: string, question: string) => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return
+    setMessages((prev) => [
+      ...prev.map((m) => (m.id === messageId ? { ...m, followUpDismissed: true } : m)),
+      { id: `user-${Date.now()}`, role: 'user', content: question },
+    ])
+    setStatusText('Finding a clip…')
+    setIsThinking(true)
+    wsRef.current.send(JSON.stringify({ type: 'video_clip_question', text: question }))
+  }, [])
+
+  const declineFollowUp = useCallback((messageId: string) => {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === messageId ? { ...m, followUpDismissed: true } : m))
+    )
+  }, [])
+
   const sendAudioSegment = useCallback((base64Audio: string) => {
     if (wsRef.current?.readyState !== WebSocket.OPEN) return
     // Spoken input: we're transcribing first — the user's words (and then the
@@ -231,6 +268,8 @@ export function useVideoClipChat(avatarId: string) {
     clipGrace,
     // actions
     sendText,
+    acceptFollowUp,
+    declineFollowUp,
     // mic
     micMuted,
     setMicMuted,

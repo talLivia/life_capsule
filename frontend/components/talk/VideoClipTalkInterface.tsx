@@ -31,6 +31,8 @@ export function VideoClipTalkInterface({ avatarId, producerName }: VideoClipTalk
     isClipPlaying,
     clipGrace,
     sendText,
+    acceptFollowUp,
+    declineFollowUp,
     micMuted,
     setMicMuted,
     isListening,
@@ -95,6 +97,24 @@ export function VideoClipTalkInterface({ avatarId, producerName }: VideoClipTalk
                   }`}
                 >
                   {m.content}
+                  {/* Proactive offer — chat text with Yes/No. "Yes" re-asks it
+                      as a normal question so it takes the same path. */}
+                  {m.followUpQuestion && !m.followUpDismissed && (
+                    <div className="flex items-center gap-2 mt-2.5">
+                      <button
+                        onClick={() => acceptFollowUp(m.id, m.followUpQuestion!)}
+                        className="calm-btn-primary !py-1.5 !px-4 text-xs"
+                      >
+                        כן
+                      </button>
+                      <button
+                        onClick={() => declineFollowUp(m.id)}
+                        className="calm-btn-secondary !py-1.5 !px-4 text-xs"
+                      >
+                        לא
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -171,9 +171,31 @@ anyway - a separate step decides what to do about that. Returning an empty \
 selection is correct ONLY when no unit in the archive answers the question \
 at all.
 
+FOLLOW-UP SUGGESTION (optional): after choosing the answer, check whether \
+the archive holds OTHER material genuinely related to what you just \
+answered - the same person, place, or period - in units you did NOT \
+include and that are not marked [ALREADY SHOWN]. If it does, add a \
+"follow_up": a SHORT, natural question offering to continue (in the same \
+language as the storyteller's transcript), plus the unit ids that would \
+answer it. For example, after answering how they met their partner, the \
+recording about the moment they knew they'd found the right person is \
+exactly such material.
+- Word it in the STORYTELLER'S OWN VOICE, speaking to the listener: it \
+offers to tell them something of THEIRS. So "want to hear about the moment \
+I knew?" - first person for the storyteller ("my parents", "I knew"), \
+never third person about them ("his parents") and never second person as \
+if addressing them ("what you discovered").
+- The suggestion must be answerable by REAL units you list - never offer \
+something the archive cannot actually show.
+- Its unit ids must not overlap the answer's own unit_ids, and must not be \
+already shown.
+- If there is no such material, omit "follow_up" or set it to null. No \
+suggestion is perfectly fine - never invent one to seem helpful.
+
 Rules:
 - Output ONLY a JSON object, nothing else, exactly: \
-{{"unit_ids": ["u3", "u4", ...]}}
+{{"unit_ids": ["u3", "u4", ...], "follow_up": {{"question": "...", \
+"unit_ids": ["u9"]}}}}  (or {{"unit_ids": [...], "follow_up": null}})
 - Use ONLY unit ids of the form u<number> that literally appear below, \
 listed in the order they should be played and stitched together. NEVER \
 output a recording number, an interview question, a time, or any other \
@@ -568,6 +590,34 @@ def _format_entity_map(entity_map: Dict[str, List[str]]) -> str:
 # ── Step 3: the single range-selection LLM call ─────────────────────────────
 
 
+def _parse_follow_up(text: str) -> Optional[dict]:
+    """The optional {"question", "unit_ids"} suggestion from the SAME reply as
+    the answer — deliberately not a second LLM call. Returns None when absent
+    or malformed; validation against real units happens in select_units."""
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    fu = data.get("follow_up")
+    if not isinstance(fu, dict):
+        return None
+    question = fu.get("question")
+    raw_ids = fu.get("unit_ids")
+    if not isinstance(question, str) or not question.strip():
+        return None
+    if not isinstance(raw_ids, list):
+        return None
+    ids = [i.strip() for i in raw_ids if isinstance(i, str) and i.strip()]
+    if not ids:
+        return None
+    return {"question": question.strip(), "unit_ids": ids}
+
+
 def _parse_unit_selection(text: str) -> List[str]:
     """Extract the selected unit ids, preserving the model's stitch order.
 
@@ -612,7 +662,7 @@ async def _read_archive_for_ranges(
     entity_map_block: str,
     history_block: str,
     recording_language: str,
-) -> List[str]:
+) -> Tuple[List[str], Optional[dict]]:
     """The ONE LLM call. Fail-soft to [] (an LLM/parse failure yields the
     no-story fallback, never a guessed clip) — same never-invent contract
     as the other modes' own LLM steps.
@@ -642,8 +692,8 @@ async def _read_archive_for_ranges(
         )
     except Exception as e:
         logger.warning(f"Archive-read LLM call failed, treating as no-story: {e}")
-        return []
-    return _parse_unit_selection(raw)
+        return [], None
+    return _parse_unit_selection(raw), _parse_follow_up(raw)
 
 
 # ── Step 4: deterministic validation + word-boundary snapping (no LLM) ──────
@@ -730,6 +780,9 @@ class UnitSelection:
     clips: List[ExpandedClip]
     selected_units: List[UtteranceUnit]
     all_already_shown: bool
+    # {"question": str} when the model offered a follow-up that SURVIVED
+    # validation, else None. Chat text only — never spoken, never in the video.
+    follow_up: Optional[dict] = None
 
 
 async def select_units(
@@ -753,7 +806,7 @@ async def select_units(
     )
     history_block = _format_history_block(turns, per_turn_units) if turns else ""
 
-    unit_ids = await _read_archive_for_ranges(
+    unit_ids, raw_follow_up = await _read_archive_for_ranges(
         question, transcript_block, entity_map_block, history_block, recording_language
     )
 
@@ -763,7 +816,42 @@ async def select_units(
     all_shown = bool(selected) and all(
         _unit_key(u.segment_id, u.start_sec) in shown_keys for u in selected
     )
-    return UnitSelection(clips=clips, selected_units=selected, all_already_shown=all_shown)
+    follow_up = _validate_follow_up(raw_follow_up, by_id, selected, shown_keys)
+    return UnitSelection(
+        clips=clips,
+        selected_units=selected,
+        all_already_shown=all_shown,
+        follow_up=follow_up,
+    )
+
+
+def _validate_follow_up(
+    raw: Optional[dict],
+    by_id: Dict[str, UtteranceUnit],
+    answer_units: List[UtteranceUnit],
+    shown_keys: set,
+) -> Optional[dict]:
+    """Same deterministic gate the answer gets: a suggestion survives only if
+    it points at REAL units that are not part of this answer and were not
+    already played. Anything else is dropped SILENTLY — no suggestion is a
+    perfectly good outcome, and a broken one would offer content we can't
+    actually show."""
+    if not raw:
+        return None
+    answer_keys = {_unit_key(u.segment_id, u.start_sec) for u in answer_units}
+    kept: List[UtteranceUnit] = []
+    for uid in dict.fromkeys(raw["unit_ids"]):
+        unit = by_id.get(uid)
+        if unit is None:
+            logger.info(f"Follow-up suggestion referenced unknown unit {uid!r}; dropping suggestion")
+            return None
+        key = _unit_key(unit.segment_id, unit.start_sec)
+        if key in answer_keys or key in shown_keys:
+            continue  # already covered — not "more"
+        kept.append(unit)
+    if not kept:
+        return None
+    return {"question": raw["question"]}
 
 
 # ── Step 5: orchestrate, reusing the existing assembly/caching/storage ──────
@@ -807,6 +895,7 @@ async def assemble_video_clip_response_v2(
     # next turn reads for both the already-shown marks and the history block.
     return VideoClipResult(
         video_url=video_url,
+        follow_up=selection.follow_up,
         shown_units=[
             {
                 "key": _unit_key(u.segment_id, u.start_sec),
