@@ -223,16 +223,26 @@ class LLMService:
         system_prompt: Optional[str] = None,
         thinking: bool = False,
         temperature: Optional[float] = None,
+        model: Optional[str] = None,
     ) -> str:
         """`temperature` overrides settings.LLM_TEMPERATURE for this call only
         — e.g. Prompt 6's topic classifier wants temperature=0 (deterministic)
-        regardless of the app-wide default used for conversational replies."""
+        regardless of the app-wide default used for conversational replies.
+
+        `model` likewise overrides settings.LLM_MODEL for this call only. Model
+        strength is a PER-CALL decision: most calls here are cheap classifiers
+        where the small model is right, while one or two do hard reasoning over
+        the whole archive and are worth a stronger (pricier, slower) model.
+        Passing it per call keeps that choice explicit at each site instead of
+        forcing one global model on twelve very different jobs."""
         if self.provider == "anthropic":
-            return await self._generate_anthropic(messages, system_prompt, thinking, temperature)
+            return await self._generate_anthropic(
+                messages, system_prompt, thinking, temperature, model
+            )
         if self.provider == "openai":
-            return await self._generate_openai(messages, system_prompt, temperature)
+            return await self._generate_openai(messages, system_prompt, temperature, model)
         if self.provider == "gemini":
-            return await self._generate_gemini(messages, system_prompt, temperature)
+            return await self._generate_gemini(messages, system_prompt, temperature, model)
         raise LLMError(f"Unsupported LLM provider: {self.provider}")
 
     async def _generate_anthropic(
@@ -241,9 +251,10 @@ class LLMService:
         system_prompt: Optional[str],
         thinking: bool,
         temperature: Optional[float] = None,
+        model: Optional[str] = None,
     ) -> str:
         kwargs: dict = {
-            "model": self.model,
+            "model": model or self.model,
             "max_tokens": self.max_tokens,
             "temperature": temperature if temperature is not None else self.temperature,
             "system": _cacheable_system(system_prompt),
@@ -282,6 +293,7 @@ class LLMService:
         messages: List[Dict[str, str]],
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
+        model: Optional[str] = None,
     ) -> str:
         if not system_prompt:
             raise LLMError("system_prompt is required — see module docstring")
@@ -321,6 +333,7 @@ class LLMService:
         messages: List[Dict[str, str]],
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
+        model: Optional[str] = None,
     ) -> str:
         if not system_prompt:
             raise LLMError("system_prompt is required — see module docstring")
@@ -333,7 +346,7 @@ class LLMService:
         )
         try:
             response = await self.client.aio.models.generate_content(
-                model=self.model,
+                model=model or self.model,
                 contents=self._gemini_contents(messages),
                 config=config,
             )

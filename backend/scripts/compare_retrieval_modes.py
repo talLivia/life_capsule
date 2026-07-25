@@ -66,11 +66,20 @@ class LLMCallMeter:
         self._orig = llm_service.generate_response
 
     def install(self) -> None:
-        async def wrapper(messages, system_prompt=None, thinking=False, temperature=None):
+        # **kwargs, not a fixed signature: generate_response gains per-call
+        # options over time (temperature, then `model`), and a fixed signature
+        # here turns each new one into a TypeError that the callers' fail-soft
+        # silently reports as "no story" — which is exactly how it looked when
+        # ARCHIVE_READ_MODEL was added.
+        async def wrapper(messages, system_prompt=None, thinking=False, temperature=None, **kwargs):
             self.calls += 1
             in_chars = len(system_prompt or "") + sum(len(m.get("content", "")) for m in messages)
             out = await self._orig(
-                messages, system_prompt=system_prompt, thinking=thinking, temperature=temperature
+                messages,
+                system_prompt=system_prompt,
+                thinking=thinking,
+                temperature=temperature,
+                **kwargs,
             )
             self.est_tokens += (in_chars + len(out or "")) // 4
             return out
@@ -143,6 +152,15 @@ QUESTION_SET: List[Tuple[str, str, List[Dict[str, str]]]] = [
     ("ilana", "מי זאת אילנה?", []),
     ("tzvi", "מי זה צבי?", []),
     ("army", "מה עשית בצבא?", []),
+    # Montreal: the mid-thought-cut case. The answer spans TWO recordings
+    # (the post-army flight + the programming studies), and the second one
+    # must run to the end of the thought ("...and when I came back to Israel
+    # I kept working in it") rather than stopping after "I studied programming".
+    ("montreal", "מה לך ולעיר מונטריאול?", []),
+    # Narrow vs broad on the SAME topic — breadth must fall out of the
+    # question alone, with no length rule anywhere in the code.
+    ("army-narrow", "באיזה תפקיד שירתת בצבא?", []),
+    ("army-broad", "ספר לי על התקופה שלך בצבא", []),
     ("influence-1", "מי הדמות הכי משפיעה בילדות שלך?", []),
     (
         "influence-2 (followup)",

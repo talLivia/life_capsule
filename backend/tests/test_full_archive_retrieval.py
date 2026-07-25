@@ -60,43 +60,154 @@ def _segment(seg_id: str, question: str) -> RawSegment:
     )
 
 
+# ── utterance units: splitting ───────────────────────────────────────────────
+
+
+def _gapped_words(spec: list, start_sec: float = 0.0, word_dur: float = 0.4) -> list:
+    """Build word_timestamps from (word, gap_before_sec) pairs so tests can
+    place REAL pauses — the plain _word_timestamps helper emits contiguous
+    words (all gaps 0), which by design never splits."""
+    out = []
+    t = start_sec
+    for word, gap in spec:
+        t += gap
+        out.append({"word": word, "start_sec": round(t, 3), "end_sec": round(t + word_dur, 3)})
+        t += word_dur
+    return out
+
+
+def _paced_words(n_words: int, break_after: list, start_sec: float = 0.0,
+                 small: float = 0.02, big: float = 1.0) -> list:
+    """n_words with a SMALL gap between each, and a BIG gap after each index in
+    `break_after`. Because the threshold is a high percentile of the gap
+    distribution, big gaps only register as unit breaks when they are genuine
+    outliers — so keep len(break_after) well under 10% of the gaps."""
+    spec = []
+    for i in range(n_words):
+        if i == 0:
+            gap = 0.0
+        elif (i - 1) in break_after:
+            gap = big
+        else:
+            gap = small
+        spec.append(("w%d" % i, gap))
+    return _gapped_words(spec, start_sec=start_sec)
+
+
+def _chunk_with(seg_id: str, seq: int, words: list, text: str):
+    return TranscriptChunk(
+        raw_segment_id=seg_id,
+        start_sec=words[0]["start_sec"],
+        end_sec=words[-1]["end_sec"],
+        text=text,
+        sequence_index=seq,
+        word_timestamps=words,
+    )
+
+
+def test_percentile_interpolates():
+    assert ar._percentile([0.0, 1.0], 50) == 0.5
+    assert ar._percentile([5.0], 90) == 5.0
+    assert ar._percentile([], 90) == 0.0
+
+
+def test_gap_threshold_adapts_to_the_recordings_own_distribution():
+    """A fast talker and a slow talker must get DIFFERENT thresholds from the
+    same code — that's the point of deriving it per recording."""
+    fast = [_chunk_with("s", 0, _gapped_words(
+        [("a", 0.0), ("b", 0.02), ("c", 0.02), ("d", 0.02), ("e", 0.30)]), "fast")]
+    slow = [_chunk_with("s", 0, _gapped_words(
+        [("a", 0.0), ("b", 0.20), ("c", 0.20), ("d", 0.20), ("e", 1.20)]), "slow")]
+    t_fast = ar._segment_gap_threshold(fast)
+    t_slow = ar._segment_gap_threshold(slow)
+    assert t_fast is not None and t_slow is not None
+    assert t_slow > t_fast
+
+
+def test_gap_threshold_none_when_too_few_gaps():
+    one_word = [_chunk_with("s", 0, _gapped_words([("a", 0.0)]), "a")]
+    assert ar._segment_gap_threshold(one_word) is None
+
+
+def test_split_breaks_at_long_pause_only():
+    words = _paced_words(21, break_after=[9])  # one long pause after w9
+    item = ar.ArchiveSegment(
+        segment=_segment("seg-a", "Q"), chunks=[_chunk_with("seg-a", 0, words, "text")]
+    )
+    units, nxt = ar._split_segment_into_units(item, 1)
+    assert len(units) == 2
+    assert units[0].unit_id == "u1" and units[1].unit_id == "u2"
+    assert nxt == 3
+    # The break lands exactly at the pause, and times come straight from the
+    # word timestamps — exact, never estimated.
+    assert units[0].end_sec == words[9]["end_sec"]
+    assert units[1].start_sec == words[10]["start_sec"]
+    assert units[0].start_sec == words[0]["start_sec"]
+    assert units[1].end_sec == words[-1]["end_sec"]
+
+
+def test_split_uniform_pacing_yields_one_unit():
+    """No gap exceeds the percentile of an all-equal distribution, so a
+    steadily-paced passage is NOT chopped up arbitrarily."""
+    words = _paced_words(12, break_after=[])  # perfectly even pacing
+    item = ar.ArchiveSegment(
+        segment=_segment("seg-a", "Q"), chunks=[_chunk_with("seg-a", 0, words, "text")]
+    )
+    units, _ = ar._split_segment_into_units(item, 1)
+    assert len(units) == 1
+
+
+def test_chunk_without_word_timings_becomes_one_unit():
+    item = ar.ArchiveSegment(
+        segment=_segment("seg-a", "Q"),
+        chunks=[_chunk("seg-a", 0, 5.0, 8.0, "no timings here", with_words=False)],
+    )
+    units, _ = ar._split_segment_into_units(item, 1)
+    assert len(units) == 1
+    assert (units[0].start_sec, units[0].end_sec) == (5.0, 8.0)
+
+
+def test_units_are_numbered_across_the_whole_archive():
+    """Cross-recording linking depends on ONE id namespace spanning every
+    recording, not per-segment numbering."""
+    archive = [
+        ar.ArchiveSegment(
+            segment=_segment("seg-a", "Q1"),
+            chunks=[_chunk_with("seg-a", 0, _paced_words(11, break_after=[5]), "a")],
+        ),
+        ar.ArchiveSegment(
+            segment=_segment("seg-b", "Q2"),
+            chunks=[_chunk_with("seg-b", 0, _paced_words(11, break_after=[5]), "b")],
+        ),
+    ]
+    units = ar._build_units(archive)
+    assert [u.unit_id for u in units] == ["u1", "u2", "u3", "u4"]
+    assert [u.segment_id for u in units] == ["seg-a", "seg-a", "seg-b", "seg-b"]
+
+
 # ── _format_annotated_transcript ─────────────────────────────────────────────
 
 
-def test_format_annotated_transcript_includes_ids_questions_and_time_markers():
+def test_format_annotated_transcript_lists_numbered_units_with_exact_times():
     archive = [
         ar.ArchiveSegment(
             segment=_segment("seg-a", "Tell me about your family"),
-            chunks=[
-                _chunk("seg-a", 0, 0.0, 3.0, "I have four siblings."),
-                _chunk("seg-a", 1, 3.0, 6.0, "My parents are Zvi and Ilana."),
-            ],
-        ),
-        ar.ArchiveSegment(
-            segment=_segment("seg-b", "Tell me about the army"),
-            chunks=[_chunk("seg-b", 0, 0.0, 2.5, "I served in the air force.")],
+            chunks=[_chunk_with("seg-a", 0, _paced_words(11, break_after=[5]), "text")],
         ),
     ]
-    out = ar._format_annotated_transcript(archive)
+    units = ar._build_units(archive)
+    out = ar._format_annotated_transcript(archive, units)
 
-    assert "[segment seg-a] Interview question: Tell me about your family" in out
-    assert "[segment seg-b] Interview question: Tell me about the army" in out
-    assert "[0.00-3.00] I have four siblings." in out
-    assert "[3.00-6.00] My parents are Zvi and Ilana." in out
-    assert "[0.00-2.50] I served in the air force." in out
-    # Word-level timings must reach the prompt (the fix for mid-phrase
-    # entity location) — each word tagged word:START-END.
-    assert "word timings:" in out
-    # "My parents are Zvi and Ilana." @start=3.0, 0.4s/word -> Zvi is the 4th word.
-    assert "Zvi:4.20-4.60" in out
-
-
-def test_format_word_timings_compact_and_falls_back_when_absent():
-    chunk = _chunk("seg-a", 0, 5.0, 7.0, "one two")
-    assert ar._format_word_timings(chunk.word_timestamps) == "one:5.00-5.40 two:5.40-5.80"
-    # No word timings -> empty string (caller omits the line).
-    assert ar._format_word_timings(None) == ""
-    assert ar._format_word_timings([]) == ""
+    # Segment UUIDs must NOT appear — they were the only other id-shaped
+    # thing in the prompt and the model would sometimes return one instead
+    # of a unit id, silently becoming a no-story.
+    assert "seg-a" not in out
+    assert "RECORDING 1" in out
+    assert "interview question: Tell me about your family" in out
+    assert "u1 [" in out and "u2 [" in out
+    # Word-level timings are deliberately NOT exposed any more — the model
+    # selects units, so time arithmetic must not be invited back in.
+    assert "word timings:" not in out
 
 
 # ── _format_entity_map ───────────────────────────────────────────────────────
@@ -111,119 +222,93 @@ def test_format_entity_map_sorted_lines():
     assert out == "- Ilana: seg-a\n- Nir: seg-a, seg-b"
 
 
-# ── _parse_ranges_json ───────────────────────────────────────────────────────
+# ── _parse_unit_selection ────────────────────────────────────────────────────
 
 
-def test_parse_ranges_json_valid():
-    text = '[{"segment_id": "seg-a", "start_sec": 3.0, "end_sec": 6.0}]'
-    assert ar._parse_ranges_json(text) == [{"segment_id": "seg-a", "start_sec": 3.0, "end_sec": 6.0}]
+def test_parse_unit_selection_object_form():
+    assert ar._parse_unit_selection('{"unit_ids": ["u3", "u4"]}') == ["u3", "u4"]
 
 
-def test_parse_ranges_json_skips_malformed_elements_keeps_valid():
-    text = (
-        '[{"segment_id": "seg-a", "start_sec": 1.0, "end_sec": 2.0}, '
-        '{"start_sec": 1.0, "end_sec": 2.0}, '  # missing segment_id
-        '{"segment_id": "seg-b", "start_sec": "oops", "end_sec": 2.0}, '  # non-numeric
-        '"not-an-object"]'
-    )
-    assert ar._parse_ranges_json(text) == [{"segment_id": "seg-a", "start_sec": 1.0, "end_sec": 2.0}]
+def test_parse_unit_selection_bare_array_fallback():
+    assert ar._parse_unit_selection('["u3", "u4"]') == ["u3", "u4"]
 
 
-def test_parse_ranges_json_empty_array():
-    assert ar._parse_ranges_json("[]") == []
+def test_parse_unit_selection_empty():
+    assert ar._parse_unit_selection('{"unit_ids": []}') == []
 
 
-def test_parse_ranges_json_non_json_returns_empty():
-    assert ar._parse_ranges_json("I could not find anything.") == []
+def test_parse_unit_selection_non_json_returns_empty():
+    assert ar._parse_unit_selection("I could not find anything.") == []
 
 
-def test_parse_ranges_json_extracts_array_from_surrounding_text():
-    text = 'Here you go: [{"segment_id": "seg-a", "start_sec": 0.0, "end_sec": 1.0}] done'
-    assert ar._parse_ranges_json(text) == [{"segment_id": "seg-a", "start_sec": 0.0, "end_sec": 1.0}]
+def test_parse_unit_selection_extracts_from_surrounding_text():
+    assert ar._parse_unit_selection('Here: {"unit_ids": ["u7"]} done') == ["u7"]
 
 
-# ── _word_intervals_for_segment ──────────────────────────────────────────────
+def test_parse_unit_selection_tolerates_bare_numbers():
+    assert ar._parse_unit_selection('{"unit_ids": [7, "u8"]}') == ["u7", "u8"]
 
 
-def test_word_intervals_uses_word_timestamps_when_present():
-    chunk = _chunk("seg-a", 0, 5.0, 7.0, "one two three")  # 3 words @0.4s from 5.0
-    intervals = ar._word_intervals_for_segment([chunk])
-    assert intervals == [(5.0, 5.4), (5.4, 5.8), (5.8, 6.2)]
+# ── resolve_units_to_clips ───────────────────────────────────────────────────
 
 
-def test_word_intervals_falls_back_to_chunk_boundary_without_words():
-    chunk = _chunk("seg-a", 0, 5.0, 8.0, "one two", with_words=False)
-    intervals = ar._word_intervals_for_segment([chunk])
-    assert intervals == [(5.0, 8.0)]
-
-
-# ── _snap_range_to_words ─────────────────────────────────────────────────────
-
-
-def test_snap_range_snaps_to_first_and_last_overlapping_word():
-    intervals = [(5.0, 5.4), (5.4, 5.8), (5.8, 6.2), (6.2, 6.6)]
-    # A loose 5.2-6.0 request overlaps words 1-3 (5.0-5.4, 5.4-5.8, 5.8-6.2).
-    snapped = ar._snap_range_to_words(5.2, 6.0, intervals)
-    assert snapped == (5.0, 6.2)
-
-
-def test_snap_range_returns_none_when_no_speech_overlap():
-    intervals = [(5.0, 6.0)]
-    # Entirely inside a silence gap after the last word.
-    assert ar._snap_range_to_words(10.0, 12.0, intervals) is None
-
-
-def test_snap_range_returns_none_for_inverted_range():
-    intervals = [(5.0, 6.0)]
-    assert ar._snap_range_to_words(6.0, 5.0, intervals) is None
-
-
-# ── validate_ranges ──────────────────────────────────────────────────────────
-
-
-def _two_segment_archive():
-    return [
+def _units_fixture():
+    """seg-a -> u1,u2,u3 ; seg-b -> u4,u5 (21/11 words so the inserted long
+    pauses are true outliers above the percentile)."""
+    a_words = _paced_words(21, break_after=[6, 13])
+    b_words = _paced_words(11, break_after=[5])
+    archive = [
         ar.ArchiveSegment(
             segment=_segment("seg-a", "Q1"),
-            chunks=[_chunk("seg-a", 0, 0.0, 4.0, "one two three four five")],  # words 0.0..2.0
+            chunks=[_chunk_with("seg-a", 0, a_words, "a")],
         ),
         ar.ArchiveSegment(
             segment=_segment("seg-b", "Q2"),
-            chunks=[_chunk("seg-b", 0, 0.0, 2.0, "alpha beta")],  # words 0.0..0.8
+            chunks=[_chunk_with("seg-b", 0, b_words, "b")],
         ),
     ]
-
-
-def test_validate_ranges_drops_foreign_segment_id():
-    archive = _two_segment_archive()
-    result = ar.validate_ranges(
-        [{"segment_id": "not-in-archive", "start_sec": 0.0, "end_sec": 1.0}], archive
+    units = ar._build_units(archive)
+    assert [u.unit_id for u in units] == ["u1", "u2", "u3", "u4", "u5"], (
+        "fixture must split as expected, got %r" % ([u.unit_id for u in units],)
     )
-    assert result == []
+    return units
 
 
-def test_validate_ranges_drops_range_with_no_speech_overlap():
-    archive = _two_segment_archive()
-    # seg-a's words only span 0.0-2.0; a 3.0-3.9 request overlaps no words.
-    result = ar.validate_ranges(
-        [{"segment_id": "seg-a", "start_sec": 3.0, "end_sec": 3.9}], archive
-    )
-    assert result == []
+def test_resolve_units_drops_unknown_ids():
+    units = _units_fixture()
+    assert ar.resolve_units_to_clips(["nope"], units) == []
 
 
-def test_validate_ranges_snaps_and_preserves_order_across_segments():
-    archive = _two_segment_archive()
-    raw = [
-        {"segment_id": "seg-b", "start_sec": 0.1, "end_sec": 0.5},
-        {"segment_id": "seg-a", "start_sec": 0.3, "end_sec": 1.1},
-    ]
-    result = ar.validate_ranges(raw, archive)
-    assert [c.raw_segment_id for c in result] == ["seg-b", "seg-a"]  # order preserved
-    # seg-b words: (0.0,0.4),(0.4,0.8); 0.1-0.5 overlaps both -> (0.0,0.8)
-    assert (result[0].start_sec, result[0].end_sec) == (0.0, 0.8)
-    # seg-a words @0.4s: (0.0,0.4),(0.4,0.8),(0.8,1.2),...; 0.3-1.1 overlaps first 3 -> (0.0,1.2)
-    assert (result[1].start_sec, result[1].end_sec) == (0.0, 1.2)
-    assert all(c.source_chunk_id.startswith("archive-read:") for c in result)
+def test_resolve_units_merges_consecutive_into_one_clip():
+    units = _units_fixture()
+    clips = ar.resolve_units_to_clips(["u1", "u2"], units)
+    assert len(clips) == 1
+    assert clips[0].start_sec == units[0].start_sec
+    assert clips[0].end_sec == units[1].end_sec
+
+
+def test_resolve_units_keeps_non_consecutive_separate():
+    units = _units_fixture()
+    clips = ar.resolve_units_to_clips(["u1", "u3"], units)
+    assert len(clips) == 2
+    assert clips[0].end_sec == units[0].end_sec
+    assert clips[1].start_sec == units[2].start_sec
+
+
+def test_resolve_units_does_not_merge_across_segments():
+    """u3 (seg-a) and u4 (seg-b) are consecutive by index but different
+    recordings — merging them would splice unrelated footage."""
+    units = _units_fixture()
+    clips = ar.resolve_units_to_clips(["u3", "u4"], units)
+    assert len(clips) == 2
+    assert [c.raw_segment_id for c in clips] == ["seg-a", "seg-b"]
+
+
+def test_resolve_units_preserves_model_order_and_dedupes():
+    units = _units_fixture()
+    clips = ar.resolve_units_to_clips(["u4", "u1", "u4"], units)
+    assert [c.raw_segment_id for c in clips] == ["seg-b", "seg-a"]
+    assert all(c.source_chunk_id.startswith("archive-read:") for c in clips)
 
 
 # ── _load_archive (DB-backed) ────────────────────────────────────────────────
@@ -286,8 +371,22 @@ async def test_read_and_validate_ranges_empty_archive_skips_llm(monkeypatch):
     llm_mock.assert_not_called()
 
 
+def _resolvable_archive():
+    """Archive whose words split into real units (see _units_fixture)."""
+    return [
+        ar.ArchiveSegment(
+            segment=_segment("seg-a", "Q1"),
+            chunks=[_chunk_with("seg-a", 0, _paced_words(21, break_after=[6, 13]), "a")],
+        ),
+        ar.ArchiveSegment(
+            segment=_segment("seg-b", "Q2"),
+            chunks=[_chunk_with("seg-b", 0, _paced_words(11, break_after=[5]), "b")],
+        ),
+    ]
+
+
 async def test_read_and_validate_ranges_no_answer_returns_empty(monkeypatch):
-    archive = _two_segment_archive()
+    archive = _resolvable_archive()
     monkeypatch.setattr(ar, "_load_archive", AsyncMock(return_value=archive))
     monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={}))
     monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
@@ -298,27 +397,33 @@ async def test_read_and_validate_ranges_no_answer_returns_empty(monkeypatch):
 
 
 async def test_read_and_validate_ranges_happy_path_returns_validated_clips(monkeypatch):
-    archive = _two_segment_archive()
+    archive = _resolvable_archive()
     monkeypatch.setattr(ar, "_load_archive", AsyncMock(return_value=archive))
     monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={"Nir": ["seg-a"]}))
     monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
     monkeypatch.setattr(
         ar,
         "_read_archive_for_ranges",
-        AsyncMock(return_value=[{"segment_id": "seg-a", "start_sec": 0.3, "end_sec": 1.1}]),
+        AsyncMock(return_value=["u1"]),
     )
 
     result = await ar.read_and_validate_ranges("q", "group", "he", "sess")
+    units = ar._build_units(archive)
     assert len(result) == 1
     assert result[0].raw_segment_id == "seg-a"
-    assert (result[0].start_sec, result[0].end_sec) == (0.0, 1.2)  # snapped to word boundaries
+    # Times are DERIVED from the selected unit — nothing to snap.
+    assert (result[0].start_sec, result[0].end_sec) == (units[0].start_sec, units[0].end_sec)
 
 
 # ── assemble_video_clip_response_v2 orchestration ────────────────────────────
 
 
 async def test_assemble_v2_no_ranges_returns_no_story(monkeypatch):
-    monkeypatch.setattr(ar, "read_and_validate_ranges", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        ar, "select_units",
+        AsyncMock(return_value=ar.UnitSelection(clips=[], selected_units=[],
+                                                all_already_shown=False)),
+    )
 
     result = await ar.assemble_video_clip_response_v2("q", "group", "he", "sess")
     assert result.no_story is True
@@ -329,7 +434,11 @@ async def test_assemble_v2_no_ranges_returns_no_story(monkeypatch):
 async def test_assemble_v2_cache_hit_skips_ffmpeg(monkeypatch):
     clips = [ar.ExpandedClip(raw_segment_id="seg-a", start_sec=0.0, end_sec=1.2,
                              source_chunk_id="archive-read:seg-a")]
-    monkeypatch.setattr(ar, "read_and_validate_ranges", AsyncMock(return_value=clips))
+    monkeypatch.setattr(
+        ar, "select_units",
+        AsyncMock(return_value=ar.UnitSelection(clips=clips, selected_units=[],
+                                                all_already_shown=False)),
+    )
     monkeypatch.setattr(ar.cache_service, "get", AsyncMock(return_value="https://cdn/cached.mp4"))
     assemble_mock = AsyncMock()
     monkeypatch.setattr(ar.video_clip_assembler, "_assemble_and_upload_clip", assemble_mock)
@@ -342,7 +451,11 @@ async def test_assemble_v2_cache_hit_skips_ffmpeg(monkeypatch):
 async def test_assemble_v2_happy_path_assembles_and_caches(monkeypatch):
     clips = [ar.ExpandedClip(raw_segment_id="seg-a", start_sec=0.0, end_sec=1.2,
                              source_chunk_id="archive-read:seg-a")]
-    monkeypatch.setattr(ar, "read_and_validate_ranges", AsyncMock(return_value=clips))
+    monkeypatch.setattr(
+        ar, "select_units",
+        AsyncMock(return_value=ar.UnitSelection(clips=clips, selected_units=[],
+                                                all_already_shown=False)),
+    )
     monkeypatch.setattr(ar.cache_service, "get", AsyncMock(return_value=None))
     set_mock = AsyncMock()
     monkeypatch.setattr(ar.cache_service, "set", set_mock)
@@ -361,7 +474,11 @@ async def test_assemble_v2_happy_path_assembles_and_caches(monkeypatch):
 async def test_assemble_v2_assembly_failure_returns_no_story(monkeypatch):
     clips = [ar.ExpandedClip(raw_segment_id="seg-a", start_sec=0.0, end_sec=1.2,
                              source_chunk_id="archive-read:seg-a")]
-    monkeypatch.setattr(ar, "read_and_validate_ranges", AsyncMock(return_value=clips))
+    monkeypatch.setattr(
+        ar, "select_units",
+        AsyncMock(return_value=ar.UnitSelection(clips=clips, selected_units=[],
+                                                all_already_shown=False)),
+    )
     monkeypatch.setattr(ar.cache_service, "get", AsyncMock(return_value=None))
     monkeypatch.setattr(
         ar.video_clip_assembler, "_assemble_and_upload_clip", AsyncMock(return_value=None)
@@ -382,7 +499,8 @@ async def test_read_archive_for_ranges_static_transcript_in_system_variable_ques
     system prompt, the variable question in the user message."""
     captured = {}
 
-    async def fake_generate(messages, system_prompt=None, thinking=False, temperature=None):
+    async def fake_generate(messages, system_prompt=None, thinking=False,
+                            temperature=None, **kwargs):
         captured["system"] = system_prompt
         captured["messages"] = messages
         return "[]"
@@ -404,15 +522,17 @@ async def test_read_archive_for_ranges_static_transcript_in_system_variable_ques
 async def test_read_archive_for_ranges_includes_history_when_present(monkeypatch):
     captured = {}
 
-    async def fake_generate(messages, system_prompt=None, thinking=False, temperature=None):
+    async def fake_generate(messages, system_prompt=None, thinking=False,
+                            temperature=None, **kwargs):
         captured["messages"] = messages
         return "[]"
 
     monkeypatch.setattr(ar.llm_service, "generate_response", fake_generate)
-    history = [{"role": "user", "content": "who most influenced you?"},
-               {"role": "assistant", "content": "http://x/clip.mp4"}]
+    turns = [{"role": "user", "content": "who most influenced you?"},
+             {"role": "assistant", "content": "http://x/clip.mp4"}]
+    history_block = ar._format_history_block(turns, [])
 
-    await ar._read_archive_for_ranges("is he still alive?", "T", "E", history, "he")
+    await ar._read_archive_for_ranges("is he still alive?", "T", "E", history_block, "he")
 
     user_content = captured["messages"][0]["content"]
     assert "who most influenced you?" in user_content
@@ -425,5 +545,90 @@ async def test_read_archive_for_ranges_fails_soft_on_llm_error(monkeypatch):
     monkeypatch.setattr(
         ar.llm_service, "generate_response", AsyncMock(side_effect=RuntimeError("down"))
     )
-    result = await ar._read_archive_for_ranges("q", "T", "E", [], "he")
+    result = await ar._read_archive_for_ranges("q", "T", "E", "", "he")
     assert result == []
+
+
+# ── already-shown handling (visited-set wired into v2) ───────────────────────
+
+
+async def test_assemble_v2_says_nothing_new_when_all_units_already_shown(monkeypatch):
+    """The reported bug: a second question about the same person replayed the
+    identical clip. Now it must say so instead."""
+    clips = [ar.ExpandedClip(raw_segment_id="seg-a", start_sec=0.0, end_sec=1.2,
+                             source_chunk_id="archive-read:seg-a")]
+    monkeypatch.setattr(
+        ar, "select_units",
+        AsyncMock(return_value=ar.UnitSelection(clips=clips, selected_units=[],
+                                                all_already_shown=True)),
+    )
+    assemble_mock = AsyncMock()
+    monkeypatch.setattr(ar.video_clip_assembler, "_assemble_and_upload_clip", assemble_mock)
+
+    result = await ar.assemble_video_clip_response_v2("q", "group", "he", "sess")
+    assert result.no_story is True
+    assert result.video_url is None
+    assert result.fallback_text == ar.ALREADY_SHOWN_FALLBACK
+    assert result.fallback_text != NO_STORY_FALLBACK  # a DIFFERENT answer
+    assemble_mock.assert_not_called()
+
+
+def test_transcript_marks_already_shown_units():
+    archive = [
+        ar.ArchiveSegment(
+            segment=_segment("seg-a", "Q1"),
+            chunks=[_chunk_with("seg-a", 0, _paced_words(11, break_after=[5]), "a")],
+        ),
+    ]
+    units = ar._build_units(archive)
+    shown = {ar._unit_key(units[0].segment_id, units[0].start_sec)}
+    out = ar._format_annotated_transcript(archive, units, shown)
+    lines = [ln for ln in out.splitlines() if ln.strip().startswith("u")]
+    assert "[ALREADY SHOWN]" in lines[0]
+    assert "[ALREADY SHOWN]" not in lines[1]
+
+
+def test_unit_key_is_stable_against_renumbering():
+    """Unit ids are positional, so persisted history must key on something
+    that survives a new recording being ingested."""
+    assert ar._unit_key("seg-a", 3.3333) == ar._unit_key("seg-a", 3.3339)
+    assert ar._unit_key("seg-a", 3.33) != ar._unit_key("seg-b", 3.33)
+
+
+# ── history block carries what was actually played ──────────────────────────
+
+
+def test_history_block_renders_played_unit_text():
+    turns = [
+        {"role": "user", "content": "how did you meet your wife?"},
+        {"role": "assistant", "content": "http://x/clip.mp4"},
+    ]
+    per_turn = [[{"key": "seg-a:0.00", "unit_id": "u12", "text": "met her on an app"}]]
+    out = ar._format_history_block(turns, per_turn)
+    assert "how did you meet your wife?" in out
+    assert "u12" in out and "met her on an app" in out
+    assert "http://x/clip.mp4" not in out
+
+
+def test_history_block_falls_back_when_units_unknown():
+    turns = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "http://x/clip.mp4"},
+    ]
+    out = ar._format_history_block(turns, [])
+    assert "(showed a video clip)" in out
+
+
+def test_history_block_aligns_units_to_the_most_recent_turns():
+    """Only the last N turns are in the window; unit lists align from the end."""
+    turns = [
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "http://x/2.mp4"},
+    ]
+    per_turn = [
+        [{"key": "k1", "unit_id": "u1", "text": "older answer"}],
+        [{"key": "k2", "unit_id": "u2", "text": "newer answer"}],
+    ]
+    out = ar._format_history_block(turns, per_turn)
+    assert "newer answer" in out
+    assert "older answer" not in out

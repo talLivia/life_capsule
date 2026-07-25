@@ -178,6 +178,11 @@ class VideoClipResult:
     no_story: bool = False
     fallback_text: str = ""
     uncovered_clauses: List[str] = field(default_factory=list)
+    # v2 (full_archive_retrieval) only: which utterance units this answer
+    # played, as {key, unit_id, text}. Persisted on the assistant message so
+    # the next turn knows what was already shown and what it said. Left empty
+    # by v1, which has no unit concept.
+    shown_units: List[dict] = field(default_factory=list)
 
 
 def _parse_json_object(text: str) -> Optional[dict]:

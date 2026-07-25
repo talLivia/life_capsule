@@ -49,6 +49,7 @@ SEEDS = [int(x) for x in os.environ.get("SWEEP_SEEDS", "").split(",") if x.strip
 # correct answer is no-story (nothing in the archive answers it).
 _BROTHERS_SEG = "502fb283-8f10-4ba2-adb3-d8dc6dc16f24"  # siblings + parents recording
 _FATHER_SEG = "1d32a9b5-603e-4b51-9d17-e962149888a5"  # most-influential-figure recording
+_CAREER_SEG = "097b606b-ca75-47b2-a3b3-7e7eaee83b26"  # "when I was in Montreal I studied…"
 
 REFERENCES: dict[str, Optional[Tuple[str, Tuple[float, float]]]] = {
     "brothers": (_BROTHERS_SEG, (3.3, 12.3)),  # PRIMARY benchmark — the tight siblings range
@@ -57,6 +58,10 @@ REFERENCES: dict[str, Optional[Tuple[str, Tuple[float, float]]]] = {
     "influence-1": (_FATHER_SEG, (0.8, 5.2)),  # the father segment
     "influence-2 (followup)": None,  # father's aliveness isn't recorded -> no-story
     "no-answer": None,  # nothing about pets -> no-story
+    # Montreal: scored on the CAREER recording, whose correct answer runs to
+    # the END of the thought (8.1s) — the old behaviour stopped at ~2.8s,
+    # right after "when I was in Montreal", cutting the story mid-sentence.
+    "montreal": (_CAREER_SEG, (0.0, 8.1)),
 }
 
 

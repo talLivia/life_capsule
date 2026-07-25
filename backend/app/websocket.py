@@ -429,6 +429,7 @@ class ConnectionManager:
         role: str,
         content: str,
         latency: Optional[float] = None,
+        metadata: Optional[dict] = None,
     ) -> None:
         """Best-effort persist a message; failure must not break the chat pipeline."""
         try:
@@ -443,6 +444,7 @@ class ConnectionManager:
                         content=content,
                         content_type="text",
                         latency=latency,
+                        message_metadata=metadata,
                     )
                 )
                 await db.commit()
@@ -797,8 +799,16 @@ class ConnectionManager:
                 return
 
             latency = (datetime.now(timezone.utc) - started_at).total_seconds()
+            # v2 reports which utterance units it played; recording them here
+            # is what lets the NEXT turn avoid replaying them and lets a
+            # follow-up ("anything else about her?") resolve its referent
+            # against what was actually said. Empty for v1.
             await self._persist_message(
-                session_id, "assistant", result.video_url, latency=latency
+                session_id,
+                "assistant",
+                result.video_url,
+                latency=latency,
+                metadata={"shown_units": result.shown_units} if result.shown_units else None,
             )
             await self.send_message(
                 session_id,

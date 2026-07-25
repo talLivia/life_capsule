@@ -133,6 +133,15 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 2000
 
+    # Model for the video_clips_v2 archive-read call ONLY (Prompt 15's single
+    # whole-archive reasoning call). Every OTHER llm_service caller is a short
+    # classification/extraction task that the small default model handles
+    # fine; this one call reads the entire archive and has to resolve
+    # follow-up referents across recordings, which is a genuinely harder job.
+    # Model strength is therefore a per-call decision, not a global one.
+    # Empty string => fall back to LLM_MODEL (no override).
+    ARCHIVE_READ_MODEL: str = ""
+
     # Avatar Engine
     AVATAR_ENGINE: str = "musetalk"  # musetalk, simple
     AVATAR_RESOLUTION: int = 512

@@ -12,11 +12,21 @@ Where video_clip_assembler.py runs a multi-step retrieval chain
 matching -> leniency retry -> per-candidate verify/pinpoint), THIS mode
 replaces all of it with ONE LLM call that READS the entire annotated
 archive transcript (plus an entity map and the recent conversation) and
-directly returns the answering time ranges. Deterministic, no-LLM
-validation then snaps/rejects those ranges against the real word
-timestamps before they reach the EXISTING ffmpeg trim/concat + caching +
+directly returns which parts answer the question.
+
+SELECTION IS BY UTTERANCE UNIT, NOT BY TIME. The transcript is first split
+into utterance units — uninterrupted stretches of speech cut at the pauses
+the speaker actually took, with the pause threshold derived per-recording
+from that recording's own inter-word gap distribution (see _GAP_PERCENTILE)
+rather than any fixed constant. The model returns UNIT IDS; the final times
+are derived deterministically from the selected units. Because half a unit
+cannot be selected, a mid-sentence/mid-thought cut is structurally
+impossible — which no amount of prompt wording could guarantee back when
+the model emitted raw {start_sec, end_sec} pairs. Units are numbered across
+the WHOLE archive, so one answer can freely draw on several recordings.
+Resolved ranges then reach the EXISTING ffmpeg trim/concat + caching +
 storage code (reused wholesale from video_clip_assembler — only the
-range-selection step is new here).
+selection step is new here).
 
 The model NEVER writes answer text — it only points at real ranges that
 already contain the answer, so the "never invent, only replay verbatim
@@ -37,8 +47,9 @@ from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import select
 
+from app.config import settings
 from app.database import AsyncSessionLocal
-from app.models import InterviewSession, RawSegment, TranscriptChunk
+from app.models import InterviewSession, Message, RawSegment, TranscriptChunk
 from app.services import graph_memory, retrieval_service, video_clip_assembler
 from app.services.cache import cache_service
 from app.services.llm import llm_service
@@ -50,6 +61,11 @@ from app.services.video_clip_assembler import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Said when the archive DOES answer the question but every answering unit has
+# already been played in this conversation — distinct from NO_STORY_FALLBACK
+# ("there's nothing about that"), which would be untrue here.
+ALREADY_SHOWN_FALLBACK = "כבר סיפרתי לך את זה — אין לי עוד משהו חדש על זה"
 
 
 @dataclass
@@ -76,60 +92,102 @@ class ArchiveSegment:
 _ARCHIVE_READER_SYSTEM_PROMPT_TEMPLATE = """\
 You are a precise archival video editor for one person's recorded \
 life-story archive. You are given the COMPLETE transcript of that \
-archive, then an entity map. Each recording is a SEGMENT with a stable \
-id and the interview question it answered; within a segment, every line \
-is one transcribed phrase prefixed by its time range in seconds within \
-that segment's own video: [START-END] phrase text. Most phrase lines are \
-followed by an indented "word timings:" line giving EVERY word's exact \
-time as word:START-END (e.g. "צבי:14.98-15.26 ואילנה:15.26-16.64").
+archive, then an entity map.
+
+The archive is a series of RECORDINGS. Each recording is the person's \
+answer to ONE interview question from a fixed life-story interview \
+(childhood, military service, relationships, career, family). That \
+interview question is shown above each recording and is ESSENTIAL \
+CONTEXT, not a label: it tells you what the recording is ABOUT, and \
+therefore what the words inside it refer to.
+
+USE THE INTERVIEW QUESTION TO UNDERSTAND WHO OR WHAT A UNIT IS ABOUT, \
+especially when the spoken words alone do not name them. People are \
+constantly referred to without being named - "the right person", "my \
+commander", "my best friend", "she", "him". The interview question is \
+usually the only thing that identifies them, so read every unit in the \
+light of the question its recording answered. For example, a unit saying \
+only "I just knew this was the right person", inside a recording whose \
+interview question was "tell me about the moment you knew you'd found the \
+right person", is about the storyteller's SPOUSE/PARTNER - and it \
+therefore answers questions about their wife/husband/partner even though \
+the words "wife", "husband" or her/his name never appear in it. Treat \
+such a unit as a match. Never require the question's own words to appear \
+literally in the unit.
+
+The transcript is split into UTTERANCE UNITS. A unit is one uninterrupted \
+stretch of speech, cut at the natural pauses the speaker actually took. \
+Each unit has an id (u1, u2, ...) unique across the WHOLE archive, and \
+its exact time range inside its recording's video:
+  u7 [12.30-18.90] the words spoken in that unit
 
 Your ONLY job: given the user's question (and the recent conversation for \
-context), return the exact time ranges from these recordings whose spoken \
-words already answer the question, so a separate system can cut and stitch \
-the REAL video. You never write, summarize, translate, or paraphrase an \
-answer yourself - you only point at real ranges that already contain it.
+context), choose WHICH UNITS to play, so a separate system can cut and \
+stitch the REAL video from them. You never write, summarize, translate, or \
+paraphrase an answer yourself - you only point at units that already \
+contain it.
 
-CRITICAL - narrow to the relevant sub-topic(s), never the surrounding \
-passage: a single phrase often runs SEVERAL DISTINCT SUB-TOPICS together \
-with no pause between them (e.g. "I grew up in Tiberias, I have four \
-siblings Nir Chen Adi and Raz, my parents are Zvi and Ilana, then I went \
-away to boarding school" packs childhood-town, then siblings, then \
-parents, then schooling into one span, with nothing marking the shifts). \
-Identify the distinct sub-topics by where the SUBJECT MATTER genuinely \
-changes - never by a length or duration threshold - then judge EACH \
-sub-topic's relevance to the question on its own. A sub-topic counts only \
-if it genuinely answers the question, NOT because it is adjacent to one \
-that does. Return the time range of ONLY the relevant sub-topic(s):
-- Set start_sec to the START time of the FIRST word of the relevant \
-sub-topic, and end_sec to the END time of its LAST word, read DIRECTLY \
-from the "word timings:" line - do not estimate, round, or interpolate \
-when word timings are present. Find the exact words that carry the answer \
-(e.g. for "who is Zvi?", the words naming Zvi) and use their times. Cover \
-the WHOLE relevant sub-topic - do not clip its lead-in or trailing words - \
-but stop where it ends and the next, irrelevant sub-topic begins. (Only if \
-a phrase has NO word-timings line, fall back to estimating from its \
-[START-END] span by proportional position.)
-- NEVER include an irrelevant sub-topic's time, even when it sits BETWEEN \
-two relevant ones: return the two relevant sub-topics as two SEPARATE \
-ranges, not one range spanning the irrelevant middle.
-- If EVERY sub-topic in a phrase is relevant (a genuinely broad question \
-can legitimately need the whole phrase), returning the whole [START-END] \
-span is correct. The length must always fall out of how much is actually \
-relevant - never trimmed to shorten it, never padded to lengthen it.
+HOW TO CHOOSE UNITS - this is the core of the task:
+- Judge relevance ONE WHOLE UNIT AT A TIME: either a unit belongs in the \
+answer or it does not. NEVER select part of a unit, and never try to \
+exclude a clause inside a unit that you consider less relevant. A unit is \
+the smallest thing you can pick. If a unit is mostly relevant, take it \
+whole.
+- Take the COMPLETE THOUGHT, not just the words that literally match the \
+question. If an included unit's thought continues or is completed in the \
+units that follow it - a consequence, an outcome, a "and then...", a \
+"and when I came back...", an explanation of what was just said - those \
+continuation units are PART OF THE ANSWER and must be included too. \
+Stopping while the thought is still unfinished produces an answer that \
+cuts off mid-story, which is always wrong.
+- Skip a unit only when it genuinely moves on to a DIFFERENT subject that \
+the question did not ask about. A unit does not qualify merely by sitting \
+next to a relevant one, but a unit that finishes the relevant thought does \
+qualify.
+- Units that are NOT consecutive are fine: if two separated passages both \
+answer the question, select both and simply omit the unrelated units \
+between them. Selecting units from SEVERAL DIFFERENT recordings in one \
+answer is expected and encouraged whenever more than one recording speaks \
+to the question.
+- Let the question set the breadth by itself. A narrow question ("what \
+unit did you serve in?") is answered by very few units; a broad question \
+("tell me about your time in the army") is answered by many. Never trim to \
+make an answer shorter, and never pad to make it longer - include exactly \
+the units that genuinely answer what was asked.
+
+ALREADY SHOWN: units marked [ALREADY SHOWN] were played earlier in THIS \
+conversation. This mark is a hint about ORDERING, never a reason to answer \
+with nothing:
+- A marked unit does NOT mean its topic is finished. Look for OTHER units \
+that answer the question - very often in a DIFFERENT recording, whose \
+interview question approaches the same person or period from another \
+angle. A follow-up like "tell me something else about her" is a request to \
+KEEP GOING on that subject, so search the whole archive for more about that \
+same subject rather than concluding it was covered.
+- Prefer unseen units when both an unseen and an already-shown unit answer \
+the question equally well.
+- If the only units that answer the question are already shown, select them \
+anyway - a separate step decides what to do about that. Returning an empty \
+selection is correct ONLY when no unit in the archive answers the question \
+at all.
 
 Rules:
-- Output ONLY a JSON array, nothing else. Each element is exactly \
-{{"segment_id": "<id>", "start_sec": <number>, "end_sec": <number>}}.
-- Use ONLY segment ids and times that literally appear below. For every \
-range, start_sec < end_sec, and both must fall within the time markers \
-shown for that segment.
-- Multiple ranges are allowed, including across DIFFERENT segments, listed \
-in the order they should be played and stitched together.
+- Output ONLY a JSON object, nothing else, exactly: \
+{{"unit_ids": ["u3", "u4", ...]}}
+- Use ONLY unit ids of the form u<number> that literally appear below, \
+listed in the order they should be played and stitched together. NEVER \
+output a recording number, an interview question, a time, or any other \
+kind of id - unit ids only.
 - Resolve pronouns and follow-ups ("did you love her?", "is he still \
-alive?") using the recent conversation - the archive is first-person, but \
-the question may be second- or third-person about the storyteller.
-- If NOTHING in the archive answers the question, output an empty array: \
-[]. Never invent, force, or approximate a range to avoid an empty answer.
+alive?", "anything else about her?") using the recent conversation, which \
+shows which units were already played and what they said - the referent is \
+usually the PERSON discussed in the previous answer. Prefer a person over \
+an inanimate reading whenever the previous turn was about a person. The \
+archive is first-person, but the question may be second- or third-person \
+about the storyteller.
+- If NOTHING in the archive answers the question, output \
+{{"unit_ids": []}}. Never invent, force, or approximate a selection to \
+avoid an empty answer.
 
 FULL ARCHIVE TRANSCRIPT:
 {transcript_block}
@@ -184,40 +242,294 @@ async def _load_archive(group_id: str) -> List[ArchiveSegment]:
     return [a for a in archive if a.chunks]
 
 
-def _format_word_timings(word_timestamps: Optional[List[dict]]) -> str:
-    """Compact `word:START-END` list from Prompt 11's word_timestamps, so the
-    model can pin a range to a specific word's EXACT time instead of
-    estimating its position within a long phrase (the fix for v2 landing on
-    the wrong sub-topic for mid-phrase entities like Ilana/Tzvi). Empty
-    string when a chunk has no word timing (nullable) — the caller then
-    omits the line and the model falls back to the phrase [START-END]."""
-    if not word_timestamps:
-        return ""
-    parts: List[str] = []
-    for w in word_timestamps:
+# ── Utterance units: the unit of SELECTION ──────────────────────────────────
+#
+# The model selects whole utterance units by id, never raw times. That makes a
+# mid-sentence cut STRUCTURALLY impossible (half a unit isn't selectable),
+# which is what a purely time-based selection could never guarantee no matter
+# how the prompt was worded — the previous prompt's "stop where the relevant
+# sub-topic ends" actively produced mid-thought cuts.
+#
+# Units are cut at the pauses the speaker actually took. The pause threshold is
+# NOT a hardcoded number: it's a high percentile of THIS recording's own
+# inter-word gap distribution, so it adapts to how fast or slowly a given
+# person speaks (and to a given recording's pacing) instead of imposing one
+# constant on everyone. The percentile itself is the single general knob —
+# there is deliberately no per-question, per-length, or per-topic rule
+# anywhere in this file.
+_GAP_PERCENTILE = 90.0
+
+
+@dataclass
+class UtteranceUnit:
+    """One uninterrupted stretch of speech — the atom the model selects.
+
+    `index` is GLOBAL across the whole archive (not per segment) so units from
+    different recordings share one namespace and the model can select across
+    recordings in a single answer; it also makes "are these two units
+    consecutive?" a plain integer check when merging."""
+
+    unit_id: str
+    segment_id: str
+    index: int
+    start_sec: float
+    end_sec: float
+    text: str
+
+
+def _percentile(values: List[float], pct: float) -> float:
+    """Linear-interpolated percentile. Small local helper rather than a numpy
+    dependency — this runs over one recording's word gaps, not a big array."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (pct / 100.0) * (len(ordered) - 1)
+    low = int(rank)
+    high = min(low + 1, len(ordered) - 1)
+    frac = rank - low
+    return ordered[low] + (ordered[high] - ordered[low]) * frac
+
+
+def _chunk_words(chunk: TranscriptChunk) -> List[Tuple[str, float, float]]:
+    """(word, start, end) triples for a chunk, dropping entries with missing
+    or non-monotonic timing. Empty when the chunk has no word timing at all
+    (Prompt 11's word_timestamps is nullable)."""
+    out: List[Tuple[str, float, float]] = []
+    for w in chunk.word_timestamps or []:
         try:
             word = str(w["word"]).strip()
-            s = float(w["start_sec"])
-            e = float(w["end_sec"])
+            start = float(w["start_sec"])
+            end = float(w["end_sec"])
         except (KeyError, TypeError, ValueError):
             continue
-        if word:
-            parts.append(f"{word}:{s:.2f}-{e:.2f}")
-    return " ".join(parts)
+        if word and end > start:
+            out.append((word, start, end))
+    return out
 
 
-def _format_annotated_transcript(archive: List[ArchiveSegment]) -> str:
+def _segment_gap_threshold(chunks: List[TranscriptChunk]) -> Optional[float]:
+    """The pause length that separates two utterances IN THIS RECORDING,
+    derived from the recording's own gap distribution.
+
+    Only gaps between consecutive words WITHIN a chunk are measured — a chunk
+    boundary is a transcription-level break, not a measured pause, so folding
+    it in would pollute the distribution. Returns None when there aren't
+    enough gaps to characterise a distribution, in which case the caller does
+    not split inside chunks at all (rather than splitting on a number derived
+    from one or two samples)."""
+    gaps: List[float] = []
+    for chunk in chunks:
+        words = _chunk_words(chunk)
+        for prev, nxt in zip(words, words[1:]):
+            # Clamp: overlapping word timings would otherwise contribute
+            # negative "gaps" and drag the percentile down.
+            gaps.append(max(0.0, nxt[1] - prev[2]))
+    if len(gaps) < 2:
+        return None
+    return _percentile(gaps, _GAP_PERCENTILE)
+
+
+def _split_segment_into_units(
+    item: ArchiveSegment, next_index: int
+) -> Tuple[List[UtteranceUnit], int]:
+    """Split one recording into utterance units, continuing the archive-wide
+    unit numbering from `next_index`.
+
+    A new unit starts at a chunk boundary (a separately transcribed phrase) or
+    wherever the speaker paused longer than this recording's own threshold.
+    A chunk with no word timing contributes exactly one unit spanning the
+    whole chunk — still a real transcribed span, just not sub-divisible."""
+    threshold = _segment_gap_threshold(item.chunks)
+    units: List[UtteranceUnit] = []
+    index = next_index
+
+    def _emit(words: List[Tuple[str, float, float]]) -> None:
+        nonlocal index
+        if not words:
+            return
+        units.append(
+            UtteranceUnit(
+                unit_id=f"u{index}",
+                segment_id=item.segment.id,
+                index=index,
+                start_sec=words[0][1],
+                end_sec=words[-1][2],
+                text=" ".join(w for w, _, _ in words),
+            )
+        )
+        index += 1
+
+    for chunk in item.chunks:
+        words = _chunk_words(chunk)
+        if not words:
+            if chunk.end_sec > chunk.start_sec and (chunk.text or "").strip():
+                units.append(
+                    UtteranceUnit(
+                        unit_id=f"u{index}",
+                        segment_id=item.segment.id,
+                        index=index,
+                        start_sec=chunk.start_sec,
+                        end_sec=chunk.end_sec,
+                        text=chunk.text.strip(),
+                    )
+                )
+                index += 1
+            continue
+
+        current: List[Tuple[str, float, float]] = [words[0]]
+        for prev, nxt in zip(words, words[1:]):
+            gap = max(0.0, nxt[1] - prev[2])
+            if threshold is not None and gap > threshold:
+                _emit(current)
+                current = [nxt]
+            else:
+                current.append(nxt)
+        _emit(current)
+
+    return units, index
+
+
+def _build_units(archive: List[ArchiveSegment]) -> List[UtteranceUnit]:
+    """Every utterance unit in the archive, numbered sequentially ACROSS all
+    recordings (see UtteranceUnit.index) and in archive order."""
+    units: List[UtteranceUnit] = []
+    next_index = 1
+    for item in archive:
+        seg_units, next_index = _split_segment_into_units(item, next_index)
+        units.extend(seg_units)
+    return units
+
+
+def _unit_key(segment_id: str, start_sec: float) -> str:
+    """Stable identity for a unit ACROSS reads. Unit ids (u1, u2, …) are
+    positional — ingesting a new recording renumbers everything — so anything
+    persisted between turns (the shown-units history) must key on the
+    recording + the unit's own start time, which come from real word
+    timestamps and don't move."""
+    return f"{segment_id}:{start_sec:.2f}"
+
+
+def _format_annotated_transcript(
+    archive: List[ArchiveSegment],
+    units: List[UtteranceUnit],
+    shown_keys: Optional[set] = None,
+) -> str:
+    """The archive as numbered utterance units grouped under their recording.
+
+    Segment UUIDs are deliberately NOT printed: they were the only other
+    id-shaped thing in the prompt, and the model would sometimes return one
+    where a unit id was asked for — which validation then dropped, silently
+    turning an answerable question into a no-story. Recordings are labelled
+    with a plain ordinal instead, so unit ids are the only ids in view.
+
+    Word-level timings are likewise not shown: the model no longer picks
+    times, so exposing them would only invite time-arithmetic back in.
+
+    Units already played in this conversation are marked so the model can
+    prefer unseen material on a follow-up (see the prompt's ALREADY SHOWN
+    section)."""
+    shown_keys = shown_keys or set()
+    by_segment: Dict[str, List[UtteranceUnit]] = {}
+    for unit in units:
+        by_segment.setdefault(unit.segment_id, []).append(unit)
+
     lines: List[str] = []
+    ordinal = 0
     for item in archive:
         seg = item.segment
-        lines.append(f"[segment {seg.id}] Interview question: {seg.question_asked}")
-        for chunk in item.chunks:
-            lines.append(f"  [{chunk.start_sec:.2f}-{chunk.end_sec:.2f}] {chunk.text}")
-            word_timings = _format_word_timings(chunk.word_timestamps)
-            if word_timings:
-                lines.append(f"    word timings: {word_timings}")
-        lines.append("")  # blank line between segments
+        seg_units = by_segment.get(seg.id, [])
+        if not seg_units:
+            continue
+        ordinal += 1
+        lines.append(f"RECORDING {ordinal} — interview question: {seg.question_asked}")
+        for unit in seg_units:
+            mark = (
+                " [ALREADY SHOWN]"
+                if _unit_key(unit.segment_id, unit.start_sec) in shown_keys
+                else ""
+            )
+            lines.append(
+                f"  {unit.unit_id} [{unit.start_sec:.2f}-{unit.end_sec:.2f}]{mark} {unit.text}"
+            )
+        lines.append("")  # blank line between recordings
     return "\n".join(lines).rstrip()
+
+
+# ── Shown-unit history: what this conversation has already played ───────────
+#
+# Persisted on the assistant Message row (message_metadata JSON) rather than
+# in the Redis visited-set, for two reasons: it needs UNIT granularity (the
+# visited-set is per segment, so showing one unit would blank out a whole
+# recording), and it must survive a Redis-less deployment — REDIS_URL isn't
+# running in local dev, where cache_service silently no-ops. The DB is the
+# same place the conversation itself lives, so the two can never disagree.
+
+
+async def _load_shown_units(session_id: str) -> Tuple[set, List[List[dict]]]:
+    """(all unit keys shown in this session, per-assistant-turn unit lists in
+    chronological order). Fail-soft: any DB problem yields empty history
+    rather than breaking the turn."""
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Message)
+                .where(Message.session_id == session_id, Message.role == "assistant")
+                .order_by(Message.created_at)
+            )
+            rows = list(result.scalars().all())
+    except Exception as e:
+        logger.warning(f"Could not load shown-unit history for {session_id}: {e}")
+        return set(), []
+
+    per_turn: List[List[dict]] = []
+    keys: set = set()
+    for row in rows:
+        meta = row.message_metadata or {}
+        shown = meta.get("shown_units") or []
+        clean = [u for u in shown if isinstance(u, dict) and u.get("key")]
+        per_turn.append(clean)
+        keys.update(u["key"] for u in clean)
+    return keys, per_turn
+
+
+def _format_history_block(
+    turns: List[Dict[str, str]], per_turn_units: List[List[dict]]
+) -> str:
+    """Render the recent conversation so a follow-up has a real antecedent.
+
+    An assistant turn used to render as "(showed a video clip)" — the model
+    knew *a* clip played but not what it said, so a pronoun like "her" had
+    nothing to bind to. Now each assistant turn names the units it played and
+    quotes their words.
+
+    The unit lists are aligned to the assistant turns from the END (both are
+    chronological, and only turns that actually produced a clip persist an
+    assistant row). If they can't be aligned, the neutral placeholder is used
+    for the unmatched ones rather than risking attaching the wrong text."""
+    assistant_count = sum(1 for t in turns if t["role"] == "assistant")
+    aligned = per_turn_units[-assistant_count:] if assistant_count else []
+    if len(aligned) < assistant_count:
+        aligned = [[]] * (assistant_count - len(aligned)) + aligned
+
+    lines: List[str] = []
+    seen_assistant = 0
+    for turn in turns:
+        role, content = turn["role"], turn["content"]
+        if role != "assistant":
+            lines.append(f"{role}: {content}")
+            continue
+        units = aligned[seen_assistant] if seen_assistant < len(aligned) else []
+        seen_assistant += 1
+        if units:
+            rendered = "; ".join(
+                f"{u.get('unit_id', '?')}: \"{u.get('text', '')}\"" for u in units
+            )
+            lines.append(f"assistant: (played {rendered})")
+        else:
+            lines.append("assistant: (showed a video clip)")
+    return "\n".join(lines)
 
 
 # ── Step 2: entity map from Graphiti (read-only) ────────────────────────────
@@ -256,31 +568,41 @@ def _format_entity_map(entity_map: Dict[str, List[str]]) -> str:
 # ── Step 3: the single range-selection LLM call ─────────────────────────────
 
 
-def _parse_ranges_json(text: str) -> List[dict]:
-    """Extract the JSON array of {segment_id, start_sec, end_sec} objects.
-    Skips malformed elements here; step 4's validation is the real gate."""
-    match = re.search(r"\[.*\]", text, re.DOTALL)
-    if not match:
-        return []
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(data, list):
-        return []
-    out: List[dict] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        seg_id = item.get("segment_id")
-        start = item.get("start_sec")
-        end = item.get("end_sec")
-        if not isinstance(seg_id, str):
-            continue
+def _parse_unit_selection(text: str) -> List[str]:
+    """Extract the selected unit ids, preserving the model's stitch order.
+
+    Accepts the documented {"unit_ids": [...]} object and also a bare JSON
+    array of ids, so a model that drops the wrapper still parses rather than
+    silently yielding a no-story. Unknown ids are NOT filtered here — step 4
+    is the real gate."""
+    candidates: List[str] = []
+    obj_match = re.search(r"\{.*\}", text, re.DOTALL)
+    if obj_match:
         try:
-            out.append({"segment_id": seg_id, "start_sec": float(start), "end_sec": float(end)})
-        except (TypeError, ValueError):
-            continue
+            data = json.loads(obj_match.group(0))
+            if isinstance(data, dict):
+                raw = data.get("unit_ids")
+                if isinstance(raw, list):
+                    candidates = raw
+        except json.JSONDecodeError:
+            candidates = []
+    if not candidates:
+        arr_match = re.search(r"\[.*\]", text, re.DOTALL)
+        if arr_match:
+            try:
+                data = json.loads(arr_match.group(0))
+                if isinstance(data, list):
+                    candidates = data
+            except json.JSONDecodeError:
+                return []
+
+    out: List[str] = []
+    for item in candidates:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip())
+        elif isinstance(item, int):
+            # Tolerate a bare number where an id was asked for.
+            out.append(f"u{item}")
     return out
 
 
@@ -288,9 +610,9 @@ async def _read_archive_for_ranges(
     question: str,
     transcript_block: str,
     entity_map_block: str,
-    history: List[Dict[str, str]],
+    history_block: str,
     recording_language: str,
-) -> List[dict]:
+) -> List[str]:
     """The ONE LLM call. Fail-soft to [] (an LLM/parse failure yields the
     no-story fallback, never a guessed clip) — same never-invent contract
     as the other modes' own LLM steps.
@@ -303,11 +625,8 @@ async def _read_archive_for_ranges(
     )
 
     user_parts: List[str] = []
-    if history:
-        rendered = "\n".join(
-            retrieval_service._render_turn_for_history(t["role"], t["content"]) for t in history
-        )
-        user_parts.append(f"Recent conversation:\n{rendered}\n")
+    if history_block:
+        user_parts.append(f"Recent conversation:\n{history_block}\n")
     user_parts.append(f"Question:\n{question}")
     user_message = "\n".join(user_parts)
 
@@ -316,101 +635,80 @@ async def _read_archive_for_ranges(
             messages=[{"role": "user", "content": user_message}],
             system_prompt=system_prompt,
             temperature=0,
+            # Per-call model override (settings.ARCHIVE_READ_MODEL). This is
+            # the one call in the pipeline doing hard reasoning over the whole
+            # archive; the rest stay on the cheaper default. Empty => default.
+            model=settings.ARCHIVE_READ_MODEL or None,
         )
     except Exception as e:
         logger.warning(f"Archive-read LLM call failed, treating as no-story: {e}")
         return []
-    return _parse_ranges_json(raw)
+    return _parse_unit_selection(raw)
 
 
 # ── Step 4: deterministic validation + word-boundary snapping (no LLM) ──────
 
 
-def _word_intervals_for_segment(chunks: List[TranscriptChunk]) -> List[Tuple[float, float]]:
-    """Flat, sorted list of (start_sec, end_sec) speech intervals for a
-    segment — one per word when word_timestamps exist, falling back to the
-    whole-chunk boundary when a chunk has no word-level timing (Prompt 11's
-    word_timestamps is nullable). These are the boundaries ranges snap to."""
-    intervals: List[Tuple[float, float]] = []
-    for chunk in chunks:
-        words = chunk.word_timestamps or []
-        chunk_words: List[Tuple[float, float]] = []
-        for w in words:
-            try:
-                ws = float(w["start_sec"])
-                we = float(w["end_sec"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if we > ws:
-                chunk_words.append((ws, we))
-        if chunk_words:
-            intervals.extend(chunk_words)
+def resolve_units_to_clips(
+    unit_ids: List[str], units: List[UtteranceUnit]
+) -> List[ExpandedClip]:
+    """Turn the model's selected unit ids into playable ranges — deterministic
+    and LLM-free.
+
+    Times are DERIVED from the units (which came from real word timestamps),
+    never taken from the model, so there is nothing to snap or clamp: a
+    selected unit's boundaries are exact by construction. This is why the old
+    range-snapping step is gone rather than kept alongside — there is exactly
+    one boundary mechanism now.
+
+    Unknown ids are dropped with a warning. The model's stitch order is
+    preserved; a unit that IMMEDIATELY follows the previous selected one (same
+    recording, next index) extends it into a single continuous clip, so a run
+    of consecutive units plays as one uninterrupted piece and non-consecutive
+    selections stay separate pieces."""
+    by_id = {u.unit_id: u for u in units}
+
+    selected: List[UtteranceUnit] = []
+    seen: set[str] = set()
+    for uid in unit_ids:
+        unit = by_id.get(uid)
+        if unit is None:
+            logger.warning(f"Archive-read returned unknown unit id {uid!r}; dropping")
+            continue
+        if uid in seen:
+            continue  # a repeated id would otherwise duplicate footage
+        seen.add(uid)
+        selected.append(unit)
+
+    clips: List[ExpandedClip] = []
+    prev: Optional[UtteranceUnit] = None
+    for unit in selected:
+        if (
+            prev is not None
+            and unit.segment_id == prev.segment_id
+            and unit.index == prev.index + 1
+        ):
+            # Consecutive in the original speech — extend rather than emit a
+            # second clip, so the pause between them plays naturally.
+            clips[-1] = ExpandedClip(
+                raw_segment_id=clips[-1].raw_segment_id,
+                start_sec=clips[-1].start_sec,
+                end_sec=unit.end_sec,
+                source_chunk_id=clips[-1].source_chunk_id,
+            )
         else:
-            # Phrase-level boundary fallback (still a real transcribed span).
-            if chunk.end_sec > chunk.start_sec:
-                intervals.append((chunk.start_sec, chunk.end_sec))
-    intervals.sort()
-    return intervals
-
-
-def _snap_range_to_words(
-    start: float, end: float, intervals: List[Tuple[float, float]]
-) -> Optional[Tuple[float, float]]:
-    """Snap a model-proposed [start, end] to real word/phrase boundaries:
-    the range is kept only if it OVERLAPS actual transcribed speech, and its
-    edges are moved to the start of the first overlapping word and the end
-    of the last overlapping word (so a clip never begins or ends mid-word,
-    and every returned range provably covers real speech). Returns None if
-    the range overlaps no transcribed speech at all — that range is dropped."""
-    if end <= start or not intervals:
-        return None
-    overlapping = [(ws, we) for (ws, we) in intervals if ws < end and we > start]
-    if not overlapping:
-        return None
-    snapped_start = min(ws for ws, _ in overlapping)
-    snapped_end = max(we for _, we in overlapping)
-    if snapped_end <= snapped_start:
-        return None
-    return (snapped_start, snapped_end)
-
-
-def validate_ranges(raw_ranges: List[dict], archive: List[ArchiveSegment]) -> List[ExpandedClip]:
-    """Deterministic, no-LLM gate on the model's proposed ranges. Drops any
-    range that references a segment not in THIS producer's archive, or that
-    doesn't overlap real transcribed speech; snaps survivors to word
-    boundaries. Preserves the model's stitch order. Returns ExpandedClip
-    objects so the existing video_clip_assembler assembly/caching code can
-    consume them unchanged."""
-    intervals_by_segment = {
-        item.segment.id: _word_intervals_for_segment(item.chunks) for item in archive
-    }
-
-    validated: List[ExpandedClip] = []
-    for r in raw_ranges:
-        seg_id = r["segment_id"]
-        intervals = intervals_by_segment.get(seg_id)
-        if intervals is None:
-            logger.warning(f"Archive-read returned unknown/foreign segment id {seg_id!r}; dropping")
-            continue
-        snapped = _snap_range_to_words(r["start_sec"], r["end_sec"], intervals)
-        if snapped is None:
-            logger.warning(
-                f"Archive-read range {r['start_sec']}-{r['end_sec']} in {seg_id} "
-                f"overlaps no transcribed speech; dropping"
+            clips.append(
+                ExpandedClip(
+                    raw_segment_id=unit.segment_id,
+                    start_sec=unit.start_sec,
+                    end_sec=unit.end_sec,
+                    # No single source chunk in this mode — a clip can span
+                    # several. Marked so it's never mistaken for a v1 chunk id.
+                    source_chunk_id=f"archive-read:{unit.segment_id}",
+                )
             )
-            continue
-        start, end = snapped
-        validated.append(
-            ExpandedClip(
-                raw_segment_id=seg_id,
-                start_sec=start,
-                end_sec=end,
-                # No single source chunk in this mode — a range can span
-                # several. Marked so it's never mistaken for a v1 chunk id.
-                source_chunk_id=f"archive-read:{seg_id}",
-            )
-        )
-    return validated
+        prev = unit
+    return clips
 
 
 async def read_and_validate_ranges(
@@ -420,21 +718,52 @@ async def read_and_validate_ranges(
     the actual 'which ranges' decision that differs from v1. Exposed
     separately so the comparison harness (and tests) can inspect the chosen
     ranges without running ffmpeg."""
+    return (await select_units(question, group_id, recording_language, session_id)).clips
+
+
+@dataclass
+class UnitSelection:
+    """What the read produced: the playable clips, the units behind them, and
+    whether every one of them had already been played this session (which is
+    'nothing NEW to show', a different answer from 'nothing relevant exists')."""
+
+    clips: List[ExpandedClip]
+    selected_units: List[UtteranceUnit]
+    all_already_shown: bool
+
+
+async def select_units(
+    question: str, group_id: str, recording_language: str, session_id: str
+) -> UnitSelection:
     archive = await _load_archive(group_id)
     if not archive:
-        return []
+        return UnitSelection([], [], False)
 
-    transcript_block = _format_annotated_transcript(archive)
+    units = _build_units(archive)
+    if not units:
+        return UnitSelection([], [], False)
+
+    shown_keys, per_turn_units = await _load_shown_units(session_id)
+
+    transcript_block = _format_annotated_transcript(archive, units, shown_keys)
     entity_map = await _build_entity_map(archive, group_id)
     entity_map_block = _format_entity_map(entity_map)
-    history = await retrieval_service._recent_turns(
+    turns = await retrieval_service._recent_turns(
         session_id, retrieval_service.COREFERENCE_HISTORY_TURNS
     )
+    history_block = _format_history_block(turns, per_turn_units) if turns else ""
 
-    raw_ranges = await _read_archive_for_ranges(
-        question, transcript_block, entity_map_block, history, recording_language
+    unit_ids = await _read_archive_for_ranges(
+        question, transcript_block, entity_map_block, history_block, recording_language
     )
-    return validate_ranges(raw_ranges, archive)
+
+    by_id = {u.unit_id: u for u in units}
+    selected = [by_id[uid] for uid in dict.fromkeys(unit_ids) if uid in by_id]
+    clips = resolve_units_to_clips(unit_ids, units)
+    all_shown = bool(selected) and all(
+        _unit_key(u.segment_id, u.start_sec) in shown_keys for u in selected
+    )
+    return UnitSelection(clips=clips, selected_units=selected, all_already_shown=all_shown)
 
 
 # ── Step 5: orchestrate, reusing the existing assembly/caching/storage ──────
@@ -448,9 +777,18 @@ async def assemble_video_clip_response_v2(
     handler and frontend treat both modes the same; only the range decision
     (read_and_validate_ranges) differs. Assembly, caching, and storage are
     the EXACT same code the v1 path uses."""
-    clips = await read_and_validate_ranges(question, group_id, recording_language, session_id)
+    selection = await select_units(question, group_id, recording_language, session_id)
+    clips = selection.clips
     if not clips:
         return VideoClipResult(video_url=None, no_story=True, fallback_text=NO_STORY_FALLBACK)
+
+    # Everything that answers this question has already been played in this
+    # conversation. Replaying the identical clip reads as the system being
+    # broken, so say so instead — a DIFFERENT answer from "no story exists".
+    if selection.all_already_shown:
+        return VideoClipResult(
+            video_url=None, no_story=True, fallback_text=ALREADY_SHOWN_FALLBACK
+        )
 
     cache_key = video_clip_assembler._clip_cache_key(group_id, clips)
     cached_url = await cache_service.get(cache_key)
@@ -464,4 +802,17 @@ async def assemble_video_clip_response_v2(
     await cache_service.set(cache_key, video_url, ttl=CACHE_TTL_SECONDS)
     await cache_service.add_visited(session_id, list({c.raw_segment_id for c in clips}))
 
-    return VideoClipResult(video_url=video_url)
+    # Carried back so the WS handler can persist WHICH units this answer
+    # played (on the assistant Message's metadata) — that record is what the
+    # next turn reads for both the already-shown marks and the history block.
+    return VideoClipResult(
+        video_url=video_url,
+        shown_units=[
+            {
+                "key": _unit_key(u.segment_id, u.start_sec),
+                "unit_id": u.unit_id,
+                "text": u.text,
+            }
+            for u in selection.selected_units
+        ],
+    )
