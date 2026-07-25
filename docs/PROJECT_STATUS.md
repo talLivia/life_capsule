@@ -106,18 +106,29 @@ created successfully against it. Sessions connect and messages flow.
 
 What was actually happening (found in the persisted `Message` rows):
 
-1. **The mic was transcribing playing clips and sending them back as
-   questions.** A 19-second answer was captured verbatim by the microphone and
-   submitted as the user's next turn; the system then answered *that*. This is
-   what made several "retrieval bugs" look real — retrieval was correct at
-   every step. **Cause:** `avatarBusy` was checked only when a segment
-   *started*, never during one, so a recording already in flight when playback
-   began kept running and captured the clip. Window opens whenever playback
-   starts late (e.g. autoplay blocked until the user clicks play).
-   **Fix:** abort and DISCARD any in-flight segment the moment playback starts
-   (`useContinuousVoiceInput.runVadTick`), plus `echoCancellation: true` as
-   defence in depth — the comment justifying it being off rested on the
-   assumption this bug disproved.
+1. **The app was recording SYSTEM OUTPUT and submitting it as the user's
+   questions.** Clips came back as verbatim "questions" that the system then
+   answered — which is what made several "retrieval bugs" look real. Retrieval
+   was correct at every step. Proven from the backend raw trace: real `audio`
+   messages (~1 MB) arrived *with the physical mic disconnected*, and STT
+   segment timings showed recordings of 29s/43s/48s that were **~30 seconds of
+   silence followed by the clip**.
+   **Root cause:** when no real input device exists, `pickPreferredAudioDevice`
+   returns undefined and the old code dropped the `deviceId` constraint and let
+   the browser choose — selecting a **loopback device (Stereo Mix) that records
+   system output**. Exactly the failure `audioDevices.ts` was written to
+   prevent: it filtered loopback devices out of the candidate list, then fell
+   through to "whatever the browser offers" when the list came back empty.
+   **Secondary cause:** end-of-turn is only detected *after* speech is heard, so
+   a recorder that hears nothing never stops — hence the 48-second segments.
+   **Fixes:** (a) REFUSE to open a stream when there's no real input device and
+   surface it as `micUnavailable: 'no-input-device'` in the UI; (b)
+   `MAX_SEGMENT_MS = 20000` ceiling — discard if no speech was heard, send
+   normally if some was; (c) abort and discard any in-flight segment the moment
+   playback starts (defence in depth).
+   Note `echoCancellation` stays **off**: it was briefly switched on under an
+   acoustic-echo theory the trace disproved (a digital loopback can't be
+   cancelled), and it can shift the calibrated ambient threshold on a real mic.
 2. **Producer screen only: `isClipPlaying` could strand at `true`.** That
    screen replaces one keyed `<video>` in place; unmounting a *playing*
    element fires neither `onPause` nor `onEnded`, so the gate never reopened

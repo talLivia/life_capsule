@@ -267,14 +267,18 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
     wsRef.current.send(JSON.stringify({ type: 'audio', audio: base64Audio }))
   }, [])
 
-  const { micMuted, setMicMuted, isListening, hearingSpeech, permissionDenied } =
+  const { micMuted, setMicMuted, isListening, hearingSpeech, micUnavailable } =
     useContinuousVoiceInput(connected, isThinking || showVideo, sendAudioSegment)
 
   useEffect(() => {
-    if (permissionDenied) {
-      toast.error('Microphone access denied — you can still type your questions')
-    }
-  }, [permissionDenied])
+    if (!micUnavailable) return
+    toast.error(
+      micUnavailable === 'no-input-device'
+        ? 'No microphone found — connect one to talk, or type your question instead'
+        : 'Microphone access denied — you can still type your questions',
+      { duration: 6000 }
+    )
+  }, [micUnavailable])
 
   return (
     <div className="min-h-screen bg-calm-paper dark:bg-calm-paperDark text-calm-ink dark:text-calm-inkDark flex flex-col">

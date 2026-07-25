@@ -238,14 +238,25 @@ export function useVideoClipChat(avatarId: string) {
     wsRef.current.send(JSON.stringify({ type: 'audio', audio: base64Audio }))
   }, [])
 
-  const { micMuted, setMicMuted, isListening, hearingSpeech, micLevel, permissionDenied } =
-    useContinuousVoiceInput(connected, isThinking || isClipPlaying || clipGrace, sendAudioSegment)
+  const {
+    micMuted, setMicMuted, isListening, hearingSpeech, micLevel, permissionDenied,
+    micUnavailable,
+  } = useContinuousVoiceInput(
+    connected, isThinking || isClipPlaying || clipGrace, sendAudioSegment
+  )
 
   useEffect(() => {
-    if (permissionDenied) {
-      toast.error('Microphone access denied — you can still type your questions')
-    }
-  }, [permissionDenied])
+    if (!micUnavailable) return
+    // 'no-input-device' is deliberately NOT silent: previously this state fell
+    // back to whatever device the browser offered, which could be a loopback
+    // recording system output. Saying so plainly is the whole point.
+    toast.error(
+      micUnavailable === 'no-input-device'
+        ? 'No microphone found — connect one to talk, or type your question instead'
+        : 'Microphone access denied — you can still type your questions',
+      { duration: 6000 }
+    )
+  }, [micUnavailable])
 
   useEffect(
     () => () => {
@@ -277,5 +288,6 @@ export function useVideoClipChat(avatarId: string) {
     hearingSpeech,
     micLevel,
     permissionDenied,
+    micUnavailable,
   }
 }

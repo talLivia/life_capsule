@@ -34,6 +34,15 @@ import { pickPreferredAudioDevice } from '@/lib/audioDevices'
 // spokeMs=" console logs, not these two numbers.
 const SILENCE_DURATION_MS = 1000
 const MIN_SPEECH_MS = 400
+// Hard ceiling on one segment. End-of-turn is only detected AFTER speech is
+// heard (silence is counted from the first crossing), so a recorder that
+// never hears speech has nothing to stop it and runs forever. CONFIRMED
+// LIVE: segments of 29s, 43s and 48s were captured, each ~30s of silence
+// followed by whatever audio eventually arrived. Past this ceiling we stop:
+// a segment with no speech is DISCARDED (nothing legitimate takes 20s of
+// silence to begin), while one that did contain speech is treated as a
+// normal end-of-turn and sent, so an unusually long question still works.
+const MAX_SEGMENT_MS = 20000
 // The "hearing you" indicator flipping off on the very first frame below
 // threshold flickers constantly — natural speech has brief micro-pauses
 // between syllables/words that dip below the level even mid-sentence. This
@@ -69,6 +78,12 @@ export interface ContinuousVoiceInput {
   hearingSpeech: boolean
   micLevel: number
   permissionDenied: boolean
+  /** Why the mic is unusable, when it is. 'denied' = the user/OS refused
+   *  permission; 'no-input-device' = there is no REAL microphone to use (see
+   *  the refusal in the acquisition effect — we never fall back to whatever
+   *  device the browser would pick, because that can be a loopback that
+   *  records system output). null when the mic is fine. */
+  micUnavailable: 'denied' | 'no-input-device' | null
 }
 
 /**
@@ -89,6 +104,8 @@ export function useContinuousVoiceInput(
   const [hearingSpeech, setHearingSpeech] = useState(false)
   const [micLevel, setMicLevel] = useState(0)
   const [permissionDenied, setPermissionDenied] = useState(false)
+  const [micUnavailable, setMicUnavailable] =
+    useState<'denied' | 'no-input-device' | null>(null)
 
   const continuousStreamRef = useRef<MediaStream | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
@@ -114,6 +131,7 @@ export function useContinuousVoiceInput(
   // Set when a segment must be thrown away rather than sent — specifically
   // when playback starts WHILE we're already recording. See runVadTick.
   const discardSegmentRef = useRef(false)
+  const segmentStartedAtRef = useRef(0)
   const micMutedRef = useRef(false)
   const connectedRef = useRef(false)
   const loopActiveRef = useRef(false)
@@ -160,6 +178,16 @@ export function useContinuousVoiceInput(
       if (avatarBusyRef.current) {
         discardSegmentRef.current = true
         mediaRecorderRef.current?.stop()  // -> onstop, which drops it
+        return
+      }
+
+      // Runaway-segment ceiling — see MAX_SEGMENT_MS.
+      if (Date.now() - segmentStartedAtRef.current >= MAX_SEGMENT_MS) {
+        if (speechDetectedAtRef.current === null) {
+          discardSegmentRef.current = true
+          console.info('[voice] segment DISCARDED — hit max duration with no speech')
+        }
+        mediaRecorderRef.current?.stop()
         return
       }
 
@@ -210,6 +238,7 @@ export function useContinuousVoiceInput(
         return
       }
       segmentChunksRef.current = []
+      segmentStartedAtRef.current = Date.now()
       speechDetectedAtRef.current = null
       silenceStartRef.current = null
       speechMsAccumulatedRef.current = 0
@@ -287,6 +316,26 @@ export function useContinuousVoiceInput(
         probe.getTracks().forEach((t) => t.stop())
         const devices = await navigator.mediaDevices.enumerateDevices()
         const preferred = pickPreferredAudioDevice(devices)
+
+        // REFUSE rather than fall back to an unconstrained getUserMedia.
+        // CONFIRMED LIVE: with the physical mic disconnected there is no real
+        // input to pick, and the old code dropped the deviceId constraint and
+        // let the browser choose — which selected a LOOPBACK device (Stereo
+        // Mix) that records system OUTPUT. The result was ~30s of silence
+        // followed by a verbatim recording of the clip that was playing, sent
+        // back as the user's next question. That is exactly the failure
+        // audioDevices.ts was written to prevent; the guard filtered loopback
+        // devices out of the candidate list but then fell through to
+        // "whatever the browser offers" when the list came back empty.
+        // No real microphone is the same usable state as denied permission.
+        if (!preferred) {
+          console.warn(
+            '[voice] no real (non-loopback) audio input device — refusing to ' +
+              'open a stream rather than risk capturing system output'
+          )
+          if (!cancelled) setMicUnavailable('no-input-device')
+          return
+        }
         // Unlike VideoRecorder.tsx/VoicePanel.tsx (single monologue / voice-
         // clone sample capture, where raw unprocessed fidelity is preferable
         // and there's no simultaneous avatar playback to cancel against),
@@ -295,23 +344,22 @@ export function useContinuousVoiceInput(
         // otherwise sit only ~8 points above its own noise floor on a 0-255
         // scale, barely distinguishable from ambient noise (confirmed live:
         // ambient floor ~36, speech ~44-46 with these disabled).
-        // echoCancellation is now ON. It used to be off, justified by "half-
-        // duplex already keeps the storyteller's audio out of the mic, so
-        // there's nothing to cancel". That assumption was DISPROVEN live: the
-        // mic captured entire clips and fed them back as questions (see
-        // runVadTick). The gating hole itself is fixed there; this is
-        // defence in depth, because the cost of being wrong again is
-        // fabricated conversation turns, which is far worse than the slight
-        // voice colouring cancellation can introduce.
+        // echoCancellation stays OFF. It was briefly switched on when clips
+        // were turning up as user questions, on the theory that the speakers
+        // were bleeding into the mic — but the trace disproved that: the
+        // capture was a DIGITAL loopback device, not an acoustic path, which
+        // cancellation cannot touch. Turning it on bought nothing and can
+        // colour the signal and shift the calibrated ambient threshold on a
+        // real mic. The real fixes are the device refusal above, the
+        // max-duration cap, and the mid-recording playback abort.
+        // deviceId is always constrained now — see the refusal above.
         const stream = await navigator.mediaDevices.getUserMedia({
-          audio: preferred
-            ? {
-                deviceId: { exact: preferred.deviceId },
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-              }
-            : { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          audio: {
+            deviceId: { exact: preferred.deviceId },
+            echoCancellation: false,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
         })
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop())
@@ -404,7 +452,10 @@ export function useContinuousVoiceInput(
         if (connectedRef.current) startListeningLoop()
       } catch (err) {
         console.error('[voice] mic acquisition failed:', err)
-        if (!cancelled) setPermissionDenied(true)
+        if (!cancelled) {
+          setPermissionDenied(true)
+          setMicUnavailable('denied')
+        }
       }
     })()
 
@@ -422,5 +473,13 @@ export function useContinuousVoiceInput(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  return { micMuted, setMicMuted, isListening, hearingSpeech, micLevel, permissionDenied }
+  return {
+    micMuted,
+    setMicMuted,
+    isListening,
+    hearingSpeech,
+    micLevel,
+    permissionDenied,
+    micUnavailable,
+  }
 }

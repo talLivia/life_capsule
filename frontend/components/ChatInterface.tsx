@@ -585,12 +585,18 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
     setShowVideo(false)
   }, [])
 
-  const { micMuted, setMicMuted, isListening, hearingSpeech, micLevel, permissionDenied } =
+  const { micMuted, setMicMuted, isListening, hearingSpeech, micLevel, micUnavailable } =
     useContinuousVoiceInput(connectionStatus === 'connected', isProcessing || showVideo, sendAudioSegment)
 
   useEffect(() => {
-    if (permissionDenied) toast.error('Microphone access denied — you can still type your questions')
-  }, [permissionDenied])
+    if (!micUnavailable) return
+    toast.error(
+      micUnavailable === 'no-input-device'
+        ? 'No microphone found — connect one to talk, or type your message instead'
+        : 'Microphone access denied — you can still type your questions',
+      { duration: 6000 }
+    )
+  }, [micUnavailable])
 
   const resetVideo = () => {
     chunkQueueRef.current = []

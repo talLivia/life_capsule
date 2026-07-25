@@ -39,6 +39,7 @@ export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) 
     sendText,
     acceptFollowUp,
     declineFollowUp,
+    micUnavailable,
     micMuted,
     setMicMuted,
     isListening,
@@ -128,7 +129,9 @@ export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) 
                       ? statusText
                       : clipActive
                         ? 'Clip playing…'
-                        : 'Ready'}
+                        : micUnavailable
+                          ? 'No microphone — type below'
+                          : 'Ready'}
                 </span>
               </div>
               <div className="flex items-center gap-1.5 text-xs text-gray-500">
@@ -233,7 +236,15 @@ export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) 
             {!micMuted && (
               <div className="flex items-center gap-2 mb-3 px-2">
                 <span className={`text-xs font-medium ${hearingSpeech ? 'text-red-400 animate-pulse' : 'text-gray-500'}`}>
-                  {hearingSpeech ? 'HEARING YOU' : clipActive ? 'CLIP PLAYING' : isThinking ? 'WORKING…' : 'LISTENING'}
+                  {micUnavailable
+                    ? 'NO MICROPHONE'
+                    : hearingSpeech
+                      ? 'HEARING YOU'
+                      : clipActive
+                        ? 'CLIP PLAYING'
+                        : isThinking
+                          ? 'WORKING…'
+                          : 'LISTENING'}
                 </span>
               </div>
             )}

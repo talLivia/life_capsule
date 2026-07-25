@@ -33,6 +33,7 @@ export function VideoClipTalkInterface({ avatarId, producerName }: VideoClipTalk
     sendText,
     acceptFollowUp,
     declineFollowUp,
+    micUnavailable,
     micMuted,
     setMicMuted,
     isListening,
@@ -55,9 +56,11 @@ export function VideoClipTalkInterface({ avatarId, producerName }: VideoClipTalk
         <span className="ml-auto text-xs text-calm-inkmuted dark:text-calm-inkmutedDark">
           {!connected
             ? 'Reconnecting…'
-            : micMuted
-              ? 'Mic muted'
-              : hearingSpeech
+            : micUnavailable
+              ? 'No microphone — type below'
+              : micMuted
+                ? 'Mic muted'
+                : hearingSpeech
                 ? 'Hearing you…'
                 : isThinking
                   ? statusText
