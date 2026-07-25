@@ -21,6 +21,13 @@ const ASSETS = [
   ['node_modules/@ricky0123/vad-web/dist/vad.worklet.bundle.min.js', 'vad.worklet.bundle.min.js'],
   // Only the plain SIMD build. The .jsep (WebGPU) variant is another ~26 MB
   // and buys nothing for a model this small running single-threaded.
+  //
+  // BOTH files are required and they must stay together. ORT does not load
+  // the .wasm directly — it imports the .mjs glue module from wasmPaths,
+  // which then instantiates the .wasm beside it. Shipping only the .wasm
+  // fails at runtime with "Failed to fetch dynamically imported module:
+  // .../ort-wasm-simd-threaded.mjs" followed by "no available backend found".
+  ['node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs', 'ort-wasm-simd-threaded.mjs'],
   ['node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm', 'ort-wasm-simd-threaded.wasm'],
 ]
 
