@@ -45,7 +45,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.config import settings
 from app.database import AsyncSessionLocal
@@ -572,6 +572,100 @@ def _format_history_block(
 # ── Step 2: entity map from Graphiti (read-only) ────────────────────────────
 
 
+# ── per-producer archive cache ──────────────────────────────────────────────
+#
+# The archive load, the entity map and the unit split are all derived PURELY
+# from the producer's ready recordings, which change only at ingestion — yet
+# they were rebuilt on every single question. MEASURED over three identical
+# passes: _build_entity_map 4.13s mean (45% of the whole turn) and, worse,
+# ALL of the variance — it ranged 1.35s to 9.55s because it makes one Neo4j
+# round-trip PER RECORDING against a remote free-tier instance. _load_archive
+# added another 1.22s. The LLM call people assume is the bottleneck was 2.99s
+# with a 0.42s spread.
+#
+# Deliberately in-process rather than via cache_service: Redis is not running
+# in this deployment, so cache_service silently no-ops and a cache built on it
+# would do nothing (the same trap the shown-unit history avoided).
+#
+# NOT a TTL. Freshness is checked against a cheap version derived from the
+# recordings themselves, so a newly ingested recording can never be silently
+# missing from answers — the failure mode a TTL would allow. The check is one
+# indexed aggregate (~0.3s) in place of ~5.3s of rebuilding, and because it
+# reads shared state it stays correct across worker processes too, which an
+# invalidation hook alone would not.
+_ARCHIVE_CACHE: Dict[str, "_CachedArchive"] = {}
+
+
+@dataclass
+class _CachedArchive:
+    version: tuple
+    archive: List[ArchiveSegment]
+    entity_map: Dict[str, List[str]]
+    units: List["UtteranceUnit"]
+
+
+async def _archive_version(group_id: str) -> tuple:
+    """Cheap fingerprint of a producer's ready recordings. Changes whenever a
+    recording is added, removed, or re-analysed (status/updated_at move), which
+    is exactly when the derived data must be rebuilt."""
+    async with AsyncSessionLocal() as db:
+        row = (
+            await db.execute(
+                select(
+                    func.count(RawSegment.id),
+                    func.max(RawSegment.updated_at),
+                    func.max(RawSegment.created_at),
+                )
+                .select_from(RawSegment)
+                .join(InterviewSession, RawSegment.interview_session_id == InterviewSession.id)
+                .where(InterviewSession.user_id == group_id, RawSegment.status == "ready")
+            )
+        ).one()
+    return (row[0], str(row[1]), str(row[2]))
+
+
+async def _archive_bundle(
+    group_id: str,
+) -> Tuple[List[ArchiveSegment], Dict[str, List[str]], List["UtteranceUnit"]]:
+    """(archive, entity_map, units) for a producer — rebuilt only when their
+    recordings have actually changed."""
+    try:
+        version = await _archive_version(group_id)
+    except Exception as e:
+        # Can't confirm freshness -> rebuild rather than risk serving stale
+        # data. Costly, not wrong.
+        logger.warning(f"Archive version check failed for {group_id}, rebuilding: {e}")
+        version = None
+
+    cached = _ARCHIVE_CACHE.get(group_id)
+    if cached is not None and version is not None and cached.version == version:
+        return cached.archive, cached.entity_map, cached.units
+
+    archive = await _load_archive(group_id)
+    if not archive:
+        _ARCHIVE_CACHE.pop(group_id, None)
+        return [], {}, []
+    entity_map = await _build_entity_map(archive, group_id)
+    units = _build_units(archive)
+    if version is not None:
+        _ARCHIVE_CACHE[group_id] = _CachedArchive(version, archive, entity_map, units)
+    logger.info(
+        f"Archive cache rebuilt for {group_id}: "
+        f"{len(archive)} recordings, {len(units)} units, {len(entity_map)} entities"
+    )
+    return archive, entity_map, units
+
+
+def invalidate_archive_cache(group_id: Optional[str] = None) -> None:
+    """Drop cached archive data. Called when a recording finishes ingesting so
+    the next question sees it immediately, without waiting on the version
+    check to notice. Passing None clears every producer."""
+    if group_id is None:
+        _ARCHIVE_CACHE.clear()
+    else:
+        _ARCHIVE_CACHE.pop(group_id, None)
+
+
 async def _build_entity_map(archive: List[ArchiveSegment], group_id: str) -> Dict[str, List[str]]:
     """entity name -> the segment ids that mention it. Built by inverting
     graph_memory.get_episode_entity_names per segment (the same read-only
@@ -804,18 +898,13 @@ class UnitSelection:
 async def select_units(
     question: str, group_id: str, recording_language: str, session_id: str
 ) -> UnitSelection:
-    archive = await _load_archive(group_id)
-    if not archive:
-        return UnitSelection([], [], False)
-
-    units = _build_units(archive)
-    if not units:
+    archive, entity_map, units = await _archive_bundle(group_id)
+    if not archive or not units:
         return UnitSelection([], [], False)
 
     shown_keys, per_turn_units = await _load_shown_units(session_id)
 
     transcript_block = _format_annotated_transcript(archive, units, shown_keys)
-    entity_map = await _build_entity_map(archive, group_id)
     entity_map_block = _format_entity_map(entity_map)
     turns = await retrieval_service._recent_turns(
         session_id, retrieval_service.COREFERENCE_HISTORY_TURNS

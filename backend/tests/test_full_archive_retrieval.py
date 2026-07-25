@@ -712,3 +712,106 @@ async def test_assemble_v2_passes_follow_up_through(monkeypatch):
 
     result = await ar.assemble_video_clip_response_v2("q", "group", "he", "sess")
     assert result.follow_up == {"question": "want to hear how I knew?"}
+
+
+# ── per-producer archive cache ───────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _clear_archive_cache():
+    """The cache is module-level state; leaking it between tests would make
+    them order-dependent."""
+    ar.invalidate_archive_cache()
+    yield
+    ar.invalidate_archive_cache()
+
+
+async def test_archive_bundle_reuses_cache_when_version_unchanged(monkeypatch):
+    archive = _resolvable_archive()
+    loads = {"archive": 0, "entities": 0}
+
+    async def fake_load(_gid):
+        loads["archive"] += 1
+        return archive
+
+    async def fake_entities(_archive, _gid):
+        loads["entities"] += 1
+        return {"Nir": ["seg-a"]}
+
+    monkeypatch.setattr(ar, "_archive_version", AsyncMock(return_value=(2, "t1", "t0")))
+    monkeypatch.setattr(ar, "_load_archive", fake_load)
+    monkeypatch.setattr(ar, "_build_entity_map", fake_entities)
+
+    a1, e1, u1 = await ar._archive_bundle("group-1")
+    a2, e2, u2 = await ar._archive_bundle("group-1")
+
+    assert loads == {"archive": 1, "entities": 1}, "second call must not rebuild"
+    assert a1 is a2 and e1 is e2 and u1 is u2
+    assert u1, "units are cached alongside the archive"
+
+
+async def test_archive_bundle_rebuilds_when_version_changes(monkeypatch):
+    """A newly ingested recording changes the version, and the next question
+    MUST see it — a stale cache would make a fresh story silently invisible."""
+    archive = _resolvable_archive()
+    loads = {"n": 0}
+
+    async def fake_load(_gid):
+        loads["n"] += 1
+        return archive
+
+    versions = iter([(2, "t1", "t0"), (3, "t2", "t0")])
+    monkeypatch.setattr(ar, "_archive_version", AsyncMock(side_effect=lambda _g: next(versions)))
+    monkeypatch.setattr(ar, "_load_archive", fake_load)
+    monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={}))
+
+    await ar._archive_bundle("group-1")
+    await ar._archive_bundle("group-1")
+
+    assert loads["n"] == 2, "a version change must force a rebuild"
+
+
+async def test_invalidate_archive_cache_forces_rebuild(monkeypatch):
+    archive = _resolvable_archive()
+    loads = {"n": 0}
+
+    async def fake_load(_gid):
+        loads["n"] += 1
+        return archive
+
+    monkeypatch.setattr(ar, "_archive_version", AsyncMock(return_value=(2, "t1", "t0")))
+    monkeypatch.setattr(ar, "_load_archive", fake_load)
+    monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={}))
+
+    await ar._archive_bundle("group-1")
+    ar.invalidate_archive_cache("group-1")
+    await ar._archive_bundle("group-1")
+
+    assert loads["n"] == 2
+
+
+async def test_archive_bundle_rebuilds_when_version_check_fails(monkeypatch):
+    """If freshness can't be confirmed, rebuild rather than risk stale data."""
+    archive = _resolvable_archive()
+    loads = {"n": 0}
+
+    async def fake_load(_gid):
+        loads["n"] += 1
+        return archive
+
+    monkeypatch.setattr(ar, "_archive_version", AsyncMock(side_effect=RuntimeError("db down")))
+    monkeypatch.setattr(ar, "_load_archive", fake_load)
+    monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={}))
+
+    await ar._archive_bundle("group-1")
+    await ar._archive_bundle("group-1")
+
+    assert loads["n"] == 2, "unconfirmed freshness must not be cached"
+
+
+async def test_empty_archive_is_not_cached(monkeypatch):
+    monkeypatch.setattr(ar, "_archive_version", AsyncMock(return_value=(0, "t", "t")))
+    monkeypatch.setattr(ar, "_load_archive", AsyncMock(return_value=[]))
+    a, e, u = await ar._archive_bundle("group-empty")
+    assert (a, e, u) == ([], {}, [])
+    assert "group-empty" not in ar._ARCHIVE_CACHE

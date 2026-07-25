@@ -627,6 +627,17 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
         segment.pending_confirmation = None
         await db.commit()
 
+    # This recording is now part of the producer's archive. Drop the cached
+    # archive/entity-map/units so the very next question sees it, rather than
+    # waiting for the version check to notice. A stale cache here would mean a
+    # freshly recorded story silently not existing as far as answers go.
+    try:
+        from app.services.full_archive_retrieval import invalidate_archive_cache
+
+        invalidate_archive_cache(state["group_id"])
+    except Exception as e:  # never fail ingestion over a cache drop
+        logger.warning(f"Could not invalidate archive cache for {state['group_id']}: {e}")
+
     return {"status": "ready"}
 
 
