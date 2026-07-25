@@ -1,81 +1,64 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { MicVAD } from '@ricky0123/vad-web'
 import { pickPreferredAudioDevice } from '@/lib/audioDevices'
 
-// Continuous (hands-free) voice turn-taking tuning. These are heuristics,
-// not adaptive — a noisy room or a hot mic can misfire the thresholds below,
-// and there's an inherent latency/naturalness tradeoff in SILENCE_DURATION_MS
-// (shorter cuts users off mid-thought during a normal speaking pause; longer
-// feels laggy). Half-duplex only: the mic is paused while the avatar is
-// speaking (not true barge-in) — even with noiseSuppression/autoGainControl
-// on, there's no reason to have the mic live while there's nothing valid to
-// capture, and it sidesteps any chance of the avatar's own audio being
-// picked up and self-triggering.
+// Continuous (hands-free) voice turn-taking.
 //
-// End-of-turn tuning. Raised modestly from the original 750/300 (which fired
-// on a mid-sentence breath and let a cough count as a turn) — but NOT as high
-// as 1300/700, which overshot: in a real mic environment with a narrow
-// speech-vs-ambient contrast, a full sentence's CUMULATIVE above-threshold
-// time didn't reach 700ms and/or a genuine end-of-sentence pause didn't reach
-// 1300ms of continuous silence, so legitimate speech stopped registering at
-// all. These conservative values stay close enough to the known-working
-// baseline that normal speech comfortably clears them, while still requiring
-// a longer pause than before:
-// - SILENCE_DURATION_MS = 1000: end-of-sentence pauses are ~1s+, so this ends
-//   the turn on a real stop, not a mid-sentence breath (~500-900ms), but is
-//   low enough to still fire reliably.
-// - MIN_SPEECH_MS = 400: filters the briefest blips (a cough is ~200-400ms)
-//   without risking a normal sentence (which yields well over 400ms of
-//   above-threshold time). CUMULATIVE above-threshold, not wall-clock (see
-//   the onstop handler).
-// If speech still mis-registers, the thing to look at is the ROLLING NOISE
-// FLOOR and the sustained-onset check below — not these two numbers, and not
-// AMBIENT_MARGIN. The "[voice] speech onset" log prints level, threshold and
-// the live floor together, which is what tells you whether the floor is
-// tracking the room correctly.
-const SILENCE_DURATION_MS = 1000
-const MIN_SPEECH_MS = 400
-// Hard ceiling on one segment. End-of-turn is only detected AFTER speech is
-// heard (silence is counted from the first crossing), so a recorder that
-// never hears speech has nothing to stop it and runs forever. CONFIRMED
-// LIVE: segments of 29s, 43s and 48s were captured, each ~30s of silence
-// followed by whatever audio eventually arrived. Past this ceiling we stop:
-// a segment with no speech is DISCARDED (nothing legitimate takes 20s of
-// silence to begin), while one that did contain speech is treated as a
-// normal end-of-turn and sent, so an unusually long question still works.
+// SPEECH DETECTION IS A NEURAL CLASSIFIER (Silero VAD, via @ricky0123/vad-web),
+// not a loudness threshold. Three successive amplitude-based designs failed
+// here — a fixed calibrated threshold, then a wider margin, then a rolling
+// noise floor with a sustained-onset requirement — and the reason is
+// fundamental rather than a matter of tuning: this codebase's own measurements
+// record ambient ~36 vs speech ~44-46 on a 0-255 scale. Eight to ten points of
+// separation is not enough for ANY level comparison to be reliable, and steady
+// mechanical noise (a fan, AC) sits above the line indefinitely, so neither a
+// margin nor a "must hold for N ms" rule can reject it. Silero classifies
+// speech vs non-speech from spectral/temporal structure, which is the thing
+// level was only ever a poor proxy for.
+//
+// Silero decides ONLY when speech starts and stops. Everything else is
+// unchanged and deliberately kept as a safety net around it: the mic is still
+// acquired through the loopback-safe device check (and refused outright if
+// there's no real input), MediaRecorder is still the transport so the backend
+// keeps receiving the same base64 webm, playback still aborts an in-flight
+// segment, micMuted still gates, and the max-duration ceiling still applies.
+//
+// Half-duplex: the mic is gated while the storyteller's clip plays, rather
+// than true barge-in.
+const MODEL_ASSET_PATH = '/vad/'  // self-hosted; never a CDN fetch (offline dev)
+// Silero speech probability thresholds. The library's own defaults, kept
+// rather than invented: 0.5 to enter speech, 0.35 to leave it (hysteresis, so
+// a brief dip mid-word doesn't end the turn).
+const POSITIVE_SPEECH_THRESHOLD = 0.5
+const NEGATIVE_SPEECH_THRESHOLD = 0.35
+// How long Silero must see non-speech before declaring the turn over. This is
+// the direct equivalent of the old SILENCE_DURATION_MS and serves the same
+// purpose: long enough not to cut the speaker off at a natural mid-sentence
+// pause, short enough not to feel laggy.
+const REDEMPTION_MS = 1000
+// Anything shorter than this isn't an utterance — Silero fires
+// `onVADMisfire` instead of `onSpeechEnd`, so a cough or a door closing never
+// becomes a turn. Replaces the old MIN_SPEECH_MS, but note the difference
+// that matters: this is the length of a stretch the MODEL classified as
+// speech, not cumulative time above a loudness line, so noise can't
+// accumulate its way past it.
+const MIN_SPEECH_MS = 320
+// Hard ceiling on one segment. Silero ends turns reliably, but a recorder must
+// never be able to run unbounded: previously one captured 48 seconds. Past
+// this, a segment Silero never marked as speech is DISCARDED; one it did is
+// sent as a normal end-of-turn so a long question still works.
 const MAX_SEGMENT_MS = 20000
-// The "hearing you" indicator flipping off on the very first frame below
-// threshold flickers constantly — natural speech has brief micro-pauses
-// between syllables/words that dip below the level even mid-sentence. This
-// only smooths the VISUAL state; SILENCE_DURATION_MS still governs the
-// actual end-of-turn decision.
+// A segment that has heard no speech is recycled this often, so the audio we
+// eventually send carries at most this much leading silence (which would
+// otherwise slow STT down for no benefit). Restarting while nothing is being
+// said cannot clip speech.
+const SILENT_SEGMENT_RECYCLE_MS = 5000
+// The "hearing you" indicator flipping off the instant probability dips
+// flickers during natural micro-pauses. Visual smoothing only — REDEMPTION_MS
+// governs the actual end-of-turn decision.
 const HEARING_INDICATOR_GRACE_MS = 250
-// Fallback only — the real threshold is calibrated per-session from a brief
-// ambient-noise sample, since a fixed number doesn't hold up across
-// mics/rooms/gain settings.
-const FALLBACK_SPEECH_LEVEL_THRESHOLD = 10
-const AMBIENT_CALIBRATION_MS = 500
-// Kept at 8 ON PURPOSE. We have now been round the "raise/lower a constant"
-// loop three times and it never held, because the problem was never the
-// number — it was that the number was fixed FOREVER from a single 500ms
-// sample taken in the first moment of the stream. Two things guarantee that
-// sample is unrepresentative: autoGainControl is on, so the browser is still
-// ramping gain when we measure and keeps changing it afterwards (during quiet
-// it raises gain, lifting ambient above a threshold calibrated at lower
-// gain); and a room's noise simply changes after page load. The fix is
-// structural — a rolling floor plus a sustained-onset requirement, both
-// below — so this margin no longer has to be right for every room and every
-// moment, only reasonable relative to a floor that tracks reality.
-const AMBIENT_MARGIN = 8
-// How fast the rolling noise floor follows the room, as an EMA time constant.
-// Slow enough that a pause mid-sentence doesn't drag it up into the
-// speaker's voice; fast enough to follow a fan switching on within seconds.
-const NOISE_FLOOR_TAU_MS = 3000
-// Speech must hold above the threshold CONTINUOUSLY for this long before it
-// counts as a turn starting. This is what actually rejects background noise:
-// noise crosses the line in short spikes, speech does not.
-const SPEECH_ONSET_MS = 250
 // Human speech energy is concentrated below ~4kHz; averaging the FULL FFT
 // spectrum (up to ~24kHz with a typical 48kHz sample rate) dilutes the
 // signal with ~85% of bins that are near-zero regardless of speech, badly
@@ -134,20 +117,12 @@ export function useContinuousVoiceInput(
   const vadRafRef = useRef<number | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const segmentChunksRef = useRef<Blob[]>([])
+  // Set by Silero's onSpeechStart, cleared on misfire/segment start. Its only
+  // job now is to record whether THIS segment contained real speech, which
+  // decides send-vs-discard.
   const speechDetectedAtRef = useRef<number | null>(null)
-  const silenceStartRef = useRef<number | null>(null)
-  const speechMsAccumulatedRef = useRef(0)
-  const lastVadTickAtRef = useRef<number | null>(null)
-  const speechThresholdRef = useRef(FALLBACK_SPEECH_LEVEL_THRESHOLD)
-  // Rolling estimate of the room's current noise level, seeded by the one-off
-  // calibration and then continuously updated from quiet frames. This is the
-  // thing that makes the threshold survive AGC drift and a room that gets
-  // noisier after page load.
-  const noiseFloorRef = useRef(0)
-  // When the current continuous run above the threshold began (null when
-  // below it) — drives the SPEECH_ONSET_MS sustained-onset check.
-  const onsetStartedAtRef = useRef<number | null>(null)
   const voiceBinCountRef = useRef(0)
+  const vadRef = useRef<MicVAD | null>(null)
   const avatarBusyRef = useRef(false)
   // Set the instant a segment is sent, cleared once `avatarBusy` actually
   // catches up (or after a safety timeout). Closes a race: `beginSegment`
@@ -220,66 +195,25 @@ export function useContinuousVoiceInput(
         return
       }
 
+      // Recycle a segment that has heard nothing, so whatever we eventually
+      // send carries at most SILENT_SEGMENT_RECYCLE_MS of leading silence
+      // (long leading silence only slows STT down). Safe to restart here
+      // precisely BECAUSE nothing is being said.
+      if (
+        speechDetectedAtRef.current === null &&
+        Date.now() - segmentStartedAtRef.current >= SILENT_SEGMENT_RECYCLE_MS
+      ) {
+        discardSegmentRef.current = true
+        mediaRecorderRef.current?.stop()
+        return
+      }
+
+      // Level is now used ONLY to drive the UI meter. It no longer decides
+      // anything — Silero does (see the onSpeechStart/onSpeechEnd callbacks).
       const data = new Uint8Array(analyser.frequencyBinCount)
       analyser.getByteFrequencyData(data)
-      const level = computeVoiceLevel(data, voiceBinCountRef.current)
-      setMicLevel(level)
+      setMicLevel(computeVoiceLevel(data, voiceBinCountRef.current))
 
-      const now = Date.now()
-      const dt = lastVadTickAtRef.current === null ? 0 : now - lastVadTickAtRef.current
-      lastVadTickAtRef.current = now
-
-      // Threshold is derived from the ROLLING noise floor, not a number fixed
-      // once at page load — see noiseFloorRef.
-      const threshold = Math.max(
-        noiseFloorRef.current + AMBIENT_MARGIN,
-        FALLBACK_SPEECH_LEVEL_THRESHOLD
-      )
-      speechThresholdRef.current = threshold
-
-      if (level > threshold) {
-        // SUSTAINED onset: a single frame over the line is not speech. Room
-        // noise crosses the threshold in brief spikes, and the old code
-        // latched `speechDetectedAt` on the FIRST such frame, after which
-        // sporadic spikes accumulated toward MIN_SPEECH_MS until a segment of
-        // pure background noise got sent. Speech has to hold the line
-        // continuously for SPEECH_ONSET_MS before it counts.
-        if (onsetStartedAtRef.current === null) onsetStartedAtRef.current = now
-        if (now - onsetStartedAtRef.current >= SPEECH_ONSET_MS) {
-          speechMsAccumulatedRef.current += dt
-          if (speechDetectedAtRef.current === null) {
-            console.info(
-              '[voice] speech onset, level=', level.toFixed(1),
-              'threshold=', threshold.toFixed(1),
-              'noiseFloor=', noiseFloorRef.current.toFixed(1)
-            )
-            speechDetectedAtRef.current = now
-          }
-          silenceStartRef.current = null
-          setHearingSpeech(true)
-        }
-      } else if (speechDetectedAtRef.current !== null) {
-        onsetStartedAtRef.current = null
-        if (silenceStartRef.current === null) {
-          silenceStartRef.current = now
-        } else if (now - silenceStartRef.current >= SILENCE_DURATION_MS) {
-          mediaRecorderRef.current?.stop() // triggers onstop below, which restarts the loop
-          return
-        }
-        if (silenceStartRef.current !== null && now - silenceStartRef.current >= HEARING_INDICATOR_GRACE_MS) {
-          setHearingSpeech(false)
-        }
-      } else {
-        // Quiet frame with no speech in progress — this is what ambient noise
-        // actually sounds like right now, so it's what the floor tracks.
-        // Deliberately NOT updated while speech is in progress, or the
-        // speaker's own voice would drag the floor up and cut them off.
-        onsetStartedAtRef.current = null
-        if (dt > 0) {
-          const alpha = Math.min(1, dt / NOISE_FLOOR_TAU_MS)
-          noiseFloorRef.current += (level - noiseFloorRef.current) * alpha
-        }
-      }
       vadRafRef.current = requestAnimationFrame(runVadTick)
     }
 
@@ -301,14 +235,9 @@ export function useContinuousVoiceInput(
       segmentChunksRef.current = []
       segmentStartedAtRef.current = Date.now()
       speechDetectedAtRef.current = null
-      onsetStartedAtRef.current = null
-      silenceStartRef.current = null
-      speechMsAccumulatedRef.current = 0
-      lastVadTickAtRef.current = null
       setHearingSpeech(false)
 
       const recorder = new MediaRecorder(continuousStreamRef.current)
-      console.info('[voice] segment started, threshold=', speechThresholdRef.current)
       recorder.ondataavailable = (e) => segmentChunksRef.current.push(e.data)
       recorder.onstop = async () => {
         setIsListening(false)
@@ -321,21 +250,16 @@ export function useContinuousVoiceInput(
           beginSegment()
           return
         }
-        // Real accumulated time above threshold, not just elapsed wall-clock
-        // time since the first crossing — a single brief noise blip (mic
-        // bump, breath) followed by the 750ms silence window would otherwise
-        // ALWAYS satisfy "elapsed >= 300ms" trivially, sending near-empty
-        // audio that fails STT with "Could not transcribe audio".
-        const spokeLongEnough = speechMsAccumulatedRef.current >= MIN_SPEECH_MS
+        // Silero is the sole authority on whether this segment contained
+        // speech: it set speechDetectedAt via onSpeechStart, and cleared it
+        // again on a misfire (too short to be a real utterance).
+        const hadSpeech = speechDetectedAtRef.current !== null
         console.info(
-          '[voice] segment ended, spokeMs=',
-          speechMsAccumulatedRef.current,
-          'chunks=',
-          segmentChunksRef.current.length,
-          'sending=',
-          spokeLongEnough
+          '[voice] segment ended, hadSpeech=', hadSpeech,
+          'chunks=', segmentChunksRef.current.length,
+          'sending=', hadSpeech
         )
-        if (spokeLongEnough) {
+        if (hadSpeech) {
           const blob = new Blob(segmentChunksRef.current, { type: 'audio/webm' })
           const buffer = await blob.arrayBuffer()
           const b64 = btoa(new Uint8Array(buffer).reduce((s, b) => s + String.fromCharCode(b), ''))
@@ -411,16 +335,19 @@ export function useContinuousVoiceInput(
         // were bleeding into the mic — but the trace disproved that: the
         // capture was a DIGITAL loopback device, not an acoustic path, which
         // cancellation cannot touch. Turning it on bought nothing and can
-        // colour the signal and shift the calibrated ambient threshold on a
-        // real mic. The real fixes are the device refusal above, the
+        // colour the signal. The real fixes are the device refusal above, the
         // max-duration cap, and the mid-recording playback abort.
+        // autoGainControl is OFF too: it continuously rewrites the very
+        // levels any detector reasons about (raising gain during quiet, which
+        // is what lifted ambient over the old threshold), and Silero does not
+        // need it. Both off means the model sees the mic as it actually is.
         // deviceId is always constrained now — see the refusal above.
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             deviceId: { exact: preferred.deviceId },
             echoCancellation: false,
             noiseSuppression: true,
-            autoGainControl: true,
+            autoGainControl: false,
           },
         })
         if (cancelled) {
@@ -474,45 +401,75 @@ export function useContinuousVoiceInput(
           document.addEventListener('keydown', resumeOnGesture)
         }
 
-        // Calibrate the speech-detection threshold against this mic/room's
-        // actual noise floor instead of trusting one fixed number — a "hot"
-        // mic or noisy room can otherwise sit permanently above a fixed
-        // threshold (never triggers silence → never auto-sends) or a very
-        // quiet setup can make real speech barely register above it.
-        const ambientFloor = await new Promise<number>((resolve) => {
-          const samples: number[] = []
-          const data = new Uint8Array(analyser.frequencyBinCount)
-          const start = performance.now()
-          const sample = () => {
-            analyser.getByteFrequencyData(data)
-            samples.push(computeVoiceLevel(data, voiceBinCountRef.current))
-            if (performance.now() - start < AMBIENT_CALIBRATION_MS) {
-              requestAnimationFrame(sample)
-            } else {
-              resolve(samples.reduce((a, b) => a + b, 0) / samples.length)
+        // ── Silero VAD ────────────────────────────────────────────────────
+        // Replaces the old ambient calibration entirely — there is no
+        // threshold to calibrate any more. Loaded dynamically so the ~15 MB
+        // of model + ONNX runtime is fetched only on pages that actually
+        // listen, and never during SSR (it touches AudioWorklet/WASM).
+        const initStartedAt = performance.now()
+        const { MicVAD } = await import('@ricky0123/vad-web')
+        const vad = await MicVAD.new({
+          audioContext: audioCtx,
+          // Reuse the stream we already vetted — MicVAD must NOT acquire its
+          // own, or it would bypass the loopback-safe device selection above.
+          getStream: async () => stream,
+          pauseStream: async () => {},
+          resumeStream: async () => stream,
+          startOnLoad: true,
+          model: 'v5',
+          // Self-hosted (see /public/vad) — no third-party fetch on page load
+          // and it works with no network in dev.
+          baseAssetPath: MODEL_ASSET_PATH,
+          onnxWASMBasePath: MODEL_ASSET_PATH,
+          ortConfig: (ort) => {
+            // Single-threaded: multi-threaded ORT needs SharedArrayBuffer,
+            // which needs COOP/COEP headers we don't set. Also pins the wasm
+            // location so it can't reach for a CDN copy.
+            ort.env.wasm.numThreads = 1
+            ort.env.wasm.wasmPaths = MODEL_ASSET_PATH
+          },
+          positiveSpeechThreshold: POSITIVE_SPEECH_THRESHOLD,
+          negativeSpeechThreshold: NEGATIVE_SPEECH_THRESHOLD,
+          redemptionMs: REDEMPTION_MS,
+          minSpeechMs: MIN_SPEECH_MS,
+          onSpeechStart: () => {
+            // Guards still apply: never treat playback or a muted mic as a turn.
+            if (micMutedRef.current || avatarBusyRef.current) return
+            if (speechDetectedAtRef.current === null) {
+              console.info('[voice] SPEECH START (silero)')
             }
-          }
-          sample()
+            speechDetectedAtRef.current = Date.now()
+            setHearingSpeech(true)
+          },
+          onVADMisfire: () => {
+            // Too short to be a real utterance — unset so the segment is
+            // discarded rather than sent (this is what a cough now does).
+            console.info('[voice] speech misfire (too short) — not a turn')
+            speechDetectedAtRef.current = null
+            setHearingSpeech(false)
+          },
+          onSpeechEnd: () => {
+            setHearingSpeech(false)
+            if (micMutedRef.current || avatarBusyRef.current) return
+            if (speechDetectedAtRef.current === null) return
+            console.info('[voice] SPEECH END (silero) — closing segment')
+            // Stop the recorder; its onstop sends, because speechDetectedAt
+            // is set. The audio itself comes from MediaRecorder, not Silero,
+            // so the backend contract (base64 webm) is unchanged.
+            if (mediaRecorderRef.current?.state === 'recording') {
+              mediaRecorderRef.current.stop()
+            }
+          },
         })
-        if (!cancelled) {
-          // SEED only — runVadTick keeps this moving from here on. A bad
-          // reading here (AGC still ramping, someone talking during load) is
-          // now self-correcting within a few seconds instead of permanent.
-          noiseFloorRef.current = ambientFloor
-          speechThresholdRef.current = Math.max(
-            ambientFloor + AMBIENT_MARGIN,
-            FALLBACK_SPEECH_LEVEL_THRESHOLD
-          )
+        if (cancelled) {
+          await vad.destroy().catch(() => {})
+          stream.getTracks().forEach((t) => t.stop())
+          return
         }
+        vadRef.current = vad
         console.info(
-          '[voice] calibrated: ambientFloor=',
-          ambientFloor,
-          'threshold=',
-          speechThresholdRef.current,
-          'audioCtxState=',
-          audioCtx.state,
-          'connected=',
-          connectedRef.current
+          '[voice] Silero VAD ready in', Math.round(performance.now() - initStartedAt),
+          'ms; audioCtxState=', audioCtx.state, 'connected=', connectedRef.current
         )
 
         if (connectedRef.current) startListeningLoop()
@@ -528,6 +485,8 @@ export function useContinuousVoiceInput(
     return () => {
       cancelled = true
       if (vadRafRef.current) cancelAnimationFrame(vadRafRef.current)
+      vadRef.current?.destroy().catch(() => {})
+      vadRef.current = null
       mediaRecorderRef.current?.stop()
       continuousStreamRef.current?.getTracks().forEach((t) => t.stop())
       audioCtxRef.current?.close().catch(() => {})
