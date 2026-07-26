@@ -170,6 +170,78 @@ async def init_graph_schema() -> None:
     await get_graphiti().build_indices_and_constraints()
 
 
+async def episode_uuids_for_segment(
+    segment_id: str, group_id: str = DEFAULT_GROUP_ID
+) -> list[str]:
+    """Every episode uuid recorded for this segment.
+
+    Returns a LIST, not one uuid: a segment could accumulate several episodes
+    before add_episode started replacing them (see its comment), and any
+    cleanup has to remove all of them rather than the first match."""
+    graphiti = get_graphiti()
+    query = """
+        MATCH (e:Episodic {name: $name})
+        WHERE e.group_id = $group_id
+        RETURN e.uuid AS uuid
+    """
+    result = await graphiti.driver.execute_query(
+        query, name=f"segment-{segment_id}", group_id=group_id, routing_="r"
+    )
+    return [r["uuid"] for r in result.records]
+
+
+async def remove_episodes_for_segment(
+    segment_id: str, group_id: str = DEFAULT_GROUP_ID
+) -> int:
+    """Delete this segment's episode(s) and everything that existed only
+    because of them. Returns how many episodes were removed.
+
+    Graphiti's remove_episode does the careful part: it drops only edges whose
+    FIRST source episode is this one, and only entity nodes whose MENTIONS
+    count is 1 — so an entity another recording still references survives
+    (verified against real data: a place mentioned by two recordings is kept).
+
+    VERIFIED, NOT ASSUMED: afterwards we re-query for episodes with this
+    segment's name and log loudly if any remain. Graphiti's cleanup depends on
+    its own bookkeeping (an edge whose episodes[0] doesn't point here would
+    survive as an orphan), and this archive has zero RELATES_TO edges, so that
+    path is effectively untested here. Silent orphans are exactly what this
+    whole change exists to prevent."""
+    uuids = await episode_uuids_for_segment(segment_id, group_id=group_id)
+    if not uuids:
+        return 0
+
+    graphiti = get_graphiti()
+    removed = 0
+    for uuid in uuids:
+        try:
+            await graphiti.remove_episode(uuid)
+            removed += 1
+        except Exception as e:
+            logger.error(
+                "graphiti_episode_remove_failed",
+                extra={"segment_id": segment_id, "episode_uuid": uuid, "error": str(e)},
+            )
+
+    leftover = await episode_uuids_for_segment(segment_id, group_id=group_id)
+    if leftover:
+        logger.error(
+            "graphiti_episode_remove_incomplete",
+            extra={
+                "segment_id": segment_id,
+                "group_id": group_id,
+                "remaining": leftover,
+                "detail": "episodes still present after removal — orphaned graph data",
+            },
+        )
+    else:
+        logger.info(
+            "graphiti_episodes_removed",
+            extra={"segment_id": segment_id, "group_id": group_id, "count": removed},
+        )
+    return removed
+
+
 async def add_episode(
     segment_id: str,
     transcript: str,
@@ -202,6 +274,19 @@ async def add_episode(
     integration test against a live graph, not from documentation.
     """
     graphiti = get_graphiti()
+
+    # Re-recording a question must REPLACE its episode, not add a second one.
+    # Graphiti always mints a fresh uuid (see the NOTE above), so without this
+    # a re-ingest left the old episode in place and the segment's transcript
+    # was counted TWICE by entity extraction. Confirmed live: this archive had
+    # 13 episodes for 12 segments, with segment-ab5f6318 present twice.
+    removed = await remove_episodes_for_segment(segment_id, group_id=group_id)
+    if removed:
+        logger.info(
+            "graphiti_episode_replaced",
+            extra={"segment_id": segment_id, "group_id": group_id, "removed": removed},
+        )
+
     source_description = (
         f"life-story segment — topics: {', '.join(topic_tags)}"
         if topic_tags
