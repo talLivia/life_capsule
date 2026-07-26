@@ -59,9 +59,19 @@ REFERENCES: dict[str, Optional[Tuple[str, Tuple[float, float]]]] = {
     "influence-2 (followup)": None,  # father's aliveness isn't recorded -> no-story
     "no-answer": None,  # nothing about pets -> no-story
     # Montreal: scored on the CAREER recording, whose correct answer runs to
-    # the END of the thought (8.1s) — the old behaviour stopped at ~2.8s,
-    # right after "when I was in Montreal", cutting the story mid-sentence.
-    "montreal": (_CAREER_SEG, (0.0, 8.1)),
+    # the END of the thought — the original behaviour stopped at ~2.8s, right
+    # after "when I was in Montreal", cutting the story mid-sentence.
+    #
+    # REBASED 2026-07-27 from (0.0, 8.1) after the archive was re-ingested
+    # with Deepgram. NOT because retrieval got worse — it selects every unit
+    # of that recording, the complete answer. The OLD reference started at 0.0
+    # because the whole recording was one giant chunk, so the "start" was the
+    # chunk boundary and included ~1.2s of leading SILENCE. Deepgram's
+    # utterance splitting starts the first unit at the first spoken word
+    # (1.2s) and carries the final phrase to 8.8s. Scoring against the old
+    # range punished the clip for starting on speech instead of silence,
+    # which is backwards. The reference now describes the actual speech.
+    "montreal": (_CAREER_SEG, (1.2, 8.8)),
 }
 
 

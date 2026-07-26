@@ -116,7 +116,12 @@ class STTService:
         )
 
     async def _deepgram_request(
-        self, audio_data: Union[bytes, str], language: str, *, utterances: bool
+        self,
+        audio_data: Union[bytes, str],
+        language: str,
+        *,
+        utterances: bool,
+        smart_format: bool = True,
     ) -> dict:
         """One request to Deepgram's pre-recorded endpoint, audio as a binary
         body (the local-file form of the endpoint the URL form also serves).
@@ -136,7 +141,7 @@ class STTService:
         params = {
             "model": settings.DEEPGRAM_MODEL,
             "language": language,
-            "smart_format": "true",
+            "smart_format": "true" if smart_format else "false",
         }
         if utterances:
             params["utterances"] = "true"
@@ -306,7 +311,16 @@ class STTService:
         Falls back to a single synthetic phrase spanning all words if
         utterances are missing, so word timings (which unit splitting needs)
         are never lost even if that feature is unavailable."""
-        body = await self._deepgram_request(audio_data, language, utterances=True)
+        # smart_format OFF for ingestion. MEASURED: it rewrites number WORDS
+        # as digits — "שפעם אחת" ("once") became "שפעם 1" — and at ingestion
+        # that mangling is written into the archive permanently. Turning it off
+        # restores the words and costs nothing that matters here: utterance
+        # counts were identical with it on and off (2/2, 1/1, 7/7), so the
+        # phrase splitting the chunks depend on is unaffected. Only
+        # punctuation is lost, which nothing downstream reads.
+        body = await self._deepgram_request(
+            audio_data, language, utterances=True, smart_format=False
+        )
         try:
             alt = body["results"]["channels"][0]["alternatives"][0]
         except (KeyError, IndexError) as e:
