@@ -100,36 +100,47 @@ class STTService:
         return model
 
     def _use_deepgram(self) -> bool:
-        """Live path only, and only when actually configured — a missing key
+        """Live path, and only when actually configured — a missing key
         silently means 'stay local' rather than breaking every turn."""
         return (
             settings.LIVE_STT_PROVIDER.lower() == "deepgram"
             and bool(settings.DEEPGRAM_API_KEY)
         )
 
-    async def _transcribe_deepgram(
-        self, audio_data: Union[bytes, str], language: str
-    ) -> str:
-        """One batch request to Deepgram's pre-recorded endpoint.
+    def _use_deepgram_ingestion(self) -> bool:
+        """Same for the INGESTION path, flagged separately: the two run under
+        different constraints and should be switchable independently."""
+        return (
+            settings.INGESTION_STT_PROVIDER.lower() == "deepgram"
+            and bool(settings.DEEPGRAM_API_KEY)
+        )
 
-        Sends the audio as a binary body (the local-file form of the same
-        endpoint the URL form uses). smart_format is on: on this archive's
-        Hebrew it only ever added a trailing period — the digits-vs-words
-        difference from Whisper ("4 אחים" vs "ארבעה אחים") is inherent to
-        nova-3 and appears with the flag off too. Harmless either way,
-        because nothing matches this text literally: archive units come from
-        Whisper at ingestion, and the question is matched semantically by the
-        archive-read LLM."""
+    async def _deepgram_request(
+        self, audio_data: Union[bytes, str], language: str, *, utterances: bool
+    ) -> dict:
+        """One request to Deepgram's pre-recorded endpoint, audio as a binary
+        body (the local-file form of the endpoint the URL form also serves).
+
+        smart_format is on: on this archive's Hebrew it only ever added a
+        trailing period. The digits-vs-words difference from Whisper
+        ("4 אחים" vs "ארבעה אחים") is inherent to nova-3, appears with the
+        flag off too, and is harmless because nothing matches this text
+        literally — retrieval matches semantically.
+
+        `utterances` asks Deepgram to segment the audio into speech runs,
+        which is what the ingestion path maps onto phrases/chunks."""
         audio_bytes = (
             audio_data if isinstance(audio_data, (bytes, bytearray))
             else Path(audio_data).read_bytes()
         )
-        params = urlencode({
+        params = {
             "model": settings.DEEPGRAM_MODEL,
             "language": language,
             "smart_format": "true",
-        })
-        url = f"https://api.deepgram.com/v1/listen?{params}"
+        }
+        if utterances:
+            params["utterances"] = "true"
+        url = f"https://api.deepgram.com/v1/listen?{urlencode(params)}"
 
         timeout = aiohttp.ClientTimeout(total=settings.DEEPGRAM_TIMEOUT_SECONDS)
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -146,8 +157,29 @@ class STTService:
                     # but must never be logged with the request headers.
                     detail = (await resp.text())[:200]
                     raise RuntimeError(f"Deepgram HTTP {resp.status}: {detail}")
-                body = await resp.json()
+                return await resp.json()
 
+    @staticmethod
+    def _deepgram_words(raw_words: list) -> list:
+        """Deepgram word -> our {word, start_sec, end_sec}. Uses
+        punctuated_word so unit text reads like the Whisper output it
+        replaces, rather than a stripped token stream."""
+        out = []
+        for w in raw_words or []:
+            try:
+                out.append({
+                    "word": w.get("punctuated_word") or w["word"],
+                    "start_sec": float(w["start"]),
+                    "end_sec": float(w["end"]),
+                })
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    async def _transcribe_deepgram(
+        self, audio_data: Union[bytes, str], language: str
+    ) -> str:
+        body = await self._deepgram_request(audio_data, language, utterances=False)
         try:
             text = body["results"]["channels"][0]["alternatives"][0]["transcript"]
         except (KeyError, IndexError) as e:
@@ -236,6 +268,19 @@ class STTService:
         (word_timestamps is always on internally)."""
         if self.provider != "whisper":
             raise ValueError(f"Unsupported STT provider: {self.provider}")
+
+        if self._use_deepgram_ingestion():
+            try:
+                return await self._transcribe_deepgram_with_timestamps(audio_data, language)
+            except Exception as e:
+                # Ingestion is the one place a bad transcript is PERMANENT, so
+                # falling back to local is right — a worse transcript beats no
+                # recording — but it must be loud, not silent.
+                logger.error(
+                    f"Deepgram ingestion STT failed, falling back to local Whisper "
+                    f"(transcript quality will be lower): {e}"
+                )
+
         if self.ingestion_model is None:
             await self._initialize_ingestion()
         return await asyncio.to_thread(
@@ -245,6 +290,55 @@ class STTService:
             self.ingestion_model,
             self._ingestion_model_lock,
         )
+
+    async def _transcribe_deepgram_with_timestamps(
+        self, audio_data: Union[bytes, str], language: str
+    ) -> dict:
+        """Deepgram in the ingestion contract: {"text", "phrases":[{"start_sec",
+        "end_sec","text","words":[{"word","start_sec","end_sec"}]}]}.
+
+        Deepgram's `utterances` become our phrases. That is a real change from
+        the local path, which returned ONE phrase per recording here — more,
+        shorter phrases mean more chunk boundaries, and since a chunk boundary
+        is also an utterance-unit boundary, retrieval granularity shifts with
+        it. Intentional: Deepgram's segmentation follows actual speech runs.
+
+        Falls back to a single synthetic phrase spanning all words if
+        utterances are missing, so word timings (which unit splitting needs)
+        are never lost even if that feature is unavailable."""
+        body = await self._deepgram_request(audio_data, language, utterances=True)
+        try:
+            alt = body["results"]["channels"][0]["alternatives"][0]
+        except (KeyError, IndexError) as e:
+            raise RuntimeError("Deepgram response missing alternatives") from e
+
+        text = (alt.get("transcript") or "").strip()
+        phrases: list[dict] = []
+        for utt in body["results"].get("utterances") or []:
+            words = self._deepgram_words(utt.get("words"))
+            if not words:
+                continue
+            phrases.append({
+                "start_sec": float(utt.get("start", words[0]["start_sec"])),
+                "end_sec": float(utt.get("end", words[-1]["end_sec"])),
+                "text": (utt.get("transcript") or "").strip(),
+                "words": words,
+            })
+
+        if not phrases:
+            words = self._deepgram_words(alt.get("words"))
+            if words:
+                phrases = [{
+                    "start_sec": words[0]["start_sec"],
+                    "end_sec": words[-1]["end_sec"],
+                    "text": text,
+                    "words": words,
+                }]
+
+        _raw_trace(
+            f"[stt] deepgram ingestion RETURN chars={len(text)} phrases={len(phrases)}"
+        )
+        return {"text": text, "phrases": phrases}
 
     def _decode_with_soundfile(self, audio_data: Union[bytes, str]) -> np.ndarray:
         """Fallback decoder for formats PyAV chokes on (raw WAV/FLAC/OGG)."""

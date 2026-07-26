@@ -127,6 +127,15 @@ class Settings(BaseSettings):
     # Deepgram ever misbehaves, and the local model stays warm precisely so
     # that rollback (and the automatic per-call fallback in stt.py) is real.
     LIVE_STT_PROVIDER: str = "local"
+    # Same choice for INGESTION ("local" | "deepgram"). Originally kept local
+    # on the reasoning that latency doesn't matter offline — but the real cost
+    # was never latency, it was DATA QUALITY, and unlike a live turn that
+    # damage is permanent. A garbled transcript means entities are never
+    # extracted, and the archive silently carries that forever: this archive
+    # lost the entity "חיל האוויר" because a re-transcription rendered
+    # "שירתתי בחיל האוויר" as "שראתתי בחלה הריון". Deepgram transcribes that
+    # exact clip correctly.
+    INGESTION_STT_PROVIDER: str = "local"
     # nova-3 is the only Deepgram model that supports Hebrew — flux-general-*
     # returns HTTP 400 for language=he (verified), and nova-2 doesn't list it.
     DEEPGRAM_MODEL: str = "nova-3"
