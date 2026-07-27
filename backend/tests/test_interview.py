@@ -3,9 +3,29 @@ from unittest.mock import AsyncMock
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.v1.users import create_access_token, get_password_hash
 from app.models import User
+
+
+@pytest.fixture(autouse=True)
+def deletion_uses_test_db(test_engine, monkeypatch):
+    """segment_deletion opens its OWN session (it is called from places that
+    don't have one), so without this the replace-on-re-record path would run
+    its delete against the real configured database instead of the test one —
+    the row would survive and the test would report a phantom duplicate."""
+    from app.services import segment_deletion
+
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(segment_deletion, "AsyncSessionLocal", factory)
+    monkeypatch.setattr(
+        segment_deletion.graph_memory, "remove_episodes_for_segment", AsyncMock(return_value=0)
+    )
+    monkeypatch.setattr(
+        segment_deletion.storage_service, "delete_file", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(segment_deletion, "_refresh_caches", AsyncMock())
 
 
 @pytest.fixture(autouse=True)
@@ -217,7 +237,7 @@ async def test_ingest_segment_runs_analysis_in_process_when_debug(
 
 
 @pytest.mark.asyncio
-async def test_ingest_segment_rerecord_upserts(client: AsyncClient, auth_headers, test_user):
+async def test_ingest_segment_rerecord_replaces(client: AsyncClient, auth_headers, test_user):
     session = (await client.get("/api/v1/interview/session", headers=auth_headers)).json()["session"]
     first_key = f"segments/{test_user.id}/{session['id']}/0/take1.webm"
     second_key = f"segments/{test_user.id}/{session['id']}/0/take2.webm"
@@ -244,9 +264,19 @@ async def test_ingest_segment_rerecord_upserts(client: AsyncClient, auth_headers
     )
     assert first.status_code == 201
     assert second.status_code == 201
-    # Same row (re-record), not a duplicate.
-    assert first.json()["id"] == second.json()["id"]
+    # Re-recording REPLACES: the old take is fully deleted (row, chunks,
+    # stored file, Graphiti episode) and a NEW row is created. It used to
+    # upsert the row in place, which left the old stored video orphaned and
+    # the old episode in the graph. A new id is the visible signal that the
+    # old take really went, rather than being partially overwritten.
+    assert first.json()["id"] != second.json()["id"]
     assert second.json()["video_key"] == second_key
+
+    # Exactly ONE segment for that question — replacement, not accumulation.
+    state = (await client.get("/api/v1/interview/session", headers=auth_headers)).json()
+    for_q0 = [s for s in state["segments"] if s["question_index"] == 0]
+    assert len(for_q0) == 1
+    assert for_q0[0]["id"] == second.json()["id"]
 
     segments = await client.get(
         f"/api/v1/interview/segments/session/{session['id']}", headers=auth_headers

@@ -211,6 +211,33 @@ async def _load_segment_and_user(db, segment_id: str):
 
 async def transcribe_node(state: AnalysisState) -> dict:
     segment_id = state["segment_id"]
+
+    # Clear this segment's PREVIOUS graph contribution before anything else in
+    # the pipeline runs.
+    #
+    # ORDERING BUG THIS FIXES: check_entities (several nodes later) resolves
+    # names against the producer's existing graph and records a same_as_uuid.
+    # add_episode then removed the segment's old episode — which deletes any
+    # entity whose last remaining source was that episode. If check_entities
+    # had resolved onto exactly such an entity, the extraction instruction
+    # pointed at a uuid that no longer existed, and Graphiti created a fresh
+    # node instead of reusing it. That is precisely how "מונטריאול" became two
+    # nodes. Removing first means every candidate check_entities sees is one
+    # that will still be there when the episode is written.
+    #
+    # Safe to do here: the pipeline only reaches this node when a segment is
+    # being (re)analysed, and its NEW episode isn't written until
+    # finalize_ingest. Any episode present now is from a previous completed
+    # ingestion, which is exactly what should go. Idempotent — a no-op when
+    # /segments/ingest already deleted the old take.
+    if state.get("group_id"):
+        try:
+            await graph_memory.remove_episodes_for_segment(
+                segment_id, group_id=state["group_id"]
+            )
+        except Exception as e:
+            logger.warning(f"Could not clear prior episode for {segment_id}: {e}")
+
     async with AsyncSessionLocal() as db:
         segment, user = await _load_segment_and_user(db, segment_id)
         if segment is None:

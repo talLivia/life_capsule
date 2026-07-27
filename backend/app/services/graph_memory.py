@@ -275,18 +275,15 @@ async def add_episode(
     """
     graphiti = get_graphiti()
 
-    # Re-recording a question must REPLACE its episode, not add a second one.
-    # Graphiti always mints a fresh uuid (see the NOTE above), so without this
-    # a re-ingest left the old episode in place and the segment's transcript
-    # was counted TWICE by entity extraction. Confirmed live: this archive had
-    # 13 episodes for 12 segments, with segment-ab5f6318 present twice.
-    removed = await remove_episodes_for_segment(segment_id, group_id=group_id)
-    if removed:
-        logger.info(
-            "graphiti_episode_replaced",
-            extra={"segment_id": segment_id, "group_id": group_id, "removed": removed},
-        )
-
+    # NOTE: this does NOT remove a prior episode for the segment. Graphiti
+    # always mints a fresh uuid (see the NOTE above), so a re-ingest would
+    # duplicate — but clearing it here is TOO LATE. check_entities resolves
+    # names against the graph several steps earlier, and deleting at this
+    # point can remove the very entity it resolved onto, leaving the
+    # extraction instruction pointing at a dead uuid (how "מונטריאול"
+    # fragmented). Removal therefore happens BEFORE resolution, in
+    # analysis_graph.transcribe_node, and again at /segments/ingest when a
+    # take is replaced. Both run ahead of any resolution.
     source_description = (
         f"life-story segment — topics: {', '.join(topic_tags)}"
         if topic_tags

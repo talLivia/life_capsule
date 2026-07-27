@@ -23,6 +23,7 @@ from app.schemas import (
     SegmentPresignRequest,
     SegmentPresignResponse,
 )
+from app.services.segment_deletion import delete_segment_data
 from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
@@ -202,8 +203,20 @@ async def ingest_segment(
 ):
     """
     Accept a recorded-and-uploaded take: persist the segment row and enqueue
-    transcription. Re-recording a question upserts the existing row for that
-    (session, question_index) instead of appending a duplicate.
+    transcription.
+
+    Re-recording REPLACES: the previous take for that (session,
+    question_index) is fully deleted first — row, chunks, stored video and
+    Graphiti episode — and a fresh row is created. This used to upsert the
+    row in place, which quietly left the old stored video orphaned (its key
+    was overwritten) and the old episode in the graph.
+
+    Deleting BEFORE the pipeline runs also fixes an ordering bug: entity
+    resolution (check_entities) matches new names against the producer's
+    existing graph, and if the old episode were still present at that point
+    the resolved entity could be deleted moments later by the replacement,
+    leaving the extraction instruction pointing at a dead uuid — which is
+    exactly how "מונטריאול" ended up as two separate nodes.
     """
     result = await db.execute(
         select(InterviewSession).where(InterviewSession.id == payload.interview_session_id)
@@ -225,28 +238,24 @@ async def ingest_segment(
             RawSegment.question_index == payload.question_index,
         )
     )
-    segment = existing_result.scalar_one_or_none()
+    previous = existing_result.scalar_one_or_none()
 
-    if segment is not None:
-        # Re-record: replace the take, reset the analysis pipeline state.
-        segment.video_url = video_url
-        segment.video_key = payload.video_key
-        segment.question_asked = payload.question_asked
-        segment.transcript = None
-        segment.topic_tags = None
-        segment.importance_score = None
-        segment.pending_confirmation = None
-        segment.status = "pending_transcription"
-    else:
-        segment = RawSegment(
-            interview_session_id=session.id,
-            question_asked=payload.question_asked,
-            question_index=payload.question_index,
-            video_url=video_url,
-            video_key=payload.video_key,
-            status="pending_transcription",
-        )
-        db.add(segment)
+    if previous is not None:
+        # Fully remove the old take before creating the new one. Cache warming
+        # is skipped here: the replacement is about to be ingested, and
+        # ingestion warms the cache itself once it completes.
+        await db.commit()  # release our hold before the deleter opens its own session
+        await delete_segment_data(previous.id, session.user_id, warm_cache=False)
+
+    segment = RawSegment(
+        interview_session_id=session.id,
+        question_asked=payload.question_asked,
+        question_index=payload.question_index,
+        video_url=video_url,
+        video_key=payload.video_key,
+        status="pending_transcription",
+    )
+    db.add(segment)
 
     await db.commit()
     await db.refresh(segment)
