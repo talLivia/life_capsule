@@ -228,8 +228,12 @@ async def transcribe_node(state: AnalysisState) -> dict:
     # Safe to do here: the pipeline only reaches this node when a segment is
     # being (re)analysed, and its NEW episode isn't written until
     # finalize_ingest. Any episode present now is from a previous completed
-    # ingestion, which is exactly what should go. Idempotent — a no-op when
-    # /segments/ingest already deleted the old take.
+    # ingestion OF THIS SAME SEGMENT, which is exactly what should go — a
+    # no-op on the common path, where the segment is brand new.
+    #
+    # Scoped to this segment id and nothing else. Siblings (other takes on
+    # the same question) have their own episodes and are untouched; a take is
+    # only ever destroyed by an explicit DELETE /segments/{id}.
     if state.get("group_id"):
         try:
             await graph_memory.remove_episodes_for_segment(

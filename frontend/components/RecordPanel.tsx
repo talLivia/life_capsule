@@ -6,6 +6,7 @@ import { ChevronLeft, ChevronRight, Feather, Loader2, ShieldOff, PartyPopper, Gi
 import { toast } from 'react-hot-toast'
 import { EntityConfirmModal } from '@/components/record/EntityConfirmModal'
 import { RecordingList } from '@/components/record/RecordingList'
+import { SegmentUpload } from '@/components/record/SegmentUpload'
 import { VideoRecorder } from '@/components/record/VideoRecorder'
 import { api } from '@/lib/api'
 import { useStore } from '@/store/useStore'
@@ -241,14 +242,27 @@ export function RecordPanel() {
             onCancel={recordings.length > 0 ? () => setAddingTake(false) : undefined}
           />
         ) : (
-          <>
-            <RecordingList recordings={recordings} onDeleted={load} />
-            <button onClick={() => setAddingTake(true)} className="calm-btn-secondary self-start">
+          <RecordingList recordings={recordings} onDeleted={load} />
+        )}
+
+        {/* Uploading is offered in BOTH states — on an empty question it's
+            an alternative to recording, and beside existing takes it's
+            another way to add one. Recording is the primary action, so it
+            stays the bigger button. */}
+        <div className="flex flex-wrap items-center gap-3">
+          {!showRecorder && (
+            <button onClick={() => setAddingTake(true)} className="calm-btn-secondary">
               <Plus size={16} />
               {recordings.length === 1 ? 'Add another answer' : 'Add another take'}
             </button>
-          </>
-        )}
+          )}
+          <SegmentUpload
+            sessionId={state.session.id}
+            questionIndex={currentIndex}
+            questionText={question.text}
+            onAccepted={handleAccepted}
+          />
+        </div>
 
         <div className="flex items-center justify-between pt-2">
           <button

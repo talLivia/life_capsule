@@ -394,3 +394,112 @@ async def test_delete_segment_rejects_another_producers_recording(
 async def test_delete_segment_404_when_missing(client: AsyncClient, auth_headers):
     resp = await client.delete("/api/v1/interview/segments/nope", headers=auth_headers)
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content_type,expected_ext",
+    [
+        ("video/webm", "webm"),
+        ("video/webm;codecs=vp8,opus", "webm"),  # what MediaRecorder actually sends
+        ("video/mp4", "mp4"),
+        ("video/quicktime", "mov"),  # .mov straight off a phone
+    ],
+)
+async def test_presign_accepts_every_supported_video_type(
+    client: AsyncClient, auth_headers, content_type, expected_ext
+):
+    """Upload reuses the RECORDING entry point, so presign has to hand out a
+    correctly-named key for files that never came from MediaRecorder."""
+    resp = await client.post(
+        "/api/v1/interview/segments/presign",
+        json={"question_index": 0, "content_type": content_type},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["video_key"].endswith(f".{expected_ext}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content_type", ["application/pdf", "image/png", "text/plain", "video/x-msvideo"])
+async def test_presign_rejects_non_video(client: AsyncClient, auth_headers, content_type):
+    """Rejected at the door, not silently renamed.
+
+    The old fallback named anything unrecognised `.webm`, so a PDF became a
+    `.webm` key and only surfaced as a decode failure deep inside
+    transcription — minutes later, nowhere near the file picker. Recording
+    could never hit that; uploading can.
+    """
+    resp = await client.post(
+        "/api/v1/interview/segments/presign",
+        json={"question_index": 0, "content_type": content_type},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400
+    assert "video" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_local_upload_rejects_oversized_video(
+    client: AsyncClient, auth_headers, test_user, monkeypatch
+):
+    """The local PUT is the one place the bytes pass through us, so the cap
+    is enforceable there. (In R2 mode the browser PUTs straight to storage
+    and a presigned URL carries no size condition — see the endpoint.)"""
+    from app.api.v1 import interview as interview_module
+
+    monkeypatch.setattr(interview_module.settings, "USE_LOCAL_STORAGE", True)
+    monkeypatch.setattr(interview_module.settings, "MAX_SEGMENT_UPLOAD_BYTES", 1024)
+    stored = AsyncMock()
+    monkeypatch.setattr(interview_module.storage_service, "upload_file", stored)
+
+    key = f"segments/{test_user.id}/sess/0/big.webm"
+    resp = await client.put(
+        f"/api/v1/interview/segments/upload-local/{key}",
+        content=b"x" * 4096,
+        headers={**auth_headers, "content-type": "video/webm"},
+    )
+    assert resp.status_code == 413
+    stored.assert_not_awaited()  # and nothing was written
+
+
+@pytest.mark.asyncio
+async def test_local_upload_accepts_a_video_within_the_cap(
+    client: AsyncClient, auth_headers, test_user, monkeypatch
+):
+    from app.api.v1 import interview as interview_module
+
+    monkeypatch.setattr(interview_module.settings, "USE_LOCAL_STORAGE", True)
+    stored = AsyncMock()
+    monkeypatch.setattr(interview_module.storage_service, "upload_file", stored)
+
+    key = f"segments/{test_user.id}/sess/0/ok.mp4"
+    resp = await client.put(
+        f"/api/v1/interview/segments/upload-local/{key}",
+        content=b"x" * 512,
+        headers={**auth_headers, "content-type": "video/mp4"},
+    )
+    assert resp.status_code == 204
+    stored.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_local_upload_rejects_non_video_content_type(
+    client: AsyncClient, auth_headers, test_user, monkeypatch
+):
+    """Presign is not the only door — the PUT is separately reachable, so it
+    validates rather than trusting that presign already did."""
+    from app.api.v1 import interview as interview_module
+
+    monkeypatch.setattr(interview_module.settings, "USE_LOCAL_STORAGE", True)
+    stored = AsyncMock()
+    monkeypatch.setattr(interview_module.storage_service, "upload_file", stored)
+
+    key = f"segments/{test_user.id}/sess/0/sneaky.webm"
+    resp = await client.put(
+        f"/api/v1/interview/segments/upload-local/{key}",
+        content=b"%PDF-1.4",
+        headers={**auth_headers, "content-type": "application/pdf"},
+    )
+    assert resp.status_code == 400
+    stored.assert_not_awaited()

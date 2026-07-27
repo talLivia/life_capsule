@@ -130,6 +130,33 @@ _EXT_BY_CONTENT_TYPE = {
 }
 
 
+def _validated_content_type(content_type: str) -> str:
+    """The base content type, or 400.
+
+    Recording only ever produces what MediaRecorder negotiated, so this was
+    never load-bearing. UPLOADING lets the producer hand over any file at
+    all, and the fallback below used to name anything unrecognised `.webm`
+    — so a PDF became `segments/.../x.webm` and only revealed itself as a
+    decode failure deep inside transcription, minutes later and nowhere near
+    the file picker. Reject it at the door instead, where the message can
+    name the actual problem.
+
+    The list is what the whole downstream chain already handles: PyAV
+    decodes any of them from raw bytes, Deepgram sniffs the container
+    itself, and ffmpeg trims all three during clip assembly.
+    """
+    base_type = content_type.split(";", 1)[0].strip().lower()
+    if base_type not in _EXT_BY_CONTENT_TYPE:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "That file type isn't supported — please upload a video "
+                "(.webm, .mp4 or .mov)"
+            ),
+        )
+    return base_type
+
+
 def _segment_video_key(
     user_id: str, interview_session_id: str, question_index: int, content_type: str
 ) -> str:
@@ -148,26 +175,30 @@ async def presign_segment_upload(
     user: User = Depends(require_producer),
 ):
     """
-    Presigned upload target for a recorded take. In R2 (or S3) mode this is a
-    real presigned PUT straight to object storage — the video never passes
-    through this backend. In local-storage dev mode there's no such thing as
-    a presigned URL for the filesystem, so we hand back our own PUT endpoint
-    below, which behaves the same way from the frontend's point of view.
+    Presigned upload target for a take — whether it was recorded in the
+    browser or picked from disk. Both go through here, then the same PUT,
+    then the same /segments/ingest: an uploaded video is not a second kind
+    of recording and gets no second pipeline.
+
+    In R2 (or S3) mode this is a real presigned PUT straight to object
+    storage — the video never passes through this backend. In local-storage
+    dev mode there's no such thing as a presigned URL for the filesystem, so
+    we hand back our own PUT endpoint below, which behaves the same way from
+    the frontend's point of view.
     """
+    content_type = _validated_content_type(payload.content_type)
     session = await _get_or_create_session(db, user)
-    video_key = _segment_video_key(
-        user.id, session.id, payload.question_index, payload.content_type
-    )
+    video_key = _segment_video_key(user.id, session.id, payload.question_index, content_type)
 
     if getattr(settings, "USE_LOCAL_STORAGE", True):
         upload_url = f"{settings.BACKEND_URL}/api/v1/interview/segments/upload-local/{video_key}"
     else:
         upload_url = await storage_service.presigned_upload_url(
-            video_key, content_type=payload.content_type
+            video_key, content_type=content_type
         )
 
     return SegmentPresignResponse(
-        upload_url=upload_url, video_key=video_key, content_type=payload.content_type
+        upload_url=upload_url, video_key=video_key, content_type=content_type
     )
 
 
@@ -183,14 +214,41 @@ async def upload_local_segment(
     Only reachable in USE_LOCAL_STORAGE mode; the key must be one this user
     was actually issued (prevents writing into another producer's segments
     or escaping the segments/ prefix).
+
+    SIZE ENFORCEMENT IS ASYMMETRIC, deliberately. Here the bytes pass through
+    us, so the cap is real. In R2 mode they do not — the browser PUTs
+    straight to object storage, and a presigned URL carries no size condition
+    (only a POST policy could, which is a different upload shape). There the
+    client-side check is the only guard, and it is a guard against picking
+    the wrong file, not against a determined caller. Saying so here beats a
+    comment claiming a limit that only holds in dev.
     """
     if not getattr(settings, "USE_LOCAL_STORAGE", True):
         raise HTTPException(status_code=404, detail="Not found")
     if not video_key.startswith(f"segments/{user.id}/"):
         raise HTTPException(status_code=403, detail="Not authorised to write this key")
 
-    content_type = request.headers.get("content-type", "video/webm")
+    max_bytes = settings.MAX_SEGMENT_UPLOAD_BYTES
+    # Checked BEFORE reading the body: on an oversized upload this refuses
+    # without first buffering the whole thing into memory.
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"That video is too large (max {max_bytes // (1024 * 1024)} MB)",
+        )
+
+    content_type = _validated_content_type(
+        request.headers.get("content-type", "video/webm")
+    )
     body = await request.body()
+    # Content-Length can be absent (chunked) or simply wrong, so the real
+    # bytes are checked too — otherwise the header check is advisory.
+    if len(body) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"That video is too large (max {max_bytes // (1024 * 1024)} MB)",
+        )
     await storage_service.upload_file(body, video_key, content_type=content_type)
 
 

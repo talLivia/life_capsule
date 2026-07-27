@@ -254,8 +254,14 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
     # File Upload
-    MAX_UPLOAD_SIZE: int = 10485760  # 10MB
+    MAX_UPLOAD_SIZE: int = 10485760  # 10MB — images (avatars), not video
     ALLOWED_EXTENSIONS: Union[List[str], str] = ["jpg", "jpeg", "png", "webp"]
+
+    # A recorded life-story answer is minutes of video, not an avatar image,
+    # so it gets its own ceiling. 500MB covers roughly half an hour of 1080p
+    # from a phone; the point is to reject a wrong-file mistake (someone
+    # picking a movie) rather than to ration real answers.
+    MAX_SEGMENT_UPLOAD_BYTES: int = 524288000  # 500MB
 
     # Video Settings
     VIDEO_FPS: int = 25
