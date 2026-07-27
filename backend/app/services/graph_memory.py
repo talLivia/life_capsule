@@ -156,9 +156,21 @@ async def reset_graphiti_client() -> None:
     """Test hook — drop the cached client so the next get_graphiti() call
     rebuilds it (e.g. against a freshly-monkeypatched settings.NEO4J_URI)."""
     global _graphiti
-    if _graphiti is not None:
-        await _graphiti.close()
-    _graphiti = None
+    try:
+        if _graphiti is not None:
+            await _graphiti.close()
+    except Exception as e:
+        # The cached client may be bound to an event loop that has ALREADY
+        # been closed — pytest-asyncio gives each test its own loop, so a
+        # client built during an earlier test cannot be closed cleanly from
+        # this one ("Event loop is closed", raised deep in neo4j's socket
+        # teardown). That must not fail the reset: dropping the reference is
+        # the point, and the OS reclaims the socket regardless. Previously
+        # the raise skipped the assignment below, so the STALE client stayed
+        # cached and every later reset hit the same error.
+        logger.debug(f"Ignoring error closing stale Graphiti client: {e}")
+    finally:
+        _graphiti = None
 
 
 async def init_graph_schema() -> None:

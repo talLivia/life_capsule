@@ -662,6 +662,14 @@ async def _mock_all_llm_calls(monkeypatch, *, entity_candidates):
     monkeypatch.setattr(
         ag.graph_memory, "get_entity_candidates", AsyncMock(return_value=entity_candidates)
     )
+    # transcribe_node clears the segment's prior episode before entity
+    # resolution (see its comment). Unmocked, that reaches a REAL Graphiti
+    # client — these are unit tests, and the live Neo4j/aiohttp connections it
+    # opened were never closed, surfacing later as an "Event loop is closed"
+    # teardown error on the integration test that runs after them.
+    monkeypatch.setattr(
+        ag.graph_memory, "remove_episodes_for_segment", AsyncMock(return_value=0)
+    )
     monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1, 0.2, 0.3]))
 
 
