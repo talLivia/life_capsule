@@ -72,11 +72,15 @@ _FATHER_SEG = "1d32a9b5-603e-4b51-9d17-e962149888a5"  # most-influential-figure 
 _CAREER_SEG = "097b606b-ca75-47b2-a3b3-7e7eaee83b26"  # "when I was in Montreal I studied…"
 
 REFERENCES: dict[str, Optional[Tuple[str, Tuple[float, float]]]] = {
-    # REBASED (was 3.3-12.3). Selects u2+u3+u4 = "יש לי" + "4 אחים" +
-    # "ניר חן עדי ורז" — the complete sibling answer, content unchanged. The
-    # old end of 12.3 was where the single giant chunk's phrase happened to
-    # stop; u4 actually runs to 14.64.
-    "brothers": (_BROTHERS_SEG, (3.28, 14.64)),  # PRIMARY benchmark
+    # REBASED TWICE on 2026-07-27, both times following a boundary FIX rather
+    # than a retrieval change. Selects u2+u3+u4 = "יש לי" + "4 אחים" +
+    # "ניר חן עדי ורז" throughout — the complete sibling answer, content never
+    # changed.
+    #   3.3-12.3  -> old giant-chunk edges (see the header)
+    #   -> 14.64  -> Deepgram's real word times, but its last word "ורז"
+    #                carried an inflated end that OVERLAPPED the next unit
+    #   -> 13.82  -> after _clamp_overlaps trimmed that impossible overlap
+    "brothers": (_BROTHERS_SEG, (3.28, 13.82)),  # PRIMARY benchmark
     # REBASED (was 14.2-16.6). Selects u5 = "להורים שלי קוראים צבי ואילנה",
     # exactly the parents-naming clause it always did. The unit simply starts
     # 0.38s earlier and ends 0.37s earlier than the hand-written range.

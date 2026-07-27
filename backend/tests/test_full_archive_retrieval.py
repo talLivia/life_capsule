@@ -858,3 +858,53 @@ async def test_warm_archive_cache_bounded_by_timeout(monkeypatch):
 
     assert await ar.warm_archive_cache("group-1") is False
     assert "group-1" not in ar._ARCHIVE_CACHE
+
+
+# ── overlapping units ────────────────────────────────────────────────────────
+
+
+def test_clamp_overlaps_trims_the_earlier_unit():
+    """A word cannot still be sounding once the next has begun. Deepgram
+    sometimes says otherwise (real case: "ורז" ended 14.64 while "להורים"
+    started 13.82), and an overlap makes a stitched answer replay the same
+    fraction of a second twice."""
+    units = [
+        ar.UtteranceUnit("u1", "seg-a", 1, 9.12, 14.64, "ניר חן עדי ורז"),
+        ar.UtteranceUnit("u2", "seg-a", 2, 13.82, 16.23, "להורים שלי"),
+    ]
+    ar._clamp_overlaps(units)
+    assert units[0].end_sec == 13.82, "earlier unit is trimmed"
+    assert units[1].start_sec == 13.82, "later unit's start is never pushed out"
+
+
+def test_clamp_overlaps_leaves_clean_units_alone():
+    units = [
+        ar.UtteranceUnit("u1", "seg-a", 1, 0.0, 2.0, "a"),
+        ar.UtteranceUnit("u2", "seg-a", 2, 2.0, 4.0, "b"),
+    ]
+    ar._clamp_overlaps(units)
+    assert (units[0].end_sec, units[1].start_sec) == (2.0, 2.0)
+
+
+def test_clamp_overlaps_never_collapses_a_unit_to_nothing():
+    """A total overlap would trim the earlier unit to zero length, which
+    validation would then drop entirely — losing real speech is worse than
+    keeping a small overlap."""
+    units = [
+        ar.UtteranceUnit("u1", "seg-a", 1, 5.0, 9.0, "a"),
+        ar.UtteranceUnit("u2", "seg-a", 2, 4.0, 8.0, "b"),  # starts BEFORE u1
+    ]
+    ar._clamp_overlaps(units)
+    assert units[0].end_sec == 9.0, "left untouched rather than zeroed"
+
+
+def test_built_units_within_a_recording_never_overlap():
+    archive = [
+        ar.ArchiveSegment(
+            segment=_segment("seg-a", "Q"),
+            chunks=[_chunk_with("seg-a", 0, _paced_words(21, break_after=[6, 13]), "a")],
+        ),
+    ]
+    units = ar._build_units(archive)
+    for a, b in zip(units, units[1:]):
+        assert a.end_sec <= b.start_sec, f"{a.unit_id} overlaps {b.unit_id}"

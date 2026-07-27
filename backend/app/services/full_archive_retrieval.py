@@ -420,7 +420,31 @@ def _split_segment_into_units(
                 current.append(nxt)
         _emit(current)
 
+    _clamp_overlaps(units)
     return units, index
+
+
+def _clamp_overlaps(units: List[UtteranceUnit]) -> None:
+    """Stop consecutive units in a recording from overlapping in time.
+
+    CONFIRMED IN REAL DATA: Deepgram sometimes gives the last word of an
+    utterance an end time that runs past the first word of the next one — in
+    this archive "ורז" ended at 14.64 while "להורים" already started at 13.82,
+    a 0.81s overlap. A word cannot still be sounding once the next has begun,
+    so the earlier END is the wrong number, and left alone it makes a stitched
+    answer replay the same fraction of a second twice.
+
+    Trims the EARLIER unit's end rather than pushing the later unit's start:
+    that can only ever shorten a range, never invent speech that wasn't
+    claimed. A unit that would collapse to nothing is left untouched — better
+    a small overlap than a zero-length range that validation would drop."""
+    for earlier, later in zip(units, units[1:]):
+        if earlier.end_sec > later.start_sec > earlier.start_sec:
+            logger.debug(
+                f"Trimming overlapping unit {earlier.unit_id} "
+                f"{earlier.end_sec:.2f} -> {later.start_sec:.2f}"
+            )
+            earlier.end_sec = later.start_sec
 
 
 def _build_units(archive: List[ArchiveSegment]) -> List[UtteranceUnit]:
