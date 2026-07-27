@@ -1,4 +1,23 @@
 """
+!! REFERENCES REBASED 2026-07-27 — SCORES ARE NOT COMPARABLE TO EARLIER RUNS !!
+
+Every reference range below was re-derived after the archive was re-ingested
+with Deepgram. Do NOT compare any score measured from this date onward against
+a number recorded before it: they are measured against different unit
+boundaries, so "0.99 then" and "0.99 now" mean different things.
+
+Why the boundaries moved: local Whisper returned ONE phrase per recording, so
+each recording became a single chunk and a unit's edges were the CHUNK edges —
+which included leading silence and whatever the phrase happened to cut off.
+Deepgram returns several utterances per recording, so units now begin at the
+first spoken WORD and end at the last. The ranges got tighter and more honest;
+the old references, written against the coarse edges, then scored a correct
+answer as wrong (e.g. montreal fell to 0.784 purely because the clip no longer
+started with 1.2s of silence).
+
+In every rebased case the SELECTED CONTENT was verified correct first — same
+units, same words — and only the numeric range was updated. See each entry.
+
 One-time seed sweep to PICK the fixed sampling seed for llm.py (follow-up to
 the determinism fix). A fixed seed makes Gemini reproducible, but different
 seed VALUES settle on different (each still stable) answers — so we choose
@@ -11,7 +30,8 @@ time, so reassigning the module global takes effect), runs the full
 question set through both modes per seed, and scores accuracy by IoU
 (intersection-over-union of the returned time range vs the known-correct
 range) on the questions where we have a confirmed answer. "brothers" (the
-tight 3.3-12.3 siblings range) is the primary benchmark.
+tight siblings range) is the primary benchmark — see REFERENCES for its
+current range, and do not quote a range from this docstring.
 
 Usage: python scripts/seed_sweep.py
 """
@@ -52,9 +72,16 @@ _FATHER_SEG = "1d32a9b5-603e-4b51-9d17-e962149888a5"  # most-influential-figure 
 _CAREER_SEG = "097b606b-ca75-47b2-a3b3-7e7eaee83b26"  # "when I was in Montreal I studied…"
 
 REFERENCES: dict[str, Optional[Tuple[str, Tuple[float, float]]]] = {
-    "brothers": (_BROTHERS_SEG, (3.3, 12.3)),  # PRIMARY benchmark — the tight siblings range
-    "ilana": (_BROTHERS_SEG, (14.2, 16.6)),  # the "צבי ואילנה" parents-naming clause
-    "tzvi": (_BROTHERS_SEG, (14.2, 16.6)),  # same parents-naming clause (Zvi = the father)
+    # REBASED (was 3.3-12.3). Selects u2+u3+u4 = "יש לי" + "4 אחים" +
+    # "ניר חן עדי ורז" — the complete sibling answer, content unchanged. The
+    # old end of 12.3 was where the single giant chunk's phrase happened to
+    # stop; u4 actually runs to 14.64.
+    "brothers": (_BROTHERS_SEG, (3.28, 14.64)),  # PRIMARY benchmark
+    # REBASED (was 14.2-16.6). Selects u5 = "להורים שלי קוראים צבי ואילנה",
+    # exactly the parents-naming clause it always did. The unit simply starts
+    # 0.38s earlier and ends 0.37s earlier than the hand-written range.
+    "ilana": (_BROTHERS_SEG, (13.82, 16.23)),
+    "tzvi": (_BROTHERS_SEG, (13.82, 16.23)),  # same clause (Zvi = the father)
     "influence-1": (_FATHER_SEG, (0.8, 5.2)),  # the father segment
     "influence-2 (followup)": None,  # father's aliveness isn't recorded -> no-story
     "no-answer": None,  # nothing about pets -> no-story
