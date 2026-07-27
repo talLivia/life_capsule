@@ -295,6 +295,50 @@ async def list_session_segments(
     return result.scalars().all()
 
 
+@router.delete("/segments/{segment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_segment(
+    segment_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """Delete ONE recording, leaving any siblings on the same question alone.
+
+    Now that a question holds several takes, "replace this one" is expressed
+    as delete + record rather than being implied by ingesting again — the
+    producer says which take goes, instead of the newest silently destroying
+    the previous one.
+
+    The work itself is delegated to segment_deletion, the same implementation
+    the account-reset path uses: row, chunks, stored file, Graphiti episode
+    and derived caches. Ownership is checked by joining through the session,
+    so a producer can only ever reach their own recordings.
+    """
+    from app.services.segment_deletion import delete_segment_data
+
+    owned = (
+        await db.execute(
+            select(RawSegment.id)
+            .join(InterviewSession, RawSegment.interview_session_id == InterviewSession.id)
+            .where(RawSegment.id == segment_id, InterviewSession.user_id == user.id)
+        )
+    ).scalar_one_or_none()
+    if owned is None:
+        # 404 for both "no such segment" and "not yours" — telling the caller
+        # which would confirm the existence of another producer's recording.
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    result = await delete_segment_data(segment_id, user.id)
+    if not result.ok:
+        # The row may well be gone while the graph cleanup failed. Say so
+        # rather than reporting a clean success over a half-finished delete.
+        logger.error(f"Incomplete deletion of {segment_id}: {result.failures}")
+        raise HTTPException(
+            status_code=500,
+            detail="The recording was only partly deleted — please try again",
+        )
+    logger.info(f"Segment deleted: {segment_id} (producer={user.id})")
+
+
 @router.get("/segments/pending-confirmations", response_model=List[PendingConfirmationResponse])
 async def list_pending_confirmations(
     db: AsyncSession = Depends(get_db),

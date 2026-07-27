@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import select
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -297,3 +298,99 @@ async def test_ingest_segment_rejects_foreign_video_key(client: AsyncClient, aut
         headers=auth_headers,
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_delete_segment_removes_only_that_take(
+    client: AsyncClient, auth_headers, test_user, db_session, monkeypatch
+):
+    """Deleting one take leaves its siblings on the same question alone.
+
+    With several takes per question this is the ONLY way a recording is
+    destroyed — ingest no longer replaces — so the endpoint has to be
+    precise about which one goes.
+    """
+    from app.api.v1 import interview as interview_module
+
+    deleted: list[str] = []
+
+    async def fake_delete(segment_id, group_id, **kw):
+        from app.models import RawSegment as RS
+        from app.services.segment_deletion import DeletionResult
+
+        deleted.append(segment_id)
+        # Stands in for the real fan-out (neither storage nor Graphiti runs
+        # here) but DOES delete the row, so the assertions below are about
+        # observable state rather than about the mock. It must use the test's
+        # own session: the real function opens AsyncSessionLocal, which is a
+        # different engine from the one the client is overridden onto, so a
+        # row deleted there would not be missing here.
+        row = (await db_session.execute(select(RS).where(RS.id == segment_id))).scalar_one_or_none()
+        if row is not None:
+            await db_session.delete(row)
+            await db_session.commit()
+        return DeletionResult(segments_deleted=1)
+
+    monkeypatch.setattr(
+        "app.services.segment_deletion.delete_segment_data", fake_delete
+    )
+
+    session = (await client.get("/api/v1/interview/session", headers=auth_headers)).json()["session"]
+    ids = []
+    for n in (1, 2):
+        r = await client.post(
+            "/api/v1/interview/segments/ingest",
+            json={
+                "interview_session_id": session["id"],
+                "question_index": 0,
+                "question_asked": "Q1",
+                "video_key": f"segments/{test_user.id}/{session['id']}/0/take{n}.webm",
+            },
+            headers=auth_headers,
+        )
+        ids.append(r.json()["id"])
+
+    resp = await client.delete(f"/api/v1/interview/segments/{ids[0]}", headers=auth_headers)
+    assert resp.status_code == 204
+    assert deleted == [ids[0]], "delegates to the shared deletion path, for that take only"
+
+    state = (await client.get("/api/v1/interview/session", headers=auth_headers)).json()
+    remaining = [s["id"] for s in state["segments"] if s["question_index"] == 0]
+    assert remaining == [ids[1]], "the sibling survives"
+
+
+@pytest.mark.asyncio
+async def test_delete_segment_rejects_another_producers_recording(
+    client: AsyncClient, auth_headers, test_user, db_session
+):
+    """404, not 403: distinguishing "not yours" from "doesn't exist" would
+    confirm that another producer's recording id is real."""
+    from app.models import InterviewSession as IS, RawSegment as RS, User
+
+    other = User(
+        id="other-producer", email="other@example.com", username="other",
+        hashed_password="x", full_name="Other", role="producer",
+    )
+    db_session.add(other)
+    await db_session.flush()
+    other_session = IS(id="other-session", user_id=other.id, status="active")
+    db_session.add(other_session)
+    await db_session.flush()
+    db_session.add(RS(
+        id="other-seg", interview_session_id=other_session.id,
+        question_asked="Q", question_index=0, status="ready",
+        video_key="segments/other/x.webm",
+    ))
+    await db_session.commit()
+
+    resp = await client.delete("/api/v1/interview/segments/other-seg", headers=auth_headers)
+    assert resp.status_code == 404
+
+    still_there = (await db_session.execute(select(RS).where(RS.id == "other-seg"))).scalar_one_or_none()
+    assert still_there is not None, "and it is genuinely untouched, not just hidden"
+
+
+@pytest.mark.asyncio
+async def test_delete_segment_404_when_missing(client: AsyncClient, auth_headers):
+    resp = await client.delete("/api/v1/interview/segments/nope", headers=auth_headers)
+    assert resp.status_code == 404

@@ -1,8 +1,11 @@
 """Complete removal of a recording and everything derived from it.
 
 ONE implementation, used by both paths that destroy recordings:
-  * replacing a question's video (re-record or upload) — interview.py
+  * deleting a single take — DELETE /segments/{id} in interview.py
   * "reset all my data" — users.py
+
+Ingest does NOT call this. A question holds several takes, so recording again
+adds one; discarding a take is an explicit delete by the producer.
 
 Writing these separately is how orphans happen: the two paths drift, one
 forgets a store, and data survives that the user believes is gone. A recording

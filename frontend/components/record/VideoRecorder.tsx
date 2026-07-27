@@ -3,15 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Video, Pause, Play, Square, RotateCcw, UploadCloud, CheckCircle2,
-  Loader2, AlertTriangle, Circle,
+  Loader2, AlertTriangle, Circle, X,
 } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api, uploadSegmentBlob } from '@/lib/api'
 import { pickPreferredAudioDevice } from '@/lib/audioDevices'
-import type { ApiError, RawSegment } from '@/lib/types'
+import type { ApiError } from '@/lib/types'
 
 type Phase =
-  | 'reviewing_existing'
   | 'acquiring'
   | 'ready'
   | 'recording'
@@ -25,9 +24,14 @@ interface VideoRecorderProps {
   sessionId: string
   questionIndex: number
   questionText: string
-  existingSegment?: RawSegment
   onAccepted: () => void
+  onCancel?: () => void
 }
+
+/* Reviewing an EXISTING answer no longer lives here. A question can hold
+ * several takes, so "the existing segment" is not a single thing the
+ * recorder could show — RecordingList owns reviewing and deleting them, and
+ * this component does one job: capture a new take. */
 
 const fmtTime = (s: number) =>
   `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`
@@ -53,10 +57,10 @@ export function VideoRecorder({
   sessionId,
   questionIndex,
   questionText,
-  existingSegment,
   onAccepted,
+  onCancel,
 }: VideoRecorderProps) {
-  const [phase, setPhase] = useState<Phase>(existingSegment ? 'reviewing_existing' : 'acquiring')
+  const [phase, setPhase] = useState<Phase>('acquiring')
   const [elapsed, setElapsed] = useState(0)
   const [uploadFraction, setUploadFraction] = useState(0)
   const [cameraErrorMsg, setCameraErrorMsg] = useState<string | null>(null)
@@ -192,11 +196,7 @@ export function VideoRecorder({
     recordedBlobRef.current = null
     teardownStream()
 
-    if (existingSegment) {
-      setPhase('reviewing_existing')
-    } else {
-      acquireCamera(() => cancelled)
-    }
+    acquireCamera(() => cancelled)
 
     return () => {
       cancelled = true
@@ -352,34 +352,8 @@ export function VideoRecorder({
     }
   }
 
-  const startFreshTake = () => {
-    // Coming from "reviewing_existing" — user wants to replace the answer.
-    acquireCamera()
-  }
-
   return (
     <div className="calm-recorder rounded-2xl border border-calm-border dark:border-calm-borderDark bg-calm-card dark:bg-calm-cardDark overflow-hidden">
-      {/* ── Reviewing an already-recorded answer ── */}
-      {phase === 'reviewing_existing' && existingSegment && (
-        <div className="flex flex-col gap-4 p-6">
-          <div className="flex items-center gap-2 text-calm-sage-700 dark:text-calm-sage-300 text-sm font-medium">
-            <CheckCircle2 size={16} />
-            You already answered this question
-          </div>
-          {existingSegment.video_url && (
-            <video
-              controls
-              src={existingSegment.video_url}
-              className="w-full rounded-xl bg-black aspect-video"
-            />
-          )}
-          <button onClick={startFreshTake} className="calm-btn-secondary self-start">
-            <RotateCcw size={16} />
-            Re-record this answer
-          </button>
-        </div>
-      )}
-
       {/* ── Acquiring camera ── */}
       {phase === 'acquiring' && (
         <div className="flex flex-col items-center justify-center gap-3 py-24 text-calm-inkmuted dark:text-calm-inkmutedDark">
@@ -417,14 +391,26 @@ export function VideoRecorder({
 
           <div className="flex items-center justify-center gap-3 p-5">
             {phase === 'ready' && (
-              <button
-                onClick={startRecording}
-                className="calm-btn-primary px-6 py-3 text-base"
-                aria-label="Start recording"
-              >
-                <Video size={18} />
-                Start Recording
-              </button>
+              <>
+                {/* Backing out matters now that opening the recorder is a
+                    deliberate "add another take" rather than the only thing
+                    this screen does — without it the camera stays live with
+                    no way back to the takes already recorded. */}
+                {onCancel && (
+                  <button onClick={onCancel} className="calm-btn-secondary" aria-label="Cancel">
+                    <X size={16} />
+                    Cancel
+                  </button>
+                )}
+                <button
+                  onClick={startRecording}
+                  className="calm-btn-primary px-6 py-3 text-base"
+                  aria-label="Start recording"
+                >
+                  <Video size={18} />
+                  Start Recording
+                </button>
+              </>
             )}
             {phase === 'recording' && (
               <>

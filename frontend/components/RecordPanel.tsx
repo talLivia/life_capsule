@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ChevronLeft, ChevronRight, Feather, Loader2, ShieldOff, PartyPopper, Gift, ListChecks } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Feather, Loader2, ShieldOff, PartyPopper, Gift, ListChecks, Plus } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { EntityConfirmModal } from '@/components/record/EntityConfirmModal'
+import { RecordingList } from '@/components/record/RecordingList'
 import { VideoRecorder } from '@/components/record/VideoRecorder'
 import { api } from '@/lib/api'
 import { useStore } from '@/store/useStore'
@@ -37,6 +38,10 @@ export function RecordPanel() {
   // next" screen instead of silently leaving the user on the same last
   // question with no forward path (Next was already disabled there).
   const [justCompleted, setJustCompleted] = useState(false)
+  // Opening the recorder on a question that ALREADY has takes. Cleared
+  // whenever the question changes, so navigating away and back lands on the
+  // list rather than a live camera the producer didn't ask for.
+  const [addingTake, setAddingTake] = useState(false)
 
   const isProducer = user?.role === 'producer'
 
@@ -62,6 +67,7 @@ export function RecordPanel() {
   const goTo = async (index: number) => {
     if (!state) return
     setCurrentIndex(index)
+    setAddingTake(false)
     try {
       const updated = await api.updateInterviewSession(state.session.id, index)
       setState(s => (s ? { ...s, session: updated } : s))
@@ -73,10 +79,18 @@ export function RecordPanel() {
   const handleAccepted = async () => {
     if (!state) return
     // Refresh segments so the "already answered" state is accurate if the
-    // user navigates back here later, then advance to the next question.
+    // user navigates back here later.
     const nextIndex = Math.min(currentIndex + 1, state.questions.length - 1)
     const atEnd = currentIndex === state.questions.length - 1
     const wasIncomplete = countAnswered(state.segments) < state.questions.length
+    // Auto-advance only when this question had NOTHING before — that's the
+    // sequential first pass, where moving on is what the producer wants.
+    // A deliberate "add another take" must stay put and show the new take
+    // beside the old one; advancing there would answer a question they
+    // didn't ask and hide the very thing they just recorded.
+    const wasFirstTake =
+      state.segments.filter(s => s.question_index === currentIndex).length === 0
+    setAddingTake(false)  // the new take is saved; show it in the list
     try {
       const data: InterviewSessionState = await api.getInterviewSession()
       setState(data)
@@ -86,6 +100,7 @@ export function RecordPanel() {
     } catch {
       /* segment is already saved server-side; a refresh failure here is non-fatal */
     }
+    if (!wasFirstTake) return
     if (!atEnd) {
       goTo(nextIndex)
     } else {
@@ -133,6 +148,7 @@ export function RecordPanel() {
   const question = state.questions[currentIndex]
   // A question can now have SEVERAL recordings, so this is a list.
   const recordings = state.segments.filter(s => s.question_index === currentIndex)
+  const showRecorder = recordings.length === 0 || addingTake
   const isLast = currentIndex === total - 1
   const isFirst = currentIndex === 0
   // DISTINCT questions answered — never the number of segment rows. With
@@ -211,14 +227,28 @@ export function RecordPanel() {
           </h1>
         </div>
 
-        <VideoRecorder
-          key={question.id}
-          sessionId={state.session.id}
-          questionIndex={currentIndex}
-          questionText={question.text}
-          existingSegment={recordings[0]}
-          onAccepted={handleAccepted}
-        />
+        {/* With no recordings yet, the recorder IS the screen — asking a
+            producer to click "add" against an empty list would be a step
+            with only one possible answer. Once something is recorded, the
+            takes come first and recording another is a deliberate choice. */}
+        {showRecorder ? (
+          <VideoRecorder
+            key={`${question.id}-${recordings.length}`}
+            sessionId={state.session.id}
+            questionIndex={currentIndex}
+            questionText={question.text}
+            onAccepted={handleAccepted}
+            onCancel={recordings.length > 0 ? () => setAddingTake(false) : undefined}
+          />
+        ) : (
+          <>
+            <RecordingList recordings={recordings} onDeleted={load} />
+            <button onClick={() => setAddingTake(true)} className="calm-btn-secondary self-start">
+              <Plus size={16} />
+              {recordings.length === 1 ? 'Add another answer' : 'Add another take'}
+            </button>
+          </>
+        )}
 
         <div className="flex items-center justify-between pt-2">
           <button
