@@ -237,7 +237,7 @@ async def test_ingest_segment_runs_analysis_in_process_when_debug(
 
 
 @pytest.mark.asyncio
-async def test_ingest_segment_rerecord_replaces(client: AsyncClient, auth_headers, test_user):
+async def test_ingest_segment_appends_sibling(client: AsyncClient, auth_headers, test_user):
     session = (await client.get("/api/v1/interview/session", headers=auth_headers)).json()["session"]
     first_key = f"segments/{test_user.id}/{session['id']}/0/take1.webm"
     second_key = f"segments/{test_user.id}/{session['id']}/0/take2.webm"
@@ -264,24 +264,23 @@ async def test_ingest_segment_rerecord_replaces(client: AsyncClient, auth_header
     )
     assert first.status_code == 201
     assert second.status_code == 201
-    # Re-recording REPLACES: the old take is fully deleted (row, chunks,
-    # stored file, Graphiti episode) and a NEW row is created. It used to
-    # upsert the row in place, which left the old stored video orphaned and
-    # the old episode in the graph. A new id is the visible signal that the
-    # old take really went, rather than being partially overwritten.
+    # One question can hold SEVERAL recordings — a second take ADDS, it does
+    # not destroy the first. Replacing a specific take is delete + add.
     assert first.json()["id"] != second.json()["id"]
     assert second.json()["video_key"] == second_key
 
-    # Exactly ONE segment for that question — replacement, not accumulation.
     state = (await client.get("/api/v1/interview/session", headers=auth_headers)).json()
     for_q0 = [s for s in state["segments"] if s["question_index"] == 0]
-    assert len(for_q0) == 1
-    assert for_q0[0]["id"] == second.json()["id"]
+    assert len(for_q0) == 2, "both takes are kept"
+    assert {s["id"] for s in for_q0} == {first.json()["id"], second.json()["id"]}
+    # The FIRST take must still be intact, not blanked in place.
+    kept = next(s for s in for_q0 if s["id"] == first.json()["id"])
+    assert kept["video_key"] == first_key
 
     segments = await client.get(
         f"/api/v1/interview/segments/session/{session['id']}", headers=auth_headers
     )
-    assert len(segments.json()) == 1
+    assert len(segments.json()) == 2, "the session lists both takes, not just the latest"
 
 
 @pytest.mark.asyncio

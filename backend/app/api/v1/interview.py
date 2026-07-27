@@ -23,7 +23,6 @@ from app.schemas import (
     SegmentPresignRequest,
     SegmentPresignResponse,
 )
-from app.services.segment_deletion import delete_segment_data
 from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
@@ -205,18 +204,14 @@ async def ingest_segment(
     Accept a recorded-and-uploaded take: persist the segment row and enqueue
     transcription.
 
-    Re-recording REPLACES: the previous take for that (session,
-    question_index) is fully deleted first — row, chunks, stored video and
-    Graphiti episode — and a fresh row is created. This used to upsert the
-    row in place, which quietly left the old stored video orphaned (its key
-    was overwritten) and the old episode in the graph.
+    APPENDS. One question can have SEVERAL recordings — a storyteller often
+    remembers something later, or wants to add to an answer without losing
+    what they already said. This used to upsert (and briefly, to replace), so
+    a second take destroyed the first.
 
-    Deleting BEFORE the pipeline runs also fixes an ordering bug: entity
-    resolution (check_entities) matches new names against the producer's
-    existing graph, and if the old episode were still present at that point
-    the resolved entity could be deleted moments later by the replacement,
-    leaving the extraction instruction pointing at a dead uuid — which is
-    exactly how "מונטריאול" ended up as two separate nodes.
+    Replacing a specific take is therefore delete + add, not a separate flow:
+    DELETE /segments/{id} removes one recording and everything derived from
+    it, then this endpoint adds the new one. Nothing here deletes.
     """
     result = await db.execute(
         select(InterviewSession).where(InterviewSession.id == payload.interview_session_id)
@@ -232,21 +227,9 @@ async def ingest_segment(
 
     video_url = storage_service.get_url(payload.video_key)
 
-    existing_result = await db.execute(
-        select(RawSegment).where(
-            RawSegment.interview_session_id == session.id,
-            RawSegment.question_index == payload.question_index,
-        )
-    )
-    previous = existing_result.scalar_one_or_none()
-
-    if previous is not None:
-        # Fully remove the old take before creating the new one. Cache warming
-        # is skipped here: the replacement is about to be ingested, and
-        # ingestion warms the cache itself once it completes.
-        await db.commit()  # release our hold before the deleter opens its own session
-        await delete_segment_data(previous.id, session.user_id, warm_cache=False)
-
+    # No lookup of an "existing" segment: several are legitimate now. The old
+    # code used scalar_one_or_none() here, which RAISES on a second row — so
+    # this had to change in the same commit that allows siblings, not after.
     segment = RawSegment(
         interview_session_id=session.id,
         question_asked=payload.question_asked,

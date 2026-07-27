@@ -17,6 +17,13 @@ import type { ApiError, InterviewSessionState } from '@/lib/types'
  * The recording flow itself is unchanged from the former route — only the
  * outer full-screen wrappers were relaxed so it sits inside the app shell.
  */
+/** How many interview questions have at least one recording. Counts DISTINCT
+ *  question_index — a question with three takes is still one question
+ *  answered. */
+function countAnswered(segments: { question_index: number }[]): number {
+  return new Set(segments.map(s => s.question_index)).size
+}
+
 export function RecordPanel() {
   const { user } = useStore()
   const [state, setState] = useState<InterviewSessionState | null>(null)
@@ -69,11 +76,11 @@ export function RecordPanel() {
     // user navigates back here later, then advance to the next question.
     const nextIndex = Math.min(currentIndex + 1, state.questions.length - 1)
     const atEnd = currentIndex === state.questions.length - 1
-    const wasIncomplete = state.segments.length < state.questions.length
+    const wasIncomplete = countAnswered(state.segments) < state.questions.length
     try {
       const data: InterviewSessionState = await api.getInterviewSession()
       setState(data)
-      if (wasIncomplete && data.segments.length >= data.questions.length) {
+      if (wasIncomplete && countAnswered(data.segments) >= data.questions.length) {
         setJustCompleted(true)
       }
     } catch {
@@ -124,10 +131,16 @@ export function RecordPanel() {
 
   const total = state.questions.length
   const question = state.questions[currentIndex]
-  const existingSegment = state.segments.find(s => s.question_index === currentIndex)
+  // A question can now have SEVERAL recordings, so this is a list.
+  const recordings = state.segments.filter(s => s.question_index === currentIndex)
   const isLast = currentIndex === total - 1
   const isFirst = currentIndex === 0
-  const answeredCount = state.segments.length
+  // DISTINCT questions answered — never the number of segment rows. With
+  // siblings allowed, three takes on one question would have read as
+  // "3 of 12 answered" and could trip the "you've answered everything"
+  // screen while most questions were still blank. That miscount fails
+  // SILENTLY, which is why it changes in the same commit as the backend.
+  const answeredCount = countAnswered(state.segments)
   const interviewComplete = answeredCount >= total
 
   if (justCompleted) {
@@ -203,7 +216,7 @@ export function RecordPanel() {
           sessionId={state.session.id}
           questionIndex={currentIndex}
           questionText={question.text}
-          existingSegment={existingSegment}
+          existingSegment={recordings[0]}
           onAccepted={handleAccepted}
         />
 

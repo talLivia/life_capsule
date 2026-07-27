@@ -3,6 +3,7 @@ is gone, which is the failure mode this module exists to prevent."""
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import InterviewSession, RawSegment
@@ -122,3 +123,49 @@ async def test_reset_deletes_every_recording_for_the_producer(
 async def test_delete_unknown_segment_is_a_noop(patched, sd_session_factory):
     result = await segment_deletion.delete_segment_data("does-not-exist", "group")
     assert result.segments_deleted == 0
+
+
+async def test_deleting_one_sibling_leaves_the_other_and_its_entities(
+    db_session, test_user, monkeypatch, sd_session_factory
+):
+    """1:many makes this a ROUTINE path, not an edge case: two recordings on
+    the SAME question, sharing an entity. Deleting one must leave the sibling
+    and the shared entity intact.
+
+    Graphiti's own rule does the work — it deletes a node only when the
+    MENTIONS count is 1 — so this asserts we actually delegate to it per
+    segment and never widen the blast radius to the question or the producer.
+    Verified live on מונטריאול (2 episodes, kept when either was removed);
+    this locks that in.
+    """
+    session = InterviewSession(id="int-sib", user_id=test_user.id, status="active")
+    db_session.add(session)
+    await db_session.flush()
+    # SAME question_index — siblings, which the 1:many model now allows.
+    for sid in ("sib-a", "sib-b"):
+        db_session.add(RawSegment(
+            id=sid, interview_session_id=session.id, question_asked="Same question",
+            question_index=3, status="ready", video_key=f"segments/x/{sid}.webm",
+        ))
+    await db_session.commit()
+
+    removed_for: list[str] = []
+
+    async def fake_remove(segment_id, group_id="x"):
+        removed_for.append(segment_id)
+        return 1
+
+    monkeypatch.setattr(segment_deletion.graph_memory, "remove_episodes_for_segment", fake_remove)
+    monkeypatch.setattr(segment_deletion.storage_service, "delete_file", AsyncMock())
+    monkeypatch.setattr(segment_deletion, "_refresh_caches", AsyncMock())
+
+    result = await segment_deletion.delete_segment_data("sib-a", test_user.id)
+
+    assert result.segments_deleted == 1
+    assert removed_for == ["sib-a"], "only the deleted recording's episode is touched"
+
+    surviving = (await db_session.execute(
+        select(RawSegment).where(RawSegment.question_index == 3)
+    )).scalars().all()
+    assert [s.id for s in surviving] == ["sib-b"], "the sibling survives"
+    assert surviving[0].video_key == "segments/x/sib-b.webm", "and is untouched"
