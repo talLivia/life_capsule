@@ -52,12 +52,27 @@ def _chunk(seg_id: str, seq: int, start: float, end: float, text: str, with_word
     )
 
 
-def _segment(seg_id: str, question: str) -> RawSegment:
+_QUESTION_INDICES: dict = {}
+
+
+def _segment(seg_id: str, question: str, question_index: int = None) -> RawSegment:
+    """question_index defaults to one per DISTINCT question text.
+
+    It used to be hardcoded to 0, which was harmless when a question could
+    only have one recording. Now question_index is what identifies takes of
+    the same question, so a fixture that gave every segment index 0 would
+    quietly declare every test recording a sibling of every other. Deriving
+    it from the question text keeps the fixture honest by default: same
+    question text = siblings, different text = different questions. Pass it
+    explicitly to build siblings that word the question differently.
+    """
+    if question_index is None:
+        question_index = _QUESTION_INDICES.setdefault(question, len(_QUESTION_INDICES))
     return RawSegment(
         id=seg_id,
         interview_session_id="int-1",
         question_asked=question,
-        question_index=0,
+        question_index=question_index,
         status="ready",
     )
 
@@ -908,3 +923,90 @@ def test_built_units_within_a_recording_never_overlap():
     units = ar._build_units(archive)
     for a, b in zip(units, units[1:]):
         assert a.end_sec <= b.start_sec, f"{a.unit_id} overlaps {b.unit_id}"
+
+
+# ── siblings: several takes of one interview question ────────────────────────
+
+
+def _take(seg_id: str, question: str, q_index: int) -> "ar.ArchiveSegment":
+    return ar.ArchiveSegment(
+        segment=_segment(seg_id, question, question_index=q_index),
+        chunks=[_chunk_with(seg_id, 0, _paced_words(11, break_after=[5]), "text")],
+    )
+
+
+def test_single_take_question_prints_exactly_as_before():
+    """No take marker when a question has one recording.
+
+    Every archive recorded before siblings existed is entirely
+    single-take, so this line must not change for them — the eval baseline
+    is measured against it.
+    """
+    archive = [_take("seg-a", "Tell me about your family", 0)]
+    out = ar._format_annotated_transcript(archive, ar._build_units(archive))
+    assert "RECORDING 1 — interview question: Tell me about your family" in out
+    assert "take" not in out
+
+
+def test_takes_of_one_question_are_marked():
+    archive = [
+        _take("seg-a", "Tell me about the army", 3),
+        _take("seg-b", "Tell me about the army", 3),
+    ]
+    out = ar._format_annotated_transcript(archive, ar._build_units(archive))
+    assert "RECORDING 1 — interview question: Tell me about the army (take 1 of 2 of this question)" in out
+    assert "RECORDING 2 — interview question: Tell me about the army (take 2 of 2 of this question)" in out
+
+
+def test_take_count_ignores_a_sibling_with_nothing_to_print():
+    """"take 1 of 2" would be a lie if the second take contributed no units
+    the model can see — it counts what is actually printed, not what exists."""
+    archive = [
+        _take("seg-a", "Tell me about the army", 3),
+        _take("seg-b", "Tell me about the army", 3),
+    ]
+    # Only seg-a's units survive (e.g. seg-b still transcribing).
+    units = [u for u in ar._build_units(archive) if u.segment_id == "seg-a"]
+    out = ar._format_annotated_transcript(archive, units)
+    assert "take" not in out
+    assert "RECORDING 2" not in out
+
+
+def test_siblings_are_pulled_together_when_recorded_apart():
+    """created_at order alone separates them: answer Q1, answer Q2, then go
+    back and add a second take to Q1. Without grouping the model reads one
+    interview question twice, in two places, with nothing tying them
+    together."""
+    archive = [
+        _take("q1-take1", "About my childhood", 0),
+        _take("q2-only", "About my career", 1),
+        _take("q1-take2", "About my childhood", 0),
+    ]
+    grouped = ar._group_siblings(archive)
+    assert [a.segment.id for a in grouped] == ["q1-take1", "q1-take2", "q2-only"]
+
+
+def test_grouping_preserves_order_without_siblings():
+    """Stable by design — an archive with one take per question comes out
+    exactly as it went in, so this cannot silently re-cut existing
+    archives."""
+    archive = [
+        _take("seg-a", "Q one", 0),
+        _take("seg-b", "Q two", 1),
+        _take("seg-c", "Q three", 2),
+    ]
+    assert [a.segment.id for a in ar._group_siblings(archive)] == ["seg-a", "seg-b", "seg-c"]
+
+
+def test_units_keep_playback_order_within_a_question():
+    """Grouping moves recordings, so unit numbering has to follow — u-ids
+    are assigned over the grouped order, and a later take's units must come
+    after the earlier take's, not interleave with them."""
+    archive = ar._group_siblings([
+        _take("q1-take1", "About my childhood", 0),
+        _take("q2-only", "About my career", 1),
+        _take("q1-take2", "About my childhood", 0),
+    ])
+    units = ar._build_units(archive)
+    order = [u.segment_id for u in units]
+    assert order.index("q1-take1") < order.index("q1-take2") < order.index("q2-only")

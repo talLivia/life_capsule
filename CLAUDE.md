@@ -43,6 +43,26 @@ Two things follow from this design and should not be "fixed":
   "who is your mother?"). Already-shown material is only withheld from
   *follow-up suggestions*, where the point is to offer something *more*.
 
+## One question, several recordings
+
+A question holds a LIST of takes, not one video. A storyteller comes back and
+adds what they left out. Consequences that are easy to get wrong:
+
+- **Ingest APPENDS.** Recording again never destroys a previous take.
+  Replacing one is delete + record, both explicit. `DELETE /segments/{id}`
+  is the only thing that destroys a recording, and it delegates to
+  `segment_deletion.delete_segment_data` — the same implementation account
+  reset uses. Graphiti drops an entity only when its MENTIONS count is 1, so
+  a shared entity survives a sibling's deletion.
+- **Count DISTINCT `question_index` for "answered"**, never segment rows —
+  three takes on one question is one question answered.
+- **Uploading a video reuses the recording entry point exactly** (presign →
+  PUT → `/segments/ingest`). There is no upload endpoint and no second
+  ingestion path; if you find yourself writing one, something is wrong.
+- Takes are **grouped together in the prompt** and marked `(take N of M)`.
+  `created_at` order alone separates them. A question with ONE take prints
+  byte-identically to before, so existing archives are untouched.
+
 The **interview question** above each recording is load-bearing context, not
 metadata: it identifies people the words never name ("the right person", "my
 commander"). Unnamed referents cannot be resolved via the entity map — the
@@ -93,9 +113,13 @@ python scripts/seed_sweep.py              # single-run accuracy vs known-correct
 ```
 
 Quote accuracy as a **mean over runs**, not one figure. Current baseline:
-**v2 = 0.991 (stdev 0.000 over 5 runs, 7 scored questions)**. Note the scored
+**v2 = 0.999 (stdev 0.000 over 5 runs, 7 scored questions)**. Note the scored
 set contains no *broad* question, which is exactly where the variance lives —
 a known gap in the eval, not a claim that nothing varies.
+
+References were **rebased on 2026-07-27** after the archive was re-ingested
+with Deepgram — scores from before that date are measured against different
+unit boundaries and are not comparable. See the header of `seed_sweep.py`.
 
 ## Local environment gotchas
 

@@ -108,6 +108,16 @@ interview question is shown above each recording and is ESSENTIAL \
 CONTEXT, not a label: it tells you what the recording is ABOUT, and \
 therefore what the words inside it refer to.
 
+A question may have been answered in SEVERAL recordings, marked "(take N \
+of M of this question)" and shown one after another. Those takes are ONE \
+answer given in more than one sitting - the person came back and added \
+what they had left out, or told it again more fully - NOT separate \
+subjects. Read them together: the interview question applies to all of \
+them equally, so an unnamed "she" or "my commander" in a later take means \
+the same person it means in the first. When several takes answer the \
+question, select units from whichever of them actually answer it, in the \
+order they should be played.
+
 USE THE INTERVIEW QUESTION TO UNDERSTAND WHO OR WHAT A UNIT IS ABOUT, \
 especially when the spoken words alone do not name them. People are \
 constantly referred to without being named - "the right person", "my \
@@ -195,6 +205,12 @@ offers to tell them something of THEIRS. So "want to hear about the moment \
 I knew?" - first person for the storyteller ("my parents", "I knew"), \
 never third person about them ("his parents") and never second person as \
 if addressing them ("what you discovered").
+- Another TAKE of the same interview question is a legitimate place to \
+find such material: a later take often adds something the first one left \
+out, and those units are unseen. But offer it only when it genuinely says \
+something NEW. If a later take just retells what you already showed, in \
+other words, that is not a follow-up - offering to repeat a story as \
+though it were more would be worse than offering nothing.
 - The suggestion must be answerable by REAL units you list - never offer \
 something the archive cannot actually show.
 - Its unit ids must not overlap the answer's own unit_ids, and must not be \
@@ -271,7 +287,34 @@ async def _load_archive(group_id: str) -> List[ArchiveSegment]:
     ]
     # A segment with no chunks yet contributes nothing readable — skip it
     # rather than emitting an empty, confusing block.
-    return [a for a in archive if a.chunks]
+    return _group_siblings([a for a in archive if a.chunks])
+
+
+def _group_siblings(archive: List[ArchiveSegment]) -> List[ArchiveSegment]:
+    """Put takes of the same interview question next to each other.
+
+    A question can hold several recordings, and `created_at` alone does not
+    place them together: answering Q1, then Q2, then going back to add a
+    second take to Q1 leaves the two Q1 takes separated by Q2 in the
+    transcript. The model would then read one interview question twice, in
+    two places, with no signal they belong together — the exact context the
+    prompt leans on hardest to work out who an unnamed "she" or "my
+    commander" is.
+
+    STABLE: groups are ordered by their earliest recording and takes within
+    a group stay in recording order, so an archive WITHOUT siblings comes out
+    in exactly the order it went in. That is deliberate — it keeps this from
+    silently re-cutting existing archives, where the eval baseline lives.
+    """
+    order: List[int] = []
+    by_question: Dict[int, List[ArchiveSegment]] = {}
+    for item in archive:
+        q = item.segment.question_index
+        if q not in by_question:
+            by_question[q] = []
+            order.append(q)
+        by_question[q].append(item)
+    return [item for q in order for item in by_question[q]]
 
 
 # ── Utterance units: the unit of SELECTION ──────────────────────────────────
@@ -491,15 +534,35 @@ def _format_annotated_transcript(
     for unit in units:
         by_segment.setdefault(unit.segment_id, []).append(unit)
 
+    # Takes of the same interview question, so a repeated question reads as
+    # one answer in several parts rather than as two unrelated recordings
+    # that happen to share a heading. Only counts recordings that will
+    # actually be printed — a sibling whose units were all filtered out is
+    # not a "take 1 of 2" the model can see.
+    printed = [item for item in archive if by_segment.get(item.segment.id)]
+    takes_per_question: Dict[int, int] = {}
+    for item in printed:
+        q = item.segment.question_index
+        takes_per_question[q] = takes_per_question.get(q, 0) + 1
+    take_number: Dict[int, int] = {}
+
     lines: List[str] = []
     ordinal = 0
-    for item in archive:
+    for item in printed:
         seg = item.segment
-        seg_units = by_segment.get(seg.id, [])
-        if not seg_units:
-            continue
+        seg_units = by_segment[seg.id]
         ordinal += 1
-        lines.append(f"RECORDING {ordinal} — interview question: {seg.question_asked}")
+        # Byte-identical to the old single-recording line when a question has
+        # exactly one take — which is every question in an archive recorded
+        # before this existed, so nothing about those prompts changes.
+        total_takes = takes_per_question[seg.question_index]
+        if total_takes > 1:
+            n = take_number.get(seg.question_index, 0) + 1
+            take_number[seg.question_index] = n
+            suffix = f" (take {n} of {total_takes} of this question)"
+        else:
+            suffix = ""
+        lines.append(f"RECORDING {ordinal} — interview question: {seg.question_asked}{suffix}")
         for unit in seg_units:
             mark = (
                 " [ALREADY SHOWN]"
