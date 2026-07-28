@@ -11,11 +11,17 @@ updated as work lands.
 
 # NEXT UP: move entities from Graphiti/Neo4j into Postgres
 
-**This is the agreed next piece of work.** Plan settled 2026-07-28; the build
-has NOT started. Read this section before touching anything entity-related.
+**This is the agreed next piece of work.** Plan settled 2026-07-28; **chunk 1
+is in progress** — see "Build chunks" below for exactly where to resume. Read
+this section before touching anything entity-related.
 
 ## Where it stands right now
 
+- **Chunk 1a has landed** (`df25171`): the merge key
+  (`app/services/entity_names.py`, 21 direct tests) and the four ORM models
+  (`Entity`, `EntityMention`, `RelationType`, `EntityRelation`). Both inert —
+  nothing writes these tables yet. 445 backend tests pass.
+- **Resume at the write path** — see chunk 1 below.
 - Migration `0012_entities_in_postgres.py` is **written, committed and pushed**
   — and **NOT APPLIED**.
 - ⚠️ **`entrypoint.sh` runs `alembic upgrade head` on startup, so the next
@@ -130,12 +136,38 @@ there is no node for them to be brothers OF. The family tree roots here.
 OPTIONAL and repopulated on re-ingest (moving to Deepgram turned one chunk
 into eight, invalidating every stored chunk id).
 
+**DECIDED — `normalized_name` does NOT fold ת/ט.** An earlier draft of this
+plan said it should, to make תבריה/טבריה merge. Overruled on review, and the
+reasoning is worth keeping because the folding version looks obviously right:
+
+- ט and ת are different letters that distinguish real names. Folding them
+  merges `טל` (the producer's own name) with `תל`.
+- תבריה/טבריה is a **transcription error**, not an orthographic variant. The
+  fuzzy layer already handles it — pg_trgm scores the pair very highly and
+  `names_are_similar` passes it to human confirmation.
+- Folding it into the unique key instead makes it a **silent automatic merge
+  with no human check**, which contradicts the governing rule that when the
+  system isn't sure, it asks.
+
+The rule, written into `entity_names.py`: **normalise only differences that
+are ALWAYS meaningless, never merely usually meaningless.** A false merge
+silently attributes one person's story to another with nothing in the UI to
+reveal it; a false split shows up in the extraction panel as two similar names
+and is fixable by confirming them the same. Do not "improve" this by adding
+confusable-letter pairs.
+
 ## Build chunks
 
-1. **Models + normalisation + the write path.** Extraction returns
-   `type`/`alternative_type`; writes `entities` + `entity_mentions` (with the
-   per-mention summary). Hebrew normalisation (final letters, ט/ת) for
-   `normalized_name`.
+1. **Models + normalisation + the write path.**
+   - ✅ **1a DONE** (`df25171`) — `entity_names.normalize_entity_name` and the
+     four ORM models.
+   - ⬜ **1b — RESUME HERE.** The write path: extraction returns
+     `{name, type, alternative_type, summary}`; a writer service upserts
+     `entities` on the unique constraint and inserts one `entity_mentions` row
+     per recording carrying that recording's own summary. Replaces
+     `analysis_graph.finalize_ingest_node`'s `add_episode` call. Note the
+     extraction prompt also needs the "if it fits no category it is not a
+     named entity — omit it" instruction (the `עכבר` case).
 2. **Import the 11 existing entities.** Verify the `מונטריאול` merge lands as
    ONE row with TWO mentions.
 3. **Move the seven read call sites off `graph_memory`.**
