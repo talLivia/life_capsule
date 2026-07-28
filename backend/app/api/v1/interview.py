@@ -20,6 +20,7 @@ from app.schemas import (
     PendingConfirmationResponse,
     RawSegmentResponse,
     SegmentIngestRequest,
+    SegmentExtractionResponse,
     SegmentPresignRequest,
     SegmentPresignResponse,
 )
@@ -351,6 +352,32 @@ async def list_session_segments(
         .order_by(RawSegment.question_index)
     )
     return result.scalars().all()
+
+
+@router.get("/segments/{segment_id}/extraction", response_model=SegmentExtractionResponse)
+async def get_segment_extraction(
+    segment_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """What the system understood from this recording — entities, topic tags,
+    how many utterance units it was split into, and the transcript.
+
+    Transparency, so a mishearing or a missed person is caught here rather
+    than later through a bad answer. Read-only.
+
+    All assembly lives in segment_extraction, which is also the only place
+    that knows entities currently come from Graphiti. This endpoint stays
+    valid when they move to Postgres.
+    """
+    from app.services.segment_extraction import get_segment_extraction as load
+
+    extraction = await load(db, segment_id, user.id)
+    if extraction is None:
+        # Same 404-for-both as delete: distinguishing "not yours" from
+        # "doesn't exist" would confirm another producer's segment id.
+        raise HTTPException(status_code=404, detail="Recording not found")
+    return extraction
 
 
 @router.delete("/segments/{segment_id}", status_code=status.HTTP_204_NO_CONTENT)

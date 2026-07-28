@@ -179,6 +179,36 @@ class RawSegmentResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ExtractedEntityResponse(BaseModel):
+    name: str
+    summary: Optional[str] = None
+    # Always null today: the graph stores one generic Entity label with no
+    # person/place/organisation distinction. Present so typed entities can
+    # land later without changing this shape. See segment_extraction.py.
+    kind: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class SegmentExtractionResponse(BaseModel):
+    """What the system understood from one recording — read-only, for the
+    producer to check and catch a mistake. Deliberately says nothing about
+    WHERE each piece is stored: entities are moving from Graphiti to
+    Postgres and this contract must not move with them."""
+
+    segment_id: str
+    question_asked: str
+    status: str
+    transcript: Optional[str] = None
+    topic_tags: List[str] = []
+    unit_count: int = 0
+    entities: List[ExtractedEntityResponse] = []
+    still_processing: bool = False
+    entities_unavailable: bool = False
+
+    model_config = {"from_attributes": True}
+
+
 class EntityConfirmRequest(BaseModel):
     """Answer to the currently-pending human_confirm question for a segment.
     `entity_name` must match the segment's live pending_confirmation payload —

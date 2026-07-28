@@ -1,9 +1,10 @@
 'use client'
 
 import { useState } from 'react'
-import { CheckCircle2, Clock, Loader2, Trash2, AlertTriangle } from 'lucide-react'
+import { CheckCircle2, Clock, Loader2, Trash2, AlertTriangle, Sparkles } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
+import { ExtractionModal } from '@/components/record/ExtractionModal'
 import type { ApiError, RawSegment } from '@/lib/types'
 
 /**
@@ -55,6 +56,8 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
   // slow delete doesn't disable the others or spin the wrong row.
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
+  // Which take's extraction panel is open, if any.
+  const [inspectingId, setInspectingId] = useState<string | null>(null)
 
   const handleDelete = async (segment: RawSegment) => {
     setDeletingId(segment.id)
@@ -96,14 +99,23 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
                   {text}
                 </p>
               </div>
-              <button
-                onClick={() => setConfirmingId(isConfirming ? null : segment.id)}
-                disabled={isDeleting}
-                className="shrink-0 w-9 h-9 flex items-center justify-center rounded-lg text-gray-400 hover:text-red-300 hover:bg-red-600/20 border border-transparent hover:border-red-500/50 disabled:opacity-40 transition-all duration-200"
-                aria-label={`Delete ${takeLabel(i, recordings.length).toLowerCase()}`}
-              >
-                {isDeleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => setInspectingId(segment.id)}
+                  className="btn-secondary py-1.5 px-3 text-sm"
+                >
+                  <Sparkles size={14} />
+                  Extracted from this
+                </button>
+                <button
+                  onClick={() => setConfirmingId(isConfirming ? null : segment.id)}
+                  disabled={isDeleting}
+                  className="w-9 h-9 flex items-center justify-center rounded-lg text-gray-400 hover:text-red-300 hover:bg-red-600/20 border border-transparent hover:border-red-500/50 disabled:opacity-40 transition-all duration-200"
+                  aria-label={`Delete ${takeLabel(i, recordings.length).toLowerCase()}`}
+                >
+                  {isDeleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                </button>
+              </div>
             </div>
 
             {isConfirming && (
@@ -150,6 +162,17 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
           </li>
         )
       })}
+      {inspectingId && (
+        <ExtractionModal
+          segmentId={inspectingId}
+          title={
+            recordings.length === 1
+              ? 'Your answer'
+              : takeLabel(recordings.findIndex(r => r.id === inspectingId), recordings.length)
+          }
+          onClose={() => setInspectingId(null)}
+        />
+      )}
     </ul>
   )
 }

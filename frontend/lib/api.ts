@@ -318,6 +318,11 @@ export const api = {
     await apiClient.delete(`/api/v1/interview/segments/${segmentId}`)
   },
 
+  getSegmentExtraction: async (segmentId: string) => {
+    const response = await apiClient.get(`/api/v1/interview/segments/${segmentId}/extraction`)
+    return response.data
+  },
+
   getPendingConfirmations: async () => {
     const response = await apiClient.get('/api/v1/interview/segments/pending-confirmations')
     return response.data

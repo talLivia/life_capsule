@@ -503,3 +503,128 @@ async def test_local_upload_rejects_non_video_content_type(
     )
     assert resp.status_code == 400
     stored.assert_not_awaited()
+
+
+# ── "Extracted from this": what the system understood ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_extraction_returns_everything_the_panel_shows(
+    client: AsyncClient, auth_headers, test_user, db_session, monkeypatch
+):
+    """One endpoint returns all four pieces, so the UI never learns that they
+    come from three different stores."""
+    from app.models import InterviewSession as IS, RawSegment as RS
+    from app.services import segment_extraction
+
+    session = IS(id="ext-sess", user_id=test_user.id, status="active")
+    db_session.add(session)
+    await db_session.flush()
+    db_session.add(RS(
+        id="ext-seg", interview_session_id=session.id, question_asked="Tell me about the army",
+        question_index=2, status="ready", video_key="segments/x/a.webm",
+        transcript="שירתתי בחיל האוויר", topic_tags=["army", "service"],
+    ))
+    await db_session.commit()
+
+    async def fake_entities(segment_id, group_id):
+        assert segment_id == "ext-seg"
+        return [segment_extraction.ExtractedEntity(name="חיל האוויר", summary="חיל שבו שירת הדובר")]
+
+    monkeypatch.setattr(segment_extraction, "_load_entities", fake_entities)
+
+    resp = await client.get("/api/v1/interview/segments/ext-seg/extraction", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["transcript"] == "שירתתי בחיל האוויר"
+    assert body["topic_tags"] == ["army", "service"]
+    assert body["entities"] == [
+        {"name": "חיל האוויר", "summary": "חיל שבו שירת הדובר", "kind": None}
+    ]
+    assert body["still_processing"] is False
+    assert body["entities_unavailable"] is False
+    # kind is null for every entity today — the graph stores no
+    # person/place/organisation distinction, and inventing one on a screen
+    # meant to show what the system ACTUALLY understood would defeat it.
+    assert all(e["kind"] is None for e in body["entities"])
+
+
+@pytest.mark.asyncio
+async def test_extraction_survives_the_entity_store_being_down(
+    client: AsyncClient, auth_headers, test_user, db_session, monkeypatch
+):
+    """A dead graph must not take the whole panel with it — the transcript is
+    the part most likely to reveal a mishearing, and it comes from Postgres.
+    The flag matters: an empty list would otherwise read as "no people found",
+    which is a completely different claim from "we couldn't look"."""
+    from app.models import InterviewSession as IS, RawSegment as RS
+    from app.services import segment_extraction
+
+    session = IS(id="ext-sess2", user_id=test_user.id, status="active")
+    db_session.add(session)
+    await db_session.flush()
+    db_session.add(RS(
+        id="ext-seg2", interview_session_id=session.id, question_asked="Q",
+        question_index=0, status="ready", transcript="some words",
+    ))
+    await db_session.commit()
+
+    async def boom(segment_id, group_id):
+        raise RuntimeError("neo4j unreachable")
+
+    monkeypatch.setattr(segment_extraction, "_load_entities", boom)
+
+    resp = await client.get("/api/v1/interview/segments/ext-seg2/extraction", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["entities_unavailable"] is True
+    assert body["entities"] == []
+    assert body["transcript"] == "some words", "the rest still comes through"
+
+
+@pytest.mark.asyncio
+async def test_extraction_flags_a_segment_still_being_analysed(
+    client: AsyncClient, auth_headers, test_user, db_session, monkeypatch
+):
+    """"Haven't looked yet" and "found nothing" are indistinguishable without
+    this, and they mean opposite things to someone checking for a mistake."""
+    from app.models import InterviewSession as IS, RawSegment as RS
+    from app.services import segment_extraction
+
+    session = IS(id="ext-sess3", user_id=test_user.id, status="active")
+    db_session.add(session)
+    await db_session.flush()
+    db_session.add(RS(
+        id="ext-seg3", interview_session_id=session.id, question_asked="Q",
+        question_index=0, status="pending_transcription",
+    ))
+    await db_session.commit()
+    monkeypatch.setattr(segment_extraction, "_load_entities", AsyncMock(return_value=[]))
+
+    resp = await client.get("/api/v1/interview/segments/ext-seg3/extraction", headers=auth_headers)
+    assert resp.json()["still_processing"] is True
+
+
+@pytest.mark.asyncio
+async def test_extraction_rejects_another_producers_recording(
+    client: AsyncClient, auth_headers, db_session
+):
+    from app.models import InterviewSession as IS, RawSegment as RS, User
+
+    other = User(
+        id="other-p2", email="other2@example.com", username="other2",
+        hashed_password="x", full_name="Other", role="producer",
+    )
+    db_session.add(other)
+    await db_session.flush()
+    db_session.add(IS(id="other-sess2", user_id=other.id, status="active"))
+    await db_session.flush()
+    db_session.add(RS(
+        id="other-seg2", interview_session_id="other-sess2", question_asked="Q",
+        question_index=0, status="ready", transcript="private words",
+    ))
+    await db_session.commit()
+
+    resp = await client.get("/api/v1/interview/segments/other-seg2/extraction", headers=auth_headers)
+    assert resp.status_code == 404
+    assert "private words" not in resp.text

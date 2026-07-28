@@ -122,6 +122,29 @@ export interface RawSegment {
   created_at: string
 }
 
+export interface ExtractedEntity {
+  name: string
+  summary?: string | null
+  /** Always null today — the graph stores no person/place/organisation
+   *  distinction. Present so typed entities can land without a shape change. */
+  kind?: string | null
+}
+
+/** What the system understood from one recording. Read-only. Says nothing
+ *  about where each piece is stored — entities are moving from Graphiti to
+ *  Postgres behind the endpoint. */
+export interface SegmentExtraction {
+  segment_id: string
+  question_asked: string
+  status: string
+  transcript?: string | null
+  topic_tags: string[]
+  unit_count: number
+  entities: ExtractedEntity[]
+  still_processing: boolean
+  entities_unavailable: boolean
+}
+
 export interface InterviewSessionState {
   session: InterviewSession
   questions: InterviewQuestion[]
