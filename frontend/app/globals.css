@@ -227,9 +227,19 @@
     box-shadow: 0 0 8px rgba(168,85,247,0.3), inset 0 0 8px rgba(168,85,247,0.05);
   }
 
-  /* ── Calm theme (/record only) — quiet, warm, low-contrast; deliberately
-     distinct from the rest of the app's neon dark theme since the
-     storyteller may be recording emotionally difficult content. ── */
+  /* ── Calm theme (/talk only) — quiet, warm, low-contrast; deliberately
+     distinct from the app's neon dark theme.
+
+     WAS /record too, and the reason given was that the storyteller may be
+     recording emotionally difficult content. That held while /record was a
+     standalone full-screen route, where the calm palette owned the whole
+     viewport. Once /record moved INSIDE the app shell, a warm cream panel
+     was rendering inside a dark shell with a gradient nav bar, and the
+     contrast read as a bug rather than as care — so the record screen moved
+     onto the shell's own system. /talk is still standalone and still calm.
+
+     Before reintroducing calm anywhere, check whether that surface owns its
+     whole viewport. Inside the shell it will look broken. ── */
   .calm-btn-primary {
     @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-semibold
            bg-calm-sage-600 hover:bg-calm-sage-700 text-white

@@ -114,11 +114,11 @@ export function RecordPanel() {
     return (
       <div className="flex items-center justify-center py-24 px-6">
         <div className="max-w-sm text-center flex flex-col items-center gap-4">
-          <ShieldOff size={28} className="text-calm-inkmuted dark:text-calm-inkmutedDark" />
-          <h1 className="text-lg font-semibold text-calm-ink dark:text-calm-inkDark">
+          <ShieldOff size={28} className="text-gray-500" />
+          <h1 className="text-lg font-bold text-white">
             This section is for the account owner
           </h1>
-          <p className="text-sm text-calm-inkmuted dark:text-calm-inkmutedDark">
+          <p className="text-sm text-gray-400">
             Recording is only available to the producer account that owns this story archive.
           </p>
         </div>
@@ -129,7 +129,7 @@ export function RecordPanel() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
-        <Loader2 size={26} className="animate-spin text-calm-sage-600" />
+        <Loader2 size={26} className="animate-spin text-primary-400" />
       </div>
     )
   }
@@ -138,8 +138,8 @@ export function RecordPanel() {
     return (
       <div className="flex items-center justify-center py-24 px-6">
         <div className="max-w-sm text-center flex flex-col items-center gap-4">
-          <p className="text-sm text-calm-ink dark:text-calm-inkDark">{loadError || 'Something went wrong'}</p>
-          <button onClick={load} className="calm-btn-primary">Try again</button>
+          <p className="text-sm text-gray-300">{loadError || 'Something went wrong'}</p>
+          <button onClick={load} className="btn-primary">Try again</button>
         </div>
       </div>
     )
@@ -162,22 +162,22 @@ export function RecordPanel() {
 
   if (justCompleted) {
     return (
-      <div className="text-calm-ink dark:text-calm-inkDark flex items-center justify-center py-24 px-6">
+      <div className="flex items-center justify-center py-24 px-6 animate-fade-in">
         <div className="max-w-md text-center flex flex-col items-center gap-5">
-          <PartyPopper size={32} className="text-calm-sage-600 dark:text-calm-sage-300" />
+          <PartyPopper size={32} className="text-primary-400" />
           <div>
-            <h1 className="text-2xl font-semibold mb-2">You&apos;ve answered every question</h1>
-            <p className="text-sm text-calm-inkmuted dark:text-calm-inkmutedDark">
+            <h1 className="text-2xl font-black gradient-text mb-2">You&apos;ve answered every question</h1>
+            <p className="text-sm text-gray-400">
               Your story is saved. Invite a family member from Settings so they can talk with
               it, or come back anytime to review or re-record any answer.
             </p>
           </div>
           <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
-            <Link href="/" className="calm-btn-primary justify-center">
+            <Link href="/" className="btn-primary justify-center">
               <Gift size={16} />
               Go invite family
             </Link>
-            <button onClick={() => setJustCompleted(false)} className="calm-btn-secondary justify-center">
+            <button onClick={() => setJustCompleted(false)} className="btn-secondary justify-center">
               <ListChecks size={16} />
               Review my answers
             </button>
@@ -188,24 +188,24 @@ export function RecordPanel() {
   }
 
   return (
-    <div className="text-calm-ink dark:text-calm-inkDark">
+    <div className="animate-fade-in">
       <EntityConfirmModal />
       <header className="max-w-3xl mx-auto px-6 pt-10 pb-6">
-        <div className="flex items-center gap-2 text-calm-sage-600 dark:text-calm-sage-300 mb-3">
+        <div className="flex items-center gap-2 text-primary-400 mb-3">
           <Feather size={16} />
           <span className="text-sm font-medium">Your Story</span>
         </div>
         <div className="flex items-center justify-between mb-2">
-          <p className="text-sm text-calm-inkmuted dark:text-calm-inkmutedDark">
+          <p className="text-sm text-gray-400">
             Question {currentIndex + 1} of {total}
           </p>
-          <p className="text-xs text-calm-inkmuted dark:text-calm-inkmutedDark">
+          <p className="text-xs text-gray-500">
             {answeredCount} of {total} answered
           </p>
         </div>
-        <div className="w-full h-1.5 rounded-full bg-calm-sage-100 dark:bg-calm-border overflow-hidden">
+        <div className="w-full h-1.5 rounded-full bg-surface-700 overflow-hidden">
           <div
-            className="h-full rounded-full bg-calm-sage-500 transition-all duration-300"
+            className="h-full rounded-full bg-gradient-to-r from-primary-600 to-accent-500 transition-all duration-300"
             style={{ width: `${((currentIndex + 1) / total) * 100}%` }}
           />
         </div>
@@ -213,17 +213,17 @@ export function RecordPanel() {
 
       <main className="max-w-3xl mx-auto px-6 pb-16 flex flex-col gap-6">
         {interviewComplete && (
-          <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-calm-sage-50 dark:bg-white/5 border border-calm-sage-300/50 text-calm-sage-700 dark:text-calm-sage-300 text-sm">
+          <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary-500/10 border border-primary-500/30 text-primary-300 text-sm">
             <PartyPopper size={16} />
             You&apos;ve answered every question — feel free to revisit any of them below.
           </div>
         )}
 
         <div>
-          <span className="text-xs uppercase tracking-wide text-calm-sage-600 dark:text-calm-sage-300 font-semibold">
+          <span className="text-xs uppercase tracking-wide text-primary-400 font-semibold">
             {question.category_label}
           </span>
-          <h1 className="text-2xl md:text-3xl font-semibold mt-1 leading-snug">
+          <h1 className="text-2xl md:text-3xl font-bold text-white mt-1 leading-snug">
             {question.text}
           </h1>
         </div>
@@ -251,7 +251,7 @@ export function RecordPanel() {
             stays the bigger button. */}
         <div className="flex flex-wrap items-center gap-3">
           {!showRecorder && (
-            <button onClick={() => setAddingTake(true)} className="calm-btn-secondary">
+            <button onClick={() => setAddingTake(true)} className="btn-secondary">
               <Plus size={16} />
               {recordings.length === 1 ? 'Add another answer' : 'Add another take'}
             </button>
@@ -268,7 +268,7 @@ export function RecordPanel() {
           <button
             onClick={() => goTo(currentIndex - 1)}
             disabled={isFirst}
-            className="calm-btn-secondary"
+            className="btn-secondary"
           >
             <ChevronLeft size={16} />
             Previous question
@@ -276,7 +276,7 @@ export function RecordPanel() {
           <button
             onClick={() => goTo(currentIndex + 1)}
             disabled={isLast}
-            className="calm-btn-secondary"
+            className="btn-secondary"
           >
             Next question
             <ChevronRight size={16} />

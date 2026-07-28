@@ -87,24 +87,24 @@ export function EntityConfirmModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4 animate-fade-in"
       role="dialog"
       aria-modal="true"
       aria-labelledby="entity-confirm-question"
     >
-      <div className="w-full max-w-md rounded-2xl bg-calm-card dark:bg-calm-cardDark border border-calm-border dark:border-calm-borderDark p-6 flex flex-col gap-4 shadow-xl">
-        <div className="flex items-center gap-2 text-calm-sage-600 dark:text-calm-sage-300">
+      <div className="w-full max-w-md glass-card p-6 flex flex-col gap-4">
+        <div className="flex items-center gap-2 text-primary-400">
           <HelpCircle size={18} />
           <span className="text-sm font-semibold">Quick check</span>
         </div>
-        <p id="entity-confirm-question" className="text-calm-ink dark:text-calm-inkDark text-base leading-relaxed">
+        <p id="entity-confirm-question" className="text-white text-base leading-relaxed">
           {question}
         </p>
 
         {isSingleCandidate ? (
           <>
             {candidates[0].summary && (
-              <p className="text-sm text-calm-inkmuted dark:text-calm-inkmutedDark italic">
+              <p className="text-sm text-gray-400 italic">
                 &ldquo;{candidates[0].summary}&rdquo;
               </p>
             )}
@@ -112,14 +112,14 @@ export function EntityConfirmModal() {
               <button
                 onClick={() => submit(false)}
                 disabled={answering}
-                className="calm-btn-secondary"
+                className="btn-secondary"
               >
                 No, different
               </button>
               <button
                 onClick={() => submit(true, candidates[0].uuid)}
                 disabled={answering}
-                className="calm-btn-primary"
+                className="btn-primary"
               >
                 {answering ? <Loader2 size={16} className="animate-spin" /> : 'Yes, same'}
               </button>
@@ -137,22 +137,22 @@ export function EntityConfirmModal() {
                     disabled={answering}
                     className={`flex items-start gap-3 text-left px-4 py-3 rounded-xl border transition-all duration-150
                       ${isSelected
-                        ? 'border-calm-sage-500 bg-calm-sage-50 dark:bg-white/10'
-                        : 'border-calm-border dark:border-calm-borderDark hover:border-calm-sage-300'
+                        ? 'border-primary-500/60 bg-primary-500/10'
+                        : 'border-white/10 hover:border-primary-500/40'
                       }`}
                   >
                     <span
                       className={`mt-0.5 w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0
-                        ${isSelected ? 'border-calm-sage-600 bg-calm-sage-600' : 'border-calm-inkmuted dark:border-calm-inkmutedDark'}`}
+                        ${isSelected ? 'border-primary-500 bg-primary-500' : 'border-gray-500'}`}
                     >
                       {isSelected && <Check size={11} className="text-white" />}
                     </span>
                     <span>
-                      <span className="block text-sm font-medium text-calm-ink dark:text-calm-inkDark">
+                      <span className="block text-sm font-medium text-white">
                         {c.name}
                       </span>
                       {c.summary && (
-                        <span className="block text-xs text-calm-inkmuted dark:text-calm-inkmutedDark mt-0.5">
+                        <span className="block text-xs text-gray-400 mt-0.5">
                           {c.summary}
                         </span>
                       )}
@@ -166,17 +166,17 @@ export function EntityConfirmModal() {
                 disabled={answering}
                 className={`flex items-center gap-3 text-left px-4 py-3 rounded-xl border transition-all duration-150
                   ${selectedUuid === '__new__'
-                    ? 'border-calm-sage-500 bg-calm-sage-50 dark:bg-white/10'
-                    : 'border-calm-border dark:border-calm-borderDark hover:border-calm-sage-300'
+                    ? 'border-primary-500/60 bg-primary-500/10'
+                    : 'border-white/10 hover:border-primary-500/40'
                   }`}
               >
                 <span
                   className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0
-                    ${selectedUuid === '__new__' ? 'border-calm-sage-600 bg-calm-sage-600' : 'border-calm-inkmuted dark:border-calm-inkmutedDark'}`}
+                    ${selectedUuid === '__new__' ? 'border-primary-500 bg-primary-500' : 'border-gray-500'}`}
                 >
                   {selectedUuid === '__new__' && <Check size={11} className="text-white" />}
                 </span>
-                <span className="flex items-center gap-1.5 text-sm font-medium text-calm-ink dark:text-calm-inkDark">
+                <span className="flex items-center gap-1.5 text-sm font-medium text-white">
                   <UserPlus size={14} />
                   Someone new, not listed above
                 </span>
@@ -193,7 +193,7 @@ export function EntityConfirmModal() {
                       : undefined
                 }
                 disabled={answering || !selectedUuid}
-                className="calm-btn-primary"
+                className="btn-primary"
               >
                 {answering ? <Loader2 size={16} className="animate-spin" /> : `Confirm "${entity_name}"`}
               </button>

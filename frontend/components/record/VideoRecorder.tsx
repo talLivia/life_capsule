@@ -353,10 +353,10 @@ export function VideoRecorder({
   }
 
   return (
-    <div className="calm-recorder rounded-2xl border border-calm-border dark:border-calm-borderDark bg-calm-card dark:bg-calm-cardDark overflow-hidden">
+    <div className="glass-card">
       {/* ── Acquiring camera ── */}
       {phase === 'acquiring' && (
-        <div className="flex flex-col items-center justify-center gap-3 py-24 text-calm-inkmuted dark:text-calm-inkmutedDark">
+        <div className="flex flex-col items-center justify-center gap-3 py-24 text-gray-400">
           <Loader2 size={28} className="animate-spin" />
           <p className="text-sm">Requesting camera access…</p>
         </div>
@@ -366,8 +366,8 @@ export function VideoRecorder({
       {phase === 'camera_error' && (
         <div className="flex flex-col items-center justify-center gap-4 py-20 px-6 text-center">
           <AlertTriangle size={28} className="text-amber-600" />
-          <p className="text-sm text-calm-ink dark:text-calm-inkDark max-w-sm">{cameraErrorMsg}</p>
-          <button onClick={() => acquireCamera()} className="calm-btn-primary">
+          <p className="text-sm text-gray-300 max-w-sm">{cameraErrorMsg}</p>
+          <button onClick={() => acquireCamera()} className="btn-primary">
             Try again
           </button>
         </div>
@@ -397,14 +397,14 @@ export function VideoRecorder({
                     this screen does — without it the camera stays live with
                     no way back to the takes already recorded. */}
                 {onCancel && (
-                  <button onClick={onCancel} className="calm-btn-secondary" aria-label="Cancel">
+                  <button onClick={onCancel} className="btn-secondary" aria-label="Cancel">
                     <X size={16} />
                     Cancel
                   </button>
                 )}
                 <button
                   onClick={startRecording}
-                  className="calm-btn-primary px-6 py-3 text-base"
+                  className="btn-primary px-6 py-3 text-base"
                   aria-label="Start recording"
                 >
                   <Video size={18} />
@@ -414,11 +414,11 @@ export function VideoRecorder({
             )}
             {phase === 'recording' && (
               <>
-                <button onClick={pauseRecording} className="calm-btn-secondary" aria-label="Pause">
+                <button onClick={pauseRecording} className="btn-secondary" aria-label="Pause">
                   <Pause size={16} />
                   Pause
                 </button>
-                <button onClick={stopRecording} className="calm-btn-primary" aria-label="Stop">
+                <button onClick={stopRecording} className="btn-primary" aria-label="Stop">
                   <Square size={16} />
                   Stop
                 </button>
@@ -426,11 +426,11 @@ export function VideoRecorder({
             )}
             {phase === 'paused' && (
               <>
-                <button onClick={resumeRecording} className="calm-btn-secondary" aria-label="Resume">
+                <button onClick={resumeRecording} className="btn-secondary" aria-label="Resume">
                   <Play size={16} />
                   Resume
                 </button>
-                <button onClick={stopRecording} className="calm-btn-primary" aria-label="Stop">
+                <button onClick={stopRecording} className="btn-primary" aria-label="Stop">
                   <Square size={16} />
                   Stop
                 </button>
@@ -464,11 +464,11 @@ export function VideoRecorder({
           <div className="flex flex-col gap-3 p-5">
             {phase === 'reviewing_new' && (
               <div className="flex items-center justify-center gap-3">
-                <button onClick={discardAndReRecord} className="calm-btn-secondary">
+                <button onClick={discardAndReRecord} className="btn-secondary">
                   <RotateCcw size={16} />
                   Re-record
                 </button>
-                <button onClick={acceptAndUpload} className="calm-btn-primary">
+                <button onClick={acceptAndUpload} className="btn-primary">
                   <UploadCloud size={16} />
                   Accept &amp; Continue
                 </button>
@@ -476,19 +476,19 @@ export function VideoRecorder({
             )}
             {phase === 'uploading' && (
               <div className="flex flex-col items-center gap-2">
-                <div className="w-full max-w-xs h-2 rounded-full bg-calm-sage-100 dark:bg-calm-border overflow-hidden">
+                <div className="w-full max-w-xs h-2 rounded-full bg-surface-700 overflow-hidden">
                   <div
-                    className="h-full rounded-full bg-calm-sage-600 transition-all duration-150"
+                    className="h-full rounded-full bg-gradient-to-r from-primary-600 to-accent-500 transition-all duration-150"
                     style={{ width: `${Math.round(uploadFraction * 100)}%` }}
                   />
                 </div>
-                <p className="text-xs text-calm-inkmuted dark:text-calm-inkmutedDark">
+                <p className="text-xs text-gray-500">
                   Uploading… {Math.round(uploadFraction * 100)}%
                 </p>
               </div>
             )}
             {phase === 'done' && (
-              <div className="flex items-center justify-center gap-2 text-calm-sage-700 dark:text-calm-sage-300 text-sm font-medium">
+              <div className="flex items-center justify-center gap-2 text-green-400 text-sm font-medium">
                 <CheckCircle2 size={16} />
                 Saved
               </div>

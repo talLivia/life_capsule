@@ -106,7 +106,7 @@ export function SegmentUpload({
       <button
         onClick={() => inputRef.current?.click()}
         disabled={busy}
-        className="calm-btn-secondary disabled:opacity-60"
+        className="btn-secondary disabled:opacity-60"
       >
         {busy ? <Loader2 size={16} className="animate-spin" /> : <FolderOpen size={16} />}
         {busy

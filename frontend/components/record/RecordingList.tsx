@@ -29,20 +29,20 @@ function statusLabel(status: string): { icon: React.ReactNode; text: string; ton
     return {
       icon: <CheckCircle2 size={14} />,
       text: 'Saved to your story',
-      tone: 'text-calm-sage-700 dark:text-calm-sage-300',
+      tone: 'text-green-400',
     }
   }
   if (status === 'failed') {
     return {
       icon: <AlertTriangle size={14} />,
       text: 'Something went wrong processing this',
-      tone: 'text-amber-600',
+      tone: 'text-amber-400',
     }
   }
   return {
     icon: <Clock size={14} />,
     text: 'Still processing…',
-    tone: 'text-calm-inkmuted dark:text-calm-inkmutedDark',
+    tone: 'text-gray-500',
   }
 }
 
@@ -84,11 +84,11 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
         return (
           <li
             key={segment.id}
-            className="rounded-2xl border border-calm-border dark:border-calm-borderDark bg-calm-card dark:bg-calm-cardDark overflow-hidden"
+            className="glass-card"
           >
-            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-calm-border dark:border-calm-borderDark">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-white/10">
               <div className="min-w-0">
-                <p className="text-sm font-medium text-calm-ink dark:text-calm-inkDark">
+                <p className="text-sm font-semibold text-white">
                   {takeLabel(i, recordings.length)}
                 </p>
                 <p className={`text-xs flex items-center gap-1.5 mt-0.5 ${tone}`}>
@@ -99,7 +99,7 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
               <button
                 onClick={() => setConfirmingId(isConfirming ? null : segment.id)}
                 disabled={isDeleting}
-                className="shrink-0 p-2 rounded-lg text-calm-inkmuted hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+                className="shrink-0 w-9 h-9 flex items-center justify-center rounded-lg text-gray-400 hover:text-red-300 hover:bg-red-600/20 border border-transparent hover:border-red-500/50 disabled:opacity-40 transition-all duration-200"
                 aria-label={`Delete ${takeLabel(i, recordings.length).toLowerCase()}`}
               >
                 {isDeleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
@@ -111,21 +111,21 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
               // what the archive learned from it — there is no undo, so it
               // asks first, inline rather than in a modal that would cover
               // the very video being judged.
-              <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-red-50 dark:bg-red-500/10 border-b border-red-200/60 dark:border-red-500/20">
-                <p className="text-sm text-red-800 dark:text-red-300">
+              <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-red-500/10 border-b border-red-500/20">
+                <p className="text-sm text-red-300">
                   Delete this recording for good? Its transcript goes too.
                 </p>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setConfirmingId(null)}
-                    className="calm-btn-secondary py-1.5 text-sm"
+                    className="btn-secondary py-1.5 text-sm"
                   >
                     Keep it
                   </button>
                   <button
                     onClick={() => handleDelete(segment)}
                     disabled={isDeleting}
-                    className="py-1.5 px-3 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-60 flex items-center gap-1.5"
+                    className="btn-danger py-1.5 disabled:opacity-40"
                   >
                     {isDeleting && <Loader2 size={14} className="animate-spin" />}
                     Delete
@@ -142,7 +142,7 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
                 className="w-full bg-black aspect-video"
               />
             ) : (
-              <div className="flex items-center justify-center gap-2 py-10 text-sm text-calm-inkmuted dark:text-calm-inkmutedDark">
+              <div className="flex items-center justify-center gap-2 py-10 text-sm text-gray-500">
                 <Loader2 size={16} className="animate-spin" />
                 Preparing playback…
               </div>
