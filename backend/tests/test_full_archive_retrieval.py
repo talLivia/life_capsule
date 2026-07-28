@@ -231,12 +231,65 @@ def test_format_annotated_transcript_lists_numbered_units_with_exact_times():
 
 
 def test_format_entity_map_empty():
-    assert ar._format_entity_map({}) == "(none extracted)"
+    assert ar._format_entity_map({}, {}) == "(none extracted)"
 
 
-def test_format_entity_map_sorted_lines():
-    out = ar._format_entity_map({"Ilana": ["seg-a"], "Nir": ["seg-a", "seg-b"]})
-    assert out == "- Ilana: seg-a\n- Nir: seg-a, seg-b"
+def test_format_entity_map_prints_recording_ordinals_not_uuids():
+    """THE fix. This block used to print raw segment UUIDs while the
+    transcript block labelled the same recordings RECORDING 1..N, so the
+    model could read "Ilana: 502fb283…" and had no way to discover that was
+    RECORDING 1. Every pointer here was unresolvable."""
+    out = ar._format_entity_map(
+        {"Ilana": ["seg-a"], "Nir": ["seg-a", "seg-b"]},
+        {"seg-a": 1, "seg-b": 2},
+    )
+    assert out == "- Ilana: RECORDING 1\n- Nir: RECORDING 1, RECORDING 2"
+    assert "seg-a" not in out
+
+
+def test_format_entity_map_omits_entities_whose_recordings_are_not_printed():
+    """A recording whose units were all filtered out gets no RECORDING
+    heading, so a pointer to it is the same unresolvable reference in a
+    quieter form — omit the entity rather than invent a number."""
+    out = ar._format_entity_map(
+        {"Ilana": ["seg-a"], "Ghost": ["seg-missing"]}, {"seg-a": 1}
+    )
+    assert out == "- Ilana: RECORDING 1"
+
+
+def test_format_entity_map_is_empty_when_nothing_is_resolvable():
+    out = ar._format_entity_map({"Ghost": ["seg-missing"]}, {"seg-a": 1})
+    assert out == "(none extracted)"
+
+
+def test_entity_map_ordinals_match_the_headings_the_transcript_prints():
+    """The invariant the whole fix rests on: a RECORDING number in the entity
+    map must be the SAME recording the transcript block gave that number to.
+    Both derive from _recording_ordinals so they cannot drift — this asserts
+    it against the rendered text rather than trusting the shared call."""
+    archive = [
+        ar.ArchiveSegment(
+            segment=_segment("seg-a", "About your childhood"),
+            chunks=[_chunk("seg-a", 0, 0.0, 2.0, "I grew up in Tiberias")],
+        ),
+        ar.ArchiveSegment(
+            segment=_segment("seg-b", "About the army"),
+            chunks=[_chunk("seg-b", 0, 0.0, 2.0, "I served in the air force")],
+        ),
+    ]
+    units = ar._build_units(archive)
+    ordinals = ar._recording_ordinals(archive, units)
+
+    transcript = ar._format_annotated_transcript(archive, units)
+    entity_block = ar._format_entity_map({"Tiberias": ["seg-a"]}, ordinals)
+
+    # The entity map points at RECORDING 1, and RECORDING 1's heading in the
+    # transcript is the childhood recording — the one that names Tiberias.
+    assert entity_block == "- Tiberias: RECORDING 1"
+    heading = next(
+        line for line in transcript.splitlines() if line.startswith("RECORDING 1")
+    )
+    assert "About your childhood" in heading
 
 
 # ── _parse_unit_selection ────────────────────────────────────────────────────

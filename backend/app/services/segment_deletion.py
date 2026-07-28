@@ -20,11 +20,12 @@ WHAT IS DELETED, and how each is verified:
 
   The stored video — by its own `video_key`.
 
-  The Graphiti episode(s) — via graph_memory.remove_episodes_for_segment,
-    which deletes only entities whose sole source was this segment and
-    ASSERTS afterwards that no episode with this segment's name remains.
-    A segment may have several episodes (older re-records duplicated them),
-    so all are removed, not the first.
+  Its entity mentions — by FK cascade, in the SAME transaction as the row.
+    Then any entity no recording mentions any more, via one orphan sweep.
+    An entity another recording still mentions survives, which used to be
+    Graphiti's "drop only when the MENTIONS count is 1" bookkeeping and is
+    now a NOT EXISTS the engine enforces. Nothing to assert afterwards: the
+    cascade cannot half-happen.
 
   Archive/entity-map/unit caches — invalidated, and re-warmed once at the end
     of a batch rather than per segment.
@@ -47,7 +48,7 @@ from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
 from app.models import InterviewSession, RawSegment
-from app.services import graph_memory
+from app.services import entity_store
 from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,11 @@ class DeletionResult:
     """What actually happened, so callers can report it rather than assume."""
 
     segments_deleted: int = 0
-    episodes_removed: int = 0
+    # Entities left with no mentions once this segment's were cascaded away.
+    # Renamed from `episodes_removed`: it counted Graphiti episodes, which
+    # were per-segment, so it could only ever equal segments_deleted. This
+    # counts something that actually varies and is worth reporting.
+    entities_removed: int = 0
     files_deleted: int = 0
     failures: List[str] = field(default_factory=list)
 
@@ -101,7 +106,7 @@ async def delete_all_producer_recordings(
         extra={
             "group_id": group_id,
             "segments": result.segments_deleted,
-            "episodes": result.episodes_removed,
+            "entities": result.entities_removed,
             "failures": len(result.failures),
         },
     )
@@ -114,17 +119,8 @@ async def _delete_segments(segment_ids: List[str], group_id: str) -> DeletionRes
         return result
 
     for segment_id in segment_ids:
-        # Graph first, then file, then the row. Ordering matters: the row
-        # holds the video_key, so losing it first would strand the file.
-        try:
-            result.episodes_removed += await graph_memory.remove_episodes_for_segment(
-                segment_id, group_id=group_id
-            )
-        except Exception as e:
-            msg = f"graph cleanup failed for {segment_id}: {e}"
-            logger.error(msg)
-            result.failures.append(msg)
-
+        # File first, then the row. Ordering matters: the row holds the
+        # video_key, so losing it first would strand the file.
         async with AsyncSessionLocal() as db:
             segment = (
                 await db.execute(select(RawSegment).where(RawSegment.id == segment_id))
@@ -141,7 +137,15 @@ async def _delete_segments(segment_ids: List[str], group_id: str) -> DeletionRes
                     # A missing file is fine — the point is that it's gone.
                     logger.warning(f"Could not delete stored file {video_key}: {e}")
 
-            await db.delete(segment)  # chunks cascade
+            # Deleting the row cascades to its entity_mentions, then the sweep
+            # removes any entity no recording mentions any more. ONE
+            # transaction, where this used to be a two-database dance with no
+            # way to make both halves succeed or fail together.
+            await db.delete(segment)  # chunks and entity_mentions cascade
+            await db.flush()
+            result.entities_removed += await entity_store.delete_orphaned_entities(
+                db, group_id
+            )
             await db.commit()
             result.segments_deleted += 1
 
@@ -151,7 +155,7 @@ async def _delete_segments(segment_ids: List[str], group_id: str) -> DeletionRes
 async def _refresh_caches(group_id: str, *, warm: bool) -> None:
     """Derived caches must not outlive the data they describe. Imported here
     rather than at module scope to avoid a circular import (retrieval imports
-    graph_memory, which this module also uses)."""
+    entity_store, which this module also uses)."""
     try:
         from app.services.full_archive_retrieval import (
             invalidate_archive_cache,

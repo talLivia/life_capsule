@@ -271,6 +271,16 @@ class RawSegment(Base):
     transcript_chunks = relationship(
         "TranscriptChunk", back_populates="raw_segment", cascade="all, delete-orphan"
     )
+    # Cascaded at BOTH layers, exactly like transcript_chunks above: the FK
+    # carries ondelete="CASCADE" for raw SQL, and this carries it for the ORM.
+    # Without the ORM half, deleting a recording through the session would
+    # leave its mentions behind on any backend not enforcing the FK — which
+    # includes SQLite unless PRAGMA foreign_keys is on, i.e. the entire test
+    # suite. The deletion path would then look correct in tests and orphan
+    # rows in production, or the reverse.
+    entity_mentions = relationship(
+        "EntityMention", back_populates="raw_segment", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_raw_segments_session_created", "interview_session_id", "created_at"),
@@ -471,6 +481,7 @@ class EntityMention(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     entity = relationship("Entity", back_populates="mentions")
+    raw_segment = relationship("RawSegment", back_populates="entity_mentions")
 
 
 class RelationType(Base):

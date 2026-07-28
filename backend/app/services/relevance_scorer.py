@@ -43,7 +43,7 @@ from sqlalchemy.orm import joinedload
 
 from app.database import AsyncSessionLocal
 from app.models import RawSegment, TranscriptChunk
-from app.services import embeddings, graph_memory
+from app.services import embeddings, entity_store
 from app.services.cache import cache_service
 from app.services.retrieval_service import _short_summary
 
@@ -126,19 +126,23 @@ async def score_candidates(
             select(RawSegment).where(RawSegment.id.in_(candidate_segment_ids))
         )
         segments_by_id = {seg.id: seg for seg in result.scalars().all()}
+        # One query for every candidate, replacing a per-segment graph round
+        # trip inside the loop below. Fail-soft as a whole: entity names feed
+        # only the recency term, so losing them costs one signal, not the score.
+        try:
+            entities_by_segment = await entity_store.get_entity_names_for_segments(
+                db, candidate_segment_ids, group_id
+            )
+        except Exception as e:
+            logger.warning(f"Could not fetch entities for {len(candidate_segment_ids)} segments: {e}")
+            entities_by_segment = {}
 
     raw = []
     for sid in candidate_segment_ids:
         seg = segments_by_id.get(sid)
         if seg is None:
             continue
-        try:
-            entity_names = await graph_memory.get_episode_entity_names(sid, group_id=group_id)
-        except Exception as e:
-            logger.warning(f"Could not fetch entities for segment {sid}: {e}")
-            entity_names = []
-
-        recency = await _recency_raw_score(entity_names, session_id)
+        recency = await _recency_raw_score(entities_by_segment.get(sid, []), session_id)
         importance = seg.importance_score if seg.importance_score is not None else 0.0
         relevance = embeddings.cosine_similarity(question_embedding, seg.embedding)
 

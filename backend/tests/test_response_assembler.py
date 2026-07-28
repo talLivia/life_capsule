@@ -136,10 +136,10 @@ async def test_approved_candidate_injects_bridge_phrase(
         ra.relevance_scorer, "score_candidates", AsyncMock(return_value=[_scored(candidate.id)])
     )
 
-    async def fake_entities(segment_id, group_id=None):
-        return ["Gila"] if segment_id in (primary.id, candidate.id) else []
+    async def fake_entities(segment_ids, group_id=None):
+        return {sid: {"Gila"} for sid in segment_ids if sid in (primary.id, candidate.id)}
 
-    monkeypatch.setattr(ra.graph_memory, "get_episode_entity_names", fake_entities)
+    monkeypatch.setattr(ra, "_entity_names_for", fake_entities)
     mock_add_visited = AsyncMock()
     mock_record_mentions = AsyncMock()
     monkeypatch.setattr(ra.cache_service, "add_visited", mock_add_visited)
@@ -180,14 +180,14 @@ async def test_multiple_candidates_cycle_bridge_phrases(
         AsyncMock(return_value=[_scored(c1.id, 2.0), _scored(c2.id, 1.5)]),
     )
 
-    async def fake_entities(segment_id, group_id=None):
+    async def fake_entities(segment_ids, group_id=None):
         return {
-            primary.id: ["Gila", "Dan"],
-            c1.id: ["Gila"],
-            c2.id: ["Dan"],
-        }.get(segment_id, [])
+            primary.id: {"Gila", "Dan"},
+            c1.id: {"Gila"},
+            c2.id: {"Dan"},
+        }
 
-    monkeypatch.setattr(ra.graph_memory, "get_episode_entity_names", fake_entities)
+    monkeypatch.setattr(ra, "_entity_names_for", fake_entities)
     monkeypatch.setattr(ra.cache_service, "add_visited", AsyncMock())
     monkeypatch.setattr(ra.cache_service, "record_entity_mentions", AsyncMock())
 
@@ -217,11 +217,11 @@ async def test_candidate_without_shared_entity_is_skipped(
         ra.relevance_scorer, "score_candidates", AsyncMock(return_value=[_scored(candidate.id)])
     )
 
-    async def fake_entities(segment_id, group_id=None):
+    async def fake_entities(segment_ids, group_id=None):
         # Disjoint entity sets — no shared entity between primary and candidate.
-        return ["Gila"] if segment_id == primary.id else ["Dan"]
+        return {sid: ({"Gila"} if sid == primary.id else {"Dan"}) for sid in segment_ids}
 
-    monkeypatch.setattr(ra.graph_memory, "get_episode_entity_names", fake_entities)
+    monkeypatch.setattr(ra, "_entity_names_for", fake_entities)
     mock_add_visited = AsyncMock()
     monkeypatch.setattr(ra.cache_service, "add_visited", mock_add_visited)
     monkeypatch.setattr(ra.cache_service, "record_entity_mentions", AsyncMock())

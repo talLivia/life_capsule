@@ -34,7 +34,7 @@ from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
 from app.models import RawSegment
-from app.services import graph_memory, relevance_scorer, retrieval_service
+from app.services import entity_store, relevance_scorer, retrieval_service
 from app.services.cache import cache_service
 
 logger = logging.getLogger(__name__)
@@ -69,18 +69,30 @@ async def _fetch_transcripts(segment_ids: List[str]) -> Dict[str, str]:
         }
 
 
-async def _shared_entity_name(
-    primary_entities: Set[str], candidate_id: str, group_id: str
-) -> Optional[str]:
+async def _entity_names_for(segment_ids: List[str], group_id: str) -> Dict[str, Set[str]]:
+    """segment id -> its entity names, for a whole set at once.
+
+    Fail-soft: these names only decide the WORDING of a bridge sentence
+    between two recordings, never which recordings are used, so losing them
+    costs a generic bridge rather than an answer.
+    """
+    if not segment_ids:
+        return {}
     try:
-        candidate_entities = set(
-            await graph_memory.get_episode_entity_names(candidate_id, group_id=group_id)
-        )
+        async with AsyncSessionLocal() as db:
+            by_segment = await entity_store.get_entity_names_for_segments(
+                db, segment_ids, group_id
+            )
     except Exception as e:
-        logger.warning(f"Could not fetch entities for candidate {candidate_id}: {e}")
-        return None
-    shared = primary_entities & candidate_entities
-    return next(iter(shared), None)
+        logger.warning(f"Could not fetch entities for {len(segment_ids)} segments: {e}")
+        return {}
+    return {sid: set(names) for sid, names in by_segment.items()}
+
+
+def _shared_entity_name(
+    primary_entities: Set[str], candidate_entities: Set[str]
+) -> Optional[str]:
+    return next(iter(primary_entities & candidate_entities), None)
 
 
 async def assemble_response(
@@ -114,20 +126,20 @@ async def assemble_response(
     used_entity_names: Set[str] = set()
 
     if approved_ids:
+        # One query covering the primaries AND every candidate, replacing a
+        # graph round trip per primary plus another per candidate.
+        entities_by_segment = await _entity_names_for(primary_ids + approved_ids, group_id)
         primary_entities: Set[str] = set()
         for pid in primary_ids:
-            try:
-                primary_entities.update(
-                    await graph_memory.get_episode_entity_names(pid, group_id=group_id)
-                )
-            except Exception as e:
-                logger.warning(f"Could not fetch entities for primary segment {pid}: {e}")
+            primary_entities.update(entities_by_segment.get(pid, set()))
 
         bridge_index = 0
         for cid in approved_ids:
             if cid not in transcripts:
                 continue
-            shared_name = await _shared_entity_name(primary_entities, cid, group_id)
+            shared_name = _shared_entity_name(
+                primary_entities, entities_by_segment.get(cid, set())
+            )
             if not shared_name:
                 # expand_graph only surfaced this candidate because it DID
                 # share an entity with the primary segment(s) — if that

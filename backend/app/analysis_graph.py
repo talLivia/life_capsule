@@ -5,13 +5,9 @@ human-in-the-loop pause when an entity name in the new segment might (or
 might not) be the same real-world person/place/event as one already in the
 story archive.
 
-Entities used to be written to Graphiti/Neo4j here (`add_episode`). They are
-now written by `services/entity_store.py` — see `docs/PROJECT_STATUS.md` for
-why, and note the transitional state this leaves: extraction and the WRITE
-path are Postgres, while the disambiguation READ below (`get_entity_candidates`)
-still queries the graph until the read call sites move. The practical effect
-is that a name first introduced after this change is not yet offered as a
-confirmation candidate for later recordings.
+Entities used to be written to Graphiti/Neo4j here (`add_episode`) and read
+back from it for disambiguation. Both now go through `services/entity_store.py`
+against Postgres — see `docs/PROJECT_STATUS.md` for why.
 
 Nodes, in order: transcribe -> embed_transcript -> extract_topics ->
 check_entities -> human_confirm (loops until every ambiguous name this
@@ -27,13 +23,13 @@ extract_topics: an embedding failure leaves embedding=None (relevance_score
 degrades to 0 for that segment, per relevance_scorer.py) rather than
 failing the whole segment.
 
-Ambiguity heuristic (check_entities): `graph_memory.get_entity_candidates`
-returns candidates ranked by relevance but WITHOUT a similarity score or a
-minimum-relevance floor (that's its public contract, from Prompt 3 —
-filtering is deliberately left to the caller). Confirmed live against a
-real graph: querying a single-node graph for a totally unrelated name still
-returns that node as a "candidate", so a lexical-similarity gate
-(`graph_memory.names_are_similar` — shared with retrieval_service.py's
+Ambiguity heuristic (check_entities): `entity_store.get_entity_candidates`
+returns candidates ranked by similarity but WITHOUT a minimum floor (that's
+its public contract, carried over deliberately — filtering is left to the
+caller). Confirmed live both before and after the move: querying a
+nearly-empty archive for a totally unrelated name still returns rows as
+"candidates", so a lexical-similarity gate
+(`entity_names.names_are_similar` — shared with retrieval_service.py's
 Prompt 6/10 entity-based primary matching) runs first — only a name that's
 actually similar to a candidate's name (substring or a high SequenceMatcher
 ratio) counts as a real match at all. A name with zero real matches is
@@ -65,8 +61,7 @@ past the request that triggered it (the storyteller may finish the whole
 interview before answering a disambiguation question), so state is persisted
 via `AsyncPostgresSaver` against the same Postgres database as the app
 (psycopg3 — see requirements.txt). `_open_checkpointer` is swappable
-(monkeypatched to an in-memory saver in tests) the same way
-graph_memory.py's `_build_graphiti` is.
+(monkeypatched to an in-memory saver in tests).
 """
 
 from __future__ import annotations
@@ -86,9 +81,9 @@ from sqlalchemy import delete, select
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import InterviewSession, RawSegment, TranscriptChunk, User
-from app.services import embeddings, entity_extraction, entity_store, graph_memory
+from app.services import embeddings, entity_extraction, entity_store
 from app.services.entity_extraction import ExtractedEntity
-from app.services.graph_memory import names_are_similar as _names_are_similar
+from app.services.entity_names import names_are_similar as _names_are_similar
 from app.services.llm import llm_service
 from app.services.storage import storage_service
 from app.services.stt import stt_service
@@ -518,7 +513,8 @@ async def check_entities_node(state: AnalysisState) -> dict:
             continue
         seen.add(key)
 
-        candidates = await graph_memory.get_entity_candidates(name, group_id=group_id)
+        async with AsyncSessionLocal() as db:
+            candidates = await entity_store.get_entity_candidates(db, name, group_id)
         # get_entity_candidates has no minimum-relevance floor by design
         # (Prompt 3: "deliberately NOT a single 'best' match" — filtering is
         # the caller's job) — confirmed live that it returns a small graph's
@@ -767,8 +763,7 @@ async def _default_checkpointer():
         yield saver
 
 
-# Swappable in tests (an InMemorySaver needs no real Postgres) — mirrors
-# graph_memory.py's _build_graphiti() swap-in pattern.
+# Swappable in tests (an InMemorySaver needs no real Postgres).
 _open_checkpointer = _default_checkpointer
 
 

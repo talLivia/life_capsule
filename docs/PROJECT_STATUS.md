@@ -11,9 +11,9 @@ updated as work lands.
 
 # NEXT UP: move entities from Graphiti/Neo4j into Postgres
 
-**This is the agreed next piece of work.** Plan settled 2026-07-28; **chunks 1
-and 2 are done and AWAITING REVIEW** — see "Build chunks" below. Read this
-section before touching anything entity-related.
+**This is the agreed next piece of work.** Plan settled 2026-07-28; **chunks 1,
+2 and 3 are DONE and signed off — chunk 4 is next.** See "Build chunks" below.
+Read this section before touching anything entity-related.
 
 ## Where it stands right now
 
@@ -28,8 +28,11 @@ section before touching anything entity-related.
 - **Chunk 2 has landed**: the 11 graph entities are imported (10 rows — `עכבר`
   dropped). `scripts/import_graph_entities.py` is the record of what was
   decided and is idempotent.
-- **AWAITING REVIEW — do not start chunk 3 until the imported rows are
-  signed off.**
+- **Chunk 3 has landed**: all seven read call sites are on Postgres. No
+  functional `graph_memory` reference remains in `app/`; what is left is
+  historical comments and the module's own tests, both of which go in chunk 5.
+- **Chunks 1-3 are REVIEWED AND SIGNED OFF** (2026-07-28). The import was
+  approved as-is, including the deliberate NULL summary.
 - **Migration `0012` is APPLIED** to the live Neon database (`alembic current`
   = `0012 (head)`). Verified afterwards: 4 tables, 5 self-entities (1 via the
   `full_name → username` fallback), 20 relation types with 6 tree-bearing,
@@ -78,29 +81,38 @@ covers it, including the exact Neon URL shape that caused this.
 - **The transcript is stored twice** and the copies can drift. `חיל האוויר`
   survived in the graph on a transcript that no longer existed in Postgres.
 
-## Call-site audit — SEVEN, not three
+## Call-site audit — SEVEN, not three · ALL MOVED
 
-The original assumption was three uses. There are seven, spanning **all three
-chat modes**, so this is not a v2-only change:
+The original assumption was three uses. There were seven, spanning **all three
+chat modes**, so this was not a v2-only change. All are now on Postgres:
 
-| Call site | Function | Mode |
-| --- | --- | --- |
-| `full_archive_retrieval._build_entity_map` | `get_episode_entity_names` | v2 |
-| `segment_deletion` (+ `transcribe_node`, **✅ removed in 1b**) | `remove_episodes_for_segment` | all |
-| `analysis_graph.check_entities_node` | `get_entity_candidates` | ingestion |
-| ~~`analysis_graph.finalize_ingest_node`~~ **✅ DONE in 1b** | was `add_episode` (**the write path**) | ingestion |
-| `segment_extraction._load_entities` | direct Cypher (name + summary) | panel |
-| `retrieval_service` ×4 | `find_related_episodes`, `..._scored`, `get_episode_entity_names`, `get_entity_candidates` | **v1 `video_clips`** |
-| `relevance_scorer` + `response_assembler` ×3 | `get_episode_entity_names` | **`avatar`** |
+| Call site | Was | Now | Mode |
+| --- | --- | --- | --- |
+| `full_archive_retrieval._build_entity_map` | `get_episode_entity_names` ×N | `get_entity_names_for_segments` (**1 query**) | v2 |
+| `segment_deletion` (+ `transcribe_node`, removed in 1b) | `remove_episodes_for_segment` | FK cascade + `delete_orphaned_entities` | all |
+| `analysis_graph.check_entities_node` | `get_entity_candidates` | `entity_store.get_entity_candidates` (pg_trgm) | ingestion |
+| `analysis_graph.finalize_ingest_node` | `add_episode` (**write path**) | `write_segment_entities` | ingestion |
+| `segment_extraction._load_entities` | direct Cypher | `get_segment_entities` | panel |
+| `retrieval_service` ×4 | `find_related_episodes`, `..._scored`, `get_episode_entity_names`, `get_entity_candidates` | `find_segments_mentioning[_scored]`, bulk names, candidates | **v1 `video_clips`** |
+| `relevance_scorer` + `response_assembler` ×3 | `get_episode_entity_names` ×N | `get_entity_names_for_segments` (**1 query each**) | **`avatar`** |
 
-All seven reduce to two primitives, both plain joins on `entity_mentions`:
+All seven reduced to two primitives, both plain joins on `entity_mentions`:
 "entity names for segment X" and "segments mentioning entity Y".
 
-Two findings that make this smaller than it looks:
-- **`max_hops` is 1 at every call site**, making the Cypher `RELATES_TO*0..0`
-  — matching only the origin node. No traversal happens anywhere today.
-- **`find_related_episodes_scored`'s "score" is `COUNT(DISTINCT entity)`** —
-  a `GROUP BY` with `ORDER BY count DESC`.
+Two findings that made this smaller than it looked, both confirmed while doing it:
+- **`max_hops` was 1 at every call site**, making the Cypher `RELATES_TO*0..0`
+  — matching only the origin node. No traversal happened anywhere, so the
+  parameter was **deleted rather than reimplemented**: carrying it forward
+  would have advertised a capability that never worked.
+- **`find_related_episodes_scored`'s "score" was `COUNT(DISTINCT entity)`** —
+  a `GROUP BY` with `ORDER BY count DESC`, now stated directly in SQL.
+
+Two things got BETTER rather than merely moving:
+- **Lookups match on `normalized_name`**, so a final-letter or spacing variant
+  now finds its entity. The graph matched names exactly and missed those.
+- **`names_are_similar` moved to `entity_names.py`** — it never had anything
+  to do with the graph, and its being a purely lexical gate is exactly why the
+  graph's hybrid vector search bought nothing.
 
 ## Final schema decisions
 
@@ -202,8 +214,10 @@ confusable-letter pairs.
 2. ✅ **DONE — the 11 existing entities are imported.** 10 rows, 11 mentions;
    `מונטריאול` verified as ONE row with TWO mentions by direct query.
    `scripts/import_graph_entities.py`, idempotent, dry-run by default.
-3. ⬜ **Move the seven read call sites off `graph_memory` — NEXT, once the
-   import is signed off.**
+3. ✅ **DONE — all seven read call sites moved off `graph_memory`.** No
+   functional reference to it remains in `app/`. The read primitives live in
+   `entity_store.py` alongside the write path. Folded in as planned: the
+   entity map now emits **recording ordinals** instead of raw segment UUIDs.
 4. **Batched confirmation** covering identity + type.
 5. **Delete `graph_memory`**, drop the Neo4j/Graphiti dependencies and config.
 
@@ -242,14 +256,32 @@ measured 0.991 with *and* without the entity map.
 
 - **After chunk 2: entities must be visible for review before going further.**
   Show the imported rows (name, type, mentions, per-mention summaries).
-- **After chunk 3: re-run the eval.** `python scripts/rebaseline_accuracy.py`.
-  Current baseline **v2 = 0.999, stdev 0.000 over 5 runs**.
+- ✅ **DONE — eval re-run after chunk 3: v2 = 0.999, stdev 0.000 over 5 runs,
+  every question returning ONE distinct answer. Identical to the baseline, so
+  moving all seven read sites cost nothing.**
 - **Nothing irreversible before explicit confirmation.** In particular chunk 5
   (deleting `graph_memory`, dropping Neo4j) does not happen until the earlier
   chunks are reviewed and signed off. Neo4j data is the only copy of the
   entity summaries until chunk 2 has been verified.
 
-## One imported summary is NULL, deliberately
+## Chunk 1b verified against real data
+
+`097b606b` was re-run through the real ingestion path after the import —
+deliberately on ONE segment, before chunk 3 makes the read sites depend on
+this. It exercised extraction, disambiguation and the write path end to end
+against the live database:
+
+- extraction returned `{מונטריאול, place, alternative_type=None}` and correctly
+  **omitted `תכנות` (a common noun) and `לארץ` (a generic reference)** — the
+  `עכבר` rule working on a case it had never seen. On
+  `gemini-flash-lite-latest`, the weakest model in the config.
+- `check_entities_node` auto-resolved against the frozen graph (exact match),
+  and `_apply_entity_resolutions` carried it into the write.
+- the merge held: still **ONE** entity row with **TWO** mentions, totals
+  unchanged at 10 entities / 11 mentions — no duplicate, no orphan swept.
+- the NULL below became a real per-recording summary.
+
+## The one imported summary that was NULL — now filled
 
 `מונטריאול` is the only entity two recordings mention, and Graphiti stored one
 summary per entity. That summary — "the place he flew to for a year and a half
@@ -262,10 +294,15 @@ So it is attributed to `5d128933`, and **`097b606b`'s mention has `summary =
 NULL`**. Copying it to both would make the career recording claim something it
 never said — the exact failure per-mention summaries exist to prevent.
 
-**To fill it in:** re-run that segment through the normal ingestion path.
-Chunk 1b's extractor produces a per-recording summary by construction, so this
-needs no special tooling — it is the one place where the import is lossy and
-the fix is ordinary.
+**RESOLVED** by re-running that segment through the normal ingestion path (see
+above). It now reads "המקום שבו למד הדובר תכנות". No special tooling was
+needed — the extractor produces a per-recording summary by construction.
+
+Note the priority this was handled at, which is the right one: summaries feed
+only the extraction panel, never the archive read. `_format_entity_map` is
+names and ids, with no summaries at all, so a NULL here cost a blank line in a
+popup and nothing else. The re-run was worth doing to exercise the write path
+on real data, not to fill the field.
 
 ## Type backfill for the 11 existing entities
 
@@ -276,10 +313,37 @@ Classified from the stored summaries — no LLM needed at this scale, and 9 of
 | --- | --- |
 | `person` (6) | אילנה, צבי, ניר, חן, עדי, רז — summaries read אמא/אבא/אח של הדובר |
 | `place` (2) | טבריה, מונטריאול |
-| `organisation` (2) | חיל האוויר, **הכפר הירוק** (confirmed: boarding school) |
-| skip (1) | **עכבר** — a common noun, not a named entity. Confirmed decision: extraction should have skipped it. Add to the extraction prompt: *if it fits no category, it is not a named entity — omit it.* |
+| `organisation` (2) | חיל האוויר, **הכפר הירוק** — see below |
+| skip (1) | **עכבר** — a common noun, not a named entity. Confirmed decision: extraction should have skipped it. Now in the extraction prompt: *if it fits no category, it is not a named entity — omit it.* |
 
-## Open finding: the entity map's ids are unresolvable
+**`הכפר הירוק` is `organisation` on the PRODUCER'S knowledge, not on the
+text.** Its summary reads "where the speaker studied from age 14", which on
+its face describes a place; the producer confirmed it is a boarding school.
+**Do not "correct" this to `place` from the transcript** — the transcript
+cannot settle it, which is exactly why `alternative_type` exists and why this
+entity is the plan's worked example of a torn classification. If the extractor
+ever proposes `place` for it, that is the confirmation flow doing its job, not
+a regression.
+
+## Chunk 3 results: the latency claim, measured
+
+`_build_entity_map` over the same 12 recordings, 6 identical passes:
+
+| | mean | range | spread |
+| --- | --- | --- | --- |
+| Neo4j, one round trip per recording | **4.13s** | 1.35–9.55s | 8.20s |
+| Postgres, ONE bulk query | **0.372s** | 0.351–0.475s | **0.124s** |
+
+**~11x faster, and the run-to-run variance is gone** — which was always the
+bigger prize. It was 100% of a turn's latency variance and the reason seek
+mode could not be measured at all (see "After this migration").
+
+Note what actually fixed it: the per-segment SHAPE, not the database. The
+graph had no bulk form, so the fix is `get_entity_names_for_segments` doing
+one query, and the same fix applied to `relevance_scorer` and
+`response_assembler`, which each looped a round trip per candidate.
+
+## RESOLVED: the entity map's ids were unresolvable
 
 Rendering both prompt blocks side by side showed that
 `_format_annotated_transcript` labels recordings `RECORDING 1..12` while
@@ -294,17 +358,82 @@ decision made elsewhere — the transcript formatter goes out of its way NOT to
 print segment UUIDs, because the model would return one where a unit id was
 expected and silently produce a no-story.
 
-**Action (fold into chunk 3):** emit recording ordinals — `- אילנה: RECORDING
-1`. Then re-run the eval with and without the map, so the decision to keep or
-drop it rests on evidence rather than a confound.
+**FIXED in chunk 3.** `_format_entity_map` now emits recording ordinals, from
+the SAME `_recording_ordinals` helper `_format_annotated_transcript` uses for
+its headings — so the two cannot drift back apart. Verified against the live
+archive:
+
+```
+- מונטריאול: RECORDING 5, RECORDING 7
+- חיל האוויר: RECORDING 3
+```
+
+RECORDING 5 is "what did you do right after discharge" and 7 is "how did you
+start your professional path" — the two recordings that actually name it.
+
+An entity whose recordings were all filtered out of the transcript block is
+now **omitted** rather than printed with a dangling pointer: a name pointing
+at a recording the model cannot see is the same unresolvable reference in a
+quieter form.
 
 Note also that `_format_entity_map` contains **no summaries at all** — it is
-purely name → ids. Per-mention summaries therefore cost the prompt nothing.
+purely name → recordings. Per-mention summaries therefore cost the prompt
+nothing.
+
+### And the answer, now that the measurement is clean
+
+Re-ran the scored set 3× with and 3× without the map, against the FIXED
+version:
+
+| | mean | per-run |
+| --- | --- | --- |
+| WITH map (ordinals) | **0.9987** | 0.999, 0.999, 0.999 |
+| WITHOUT map | **0.9987** | 0.999, 0.999, 0.999 |
+
+**Identical on every one of the 7 questions**, `montreal` included — the
+cross-recording case the map most plausibly helps. So the original
+0.991-either-way finding survives the fix: the map was not being ignored
+because its pointers were broken, it simply is not needed on an archive this
+size. The model reads all 12 recordings in one call and finds the connection
+itself.
+
+Two caveats before drawing a conclusion:
+- **The scored set has no broad question**, the known eval gap, and that is
+  where a name→recording index is most likely to earn its keep.
+- The archive is ~2.1K tokens. A map matters when the model cannot hold
+  everything at once, which is exactly the regime v2 does not yet reach.
+
+**OPEN DECISION — do not drop it unilaterally.** It now costs 0.372s and one
+query, so keeping it is nearly free and it is the obvious thing to want when
+the archive grows past a full context. Dropping it would remove code that
+measures as useless TODAY on a set that cannot test it properly. Recommend:
+keep, and revisit together with the coarse pre-filter at the ~150K-token
+threshold.
 
 ## What we give up (honest list)
 
-1. **Automatic entity-summary consolidation** — solved better by per-mention
-   summaries; no longer a loss.
+1. ~~**Automatic entity-summary consolidation**~~ — **NOT GIVEN UP, because it
+   never worked.** This was listed as the one real capability being traded
+   away. Chunk 2 disproved it on the only entity where it could be tested.
+
+   `מונטריאול` is the sole entity two recordings mention, so it is the sole
+   case where Graphiti had anything to consolidate. Its stored summary — "the
+   place he flew to for a year and a half right after discharge from the air
+   force" — is a restatement of `5d128933` and contains **nothing** from
+   `097b606b` ("when I was in Montreal I studied programming"). It did not
+   merge two accounts; it kept one and dropped the other, silently, with the
+   result still presented as the entity's summary.
+
+   The replacement is strictly better, and measurably so: re-running
+   `097b606b` through chunk 1b's path produced "המקום שבו למד הדובר תכנות"
+   ("the place where the speaker studied programming") — exactly the content
+   the consolidation had discarded. **Two mentions now hold two accounts where
+   the graph held one.**
+
+   Worth remembering as a general caution: this capability was on the "honest
+   list" for a year on the strength of the feature existing, never on evidence
+   of it working. The archive contained exactly one case that could test it,
+   and it failed.
 2. **Hybrid semantic entity search** (embeddings + BM25 + RRF) in
    `get_entity_candidates`. Costs nothing today because `names_are_similar` (a
    purely lexical gate) discards it downstream — but we lose the *option* of
@@ -427,7 +556,7 @@ Queued, in no fixed order — both are blocked on this work landing:
   `MIN_SPEECH_MS=400`. Gating is enforced **during** a recording, not just at
   its start — see the mic section below for why that mattered.
 
-**Tests:** 504 backend passing; frontend `tsc`, `eslint`, `next build` clean.
+**Tests:** 524 backend passing; frontend `tsc`, `eslint`, `next build` clean.
 
 ---
 
@@ -593,5 +722,5 @@ cd backend
 python scripts/rebaseline_accuracy.py      # v2 accuracy as a MEAN over runs — quote this
 python scripts/compare_retrieval_modes.py  # v1 vs v2: consistency, latency, calls, tokens
 python scripts/seed_sweep.py               # single-run IoU vs known-correct
-python -m pytest -q -m 'not integration'   # 504 tests
+python -m pytest -q -m 'not integration'   # 524 tests
 ```

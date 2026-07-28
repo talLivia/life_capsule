@@ -1,5 +1,5 @@
 """
-Tests for relevance_scorer.py (Prompt 7). embeddings/graph_memory/
+Tests for relevance_scorer.py (Prompt 7). embeddings/entity_store/
 cache_service are mocked — this suite verifies the scoring/normalization/
 threshold logic itself, not live embedding-model or Neo4j behavior.
 """
@@ -198,7 +198,7 @@ async def test_score_candidates_ranks_and_filters_by_threshold(
     high, low = scored_segments["high"], scored_segments["low"]
 
     monkeypatch.setattr(rs, "_embed_question", AsyncMock(return_value=[1.0, 0.0, 0.0]))
-    monkeypatch.setattr(rs.graph_memory, "get_episode_entity_names", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rs.entity_store, "get_entity_names_for_segments", AsyncMock(return_value={}))
     monkeypatch.setattr(rs.cache_service, "get_entity_last_mentioned", AsyncMock(return_value={}))
 
     result = await rs.score_candidates("Tell me more", [high.id, low.id], "sess-1", "g1")
@@ -218,7 +218,7 @@ async def test_score_candidates_filter_by_threshold_false_returns_everyone(
     high, low = scored_segments["high"], scored_segments["low"]
 
     monkeypatch.setattr(rs, "_embed_question", AsyncMock(return_value=[1.0, 0.0, 0.0]))
-    monkeypatch.setattr(rs.graph_memory, "get_episode_entity_names", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rs.entity_store, "get_entity_names_for_segments", AsyncMock(return_value={}))
     monkeypatch.setattr(rs.cache_service, "get_entity_last_mentioned", AsyncMock(return_value={}))
 
     result = await rs.score_candidates(
@@ -234,7 +234,7 @@ async def test_score_candidates_skips_missing_segment(
     scored_segments, relevance_session_factory, monkeypatch
 ):
     monkeypatch.setattr(rs, "_embed_question", AsyncMock(return_value=[1.0, 0.0, 0.0]))
-    monkeypatch.setattr(rs.graph_memory, "get_episode_entity_names", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rs.entity_store, "get_entity_names_for_segments", AsyncMock(return_value={}))
     monkeypatch.setattr(rs.cache_service, "get_entity_last_mentioned", AsyncMock(return_value={}))
 
     result = await rs.score_candidates(
@@ -248,11 +248,14 @@ async def test_score_candidates_tolerates_entity_fetch_failure(
 ):
     monkeypatch.setattr(rs, "_embed_question", AsyncMock(return_value=[1.0, 0.0, 0.0]))
     monkeypatch.setattr(
-        rs.graph_memory, "get_episode_entity_names", AsyncMock(side_effect=RuntimeError("neo4j down"))
+        rs.entity_store,
+        "get_entity_names_for_segments",
+        AsyncMock(side_effect=RuntimeError("postgres down")),
     )
     monkeypatch.setattr(rs.cache_service, "get_entity_last_mentioned", AsyncMock(return_value={}))
 
-    # Should not raise despite graph_memory failing for every candidate.
+    # Should not raise despite the entity lookup failing: entity names feed
+    # only the recency term, so losing them costs one signal, not the score.
     result = await rs.score_candidates(
         "q", [scored_segments["high"].id, scored_segments["low"].id], "sess-1", "g1"
     )
@@ -263,7 +266,7 @@ async def test_score_candidates_degrades_relevance_when_embedding_fails(
     scored_segments, relevance_session_factory, monkeypatch
 ):
     monkeypatch.setattr(rs.embeddings, "embed_text", AsyncMock(side_effect=RuntimeError("down")))
-    monkeypatch.setattr(rs.graph_memory, "get_episode_entity_names", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rs.entity_store, "get_entity_names_for_segments", AsyncMock(return_value={}))
     monkeypatch.setattr(rs.cache_service, "get_entity_last_mentioned", AsyncMock(return_value={}))
 
     # Both candidates get relevance=0 (no question embedding); only
@@ -324,7 +327,7 @@ async def test_score_chunk_candidates_recency_uses_chunk_mentioned_entities(
     scored_chunks, relevance_session_factory, monkeypatch
 ):
     """Recency for a chunk comes from ITS OWN mentioned_entities (Prompt 11),
-    not a fresh Graphiti lookup — no graph_memory call should happen here at
+    not a fresh entity lookup — no entity_store call should happen here at
     all. `low`'s mentioned_entities is empty, so _recency_raw_score short-
     circuits to 0.0 for it WITHOUT calling get_entity_last_mentioned at all
     (same as _recency_raw_score's own "no entities" behavior) — only

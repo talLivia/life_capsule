@@ -8,12 +8,12 @@ READ-ONLY. Nothing here writes; correcting what it shows is a separate
 feature, deliberately not built yet.
 
 WHY A SERVICE RATHER THAN A QUERY IN THE ENDPOINT: the pieces live in three
-different places right now — transcript and topic tags in Postgres, entities
-in Graphiti, and unit count is not stored at all but derived by the same
-splitter retrieval uses. Entities are due to move from Graphiti into Postgres.
-When that happens, `_load_entities` below is the ONLY function that changes:
-the endpoint, the response shape and the UI do not know where entities live,
-which is the entire point of routing this through here.
+different places — transcript and topic tags in Postgres, entities in
+Postgres too since the Graphiti migration, and unit count is not stored at all
+but derived by the same splitter retrieval uses. When entities moved,
+`_load_entities` below was the ONLY function that changed: the endpoint, the
+response shape and the UI never knew where entities lived, which is the entire
+point of routing this through here.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import InterviewSession, RawSegment, TranscriptChunk
-from app.services import graph_memory
+from app.services import entity_store
 
 logger = logging.getLogger(__name__)
 
@@ -35,13 +35,17 @@ logger = logging.getLogger(__name__)
 class ExtractedEntity:
     """One thing the extractor recognised in this recording.
 
-    `kind` is None for every entity today and that is HONEST, not a stub:
-    the graph stores a single generic `Entity` label with no person/place/
-    organisation distinction, so grouping them by type would mean inventing
-    a classification the system never made. On a screen whose whole purpose
-    is showing what the system actually understood, a confident wrong label
-    is worse than no label. The field is here so that when typed entities do
-    land, nothing downstream has to change shape.
+    `kind` was None for every entity while entities lived in the graph, which
+    stored a single generic `Entity` label with no person/place/organisation
+    distinction — labelling them then would have meant inventing a
+    classification the system never made, and on a screen whose whole purpose
+    is showing what the system actually understood, a confident wrong label is
+    worse than no label. The field was left in place so that typed entities
+    could land without anything downstream changing shape.
+
+    They have. `kind` now carries `entities.type` — a real stored value, not
+    a guess — so this is the classification the system genuinely made, and the
+    producer can see a wrong one.
     """
 
     name: str
@@ -115,11 +119,13 @@ async def get_segment_extraction(
     )
 
     try:
-        result.entities = await _load_entities(segment_id, group_id)
+        result.entities = await _load_entities(db, segment_id, group_id)
     except Exception as e:
-        # A graph that is down must not take the whole panel with it: the
-        # transcript is the part most likely to reveal a mishearing, and it
-        # came from Postgres.
+        # Kept even though entities now come from the same database as the
+        # transcript, so a separate store can no longer be independently down.
+        # `entities_unavailable` is a real state the UI renders, and the panel
+        # still should not lose the transcript — the part most likely to
+        # reveal a mishearing — because the entity join failed.
         logger.warning(f"Could not load entities for segment {segment_id}: {e}")
         result.entities_unavailable = True
 
@@ -135,7 +141,7 @@ def _count_units(segment: RawSegment, chunks: List[TranscriptChunk]) -> int:
     that no longer describes how the recording is actually cut.
 
     Imported inside the function to avoid a circular import at module scope
-    (full_archive_retrieval imports graph_memory, which this module uses too)
+    (full_archive_retrieval imports entity_store, which this module uses too)
     — the same reason segment_deletion defers its import.
     """
     if not chunks:
@@ -155,27 +161,28 @@ def _count_units(segment: RawSegment, chunks: List[TranscriptChunk]) -> int:
         return 0
 
 
-async def _load_entities(segment_id: str, group_id: str) -> List[ExtractedEntity]:
-    """THE migration seam. Entities live in Graphiti today; when they move to
-    Postgres, this function is what gets rewritten and nothing above or
-    beyond it should need to.
+async def _load_entities(
+    db: AsyncSession, segment_id: str, group_id: str
+) -> List[ExtractedEntity]:
+    """THE migration seam — and it held. This is the only function that
+    changed when entities moved from Graphiti to Postgres: the endpoint, the
+    response shape and the UI did not know where entities lived, which was the
+    entire point of routing this through here.
 
     Returns names WITH their summaries, not names alone. The summary is what
     makes this screen useful for catching a mistake — "ניר: אח של הדובר"
     ("Nir: brother of the speaker") shows not just that a name was picked up
-    but what the system decided it MEANS, which is where a
-    wrong-but-plausible extraction actually shows itself.
+    but what the system decided it MEANS, which is where a wrong-but-plausible
+    extraction actually shows itself.
+
+    The summary is now THIS recording's rather than the entity's single
+    consolidated one, so two recordings mentioning the same person no longer
+    show identical text — a visible improvement on exactly the screen whose
+    job is revealing what the system understood about one recording.
     """
-    graphiti = graph_memory.get_graphiti()
-    query = """
-        MATCH (ep:Episodic {name: $name})-[:MENTIONS]->(e:Entity)
-        WHERE ep.group_id = $group_id
-        RETURN DISTINCT e.name AS name, e.summary AS summary
-        ORDER BY name
-    """
-    result = await graphiti.driver.execute_query(
-        query, name=f"segment-{segment_id}", group_id=group_id, routing_="r"
-    )
     return [
-        ExtractedEntity(name=r["name"], summary=r["summary"]) for r in result.records
+        ExtractedEntity(name=name, kind=kind, summary=summary)
+        for name, kind, summary in await entity_store.get_segment_entities(
+            db, segment_id, group_id
+        )
     ]

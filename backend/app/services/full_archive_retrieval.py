@@ -51,7 +51,7 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import InterviewSession, Message, RawSegment, TranscriptChunk
-from app.services import graph_memory, retrieval_service, video_clip_assembler
+from app.services import entity_store, retrieval_service, video_clip_assembler
 from app.services.cache import cache_service
 from app.services.llm import llm_service
 from app.services.response_assembler import NO_STORY_FALLBACK
@@ -240,7 +240,7 @@ avoid an empty answer.
 FULL ARCHIVE TRANSCRIPT:
 {transcript_block}
 
-ENTITY MAP (entity name -> segment ids that mention it):
+ENTITY MAP (entity name -> the RECORDINGS that mention it):
 {entity_map_block}"""
 
 
@@ -510,6 +510,33 @@ def _unit_key(segment_id: str, start_sec: float) -> str:
     return f"{segment_id}:{start_sec:.2f}"
 
 
+def _units_by_segment(units: List[UtteranceUnit]) -> Dict[str, List[UtteranceUnit]]:
+    by_segment: Dict[str, List[UtteranceUnit]] = {}
+    for unit in units:
+        by_segment.setdefault(unit.segment_id, []).append(unit)
+    return by_segment
+
+
+def _recording_ordinals(
+    archive: List[ArchiveSegment], units: List[UtteranceUnit]
+) -> Dict[str, int]:
+    """segment id -> the RECORDING number the prompt prints it as.
+
+    Shared by the transcript block and the entity map so the two cannot
+    disagree. They previously used different labelling schemes entirely
+    (ordinals vs raw UUIDs), and the entity map's pointers were therefore
+    unresolvable; deriving both from one function is what stops that
+    recurring.
+
+    A recording whose units were all filtered out is not printed and gets no
+    ordinal — so anything referring to it must omit the reference rather than
+    invent a number for a heading that is not there.
+    """
+    by_segment = _units_by_segment(units)
+    printed = [item for item in archive if by_segment.get(item.segment.id)]
+    return {item.segment.id: i for i, item in enumerate(printed, start=1)}
+
+
 def _format_annotated_transcript(
     archive: List[ArchiveSegment],
     units: List[UtteranceUnit],
@@ -530,9 +557,7 @@ def _format_annotated_transcript(
     prefer unseen material on a follow-up (see the prompt's ALREADY SHOWN
     section)."""
     shown_keys = shown_keys or set()
-    by_segment: Dict[str, List[UtteranceUnit]] = {}
-    for unit in units:
-        by_segment.setdefault(unit.segment_id, []).append(unit)
+    by_segment = _units_by_segment(units)
 
     # Takes of the same interview question, so a repeated question reads as
     # one answer in several parts rather than as two unrelated recordings
@@ -657,7 +682,7 @@ def _format_history_block(
     return "\n".join(lines)
 
 
-# ── Step 2: entity map from Graphiti (read-only) ────────────────────────────
+# ── Step 2: entity map from Postgres ───────────────────────────────────────
 
 
 # ── per-producer archive cache ──────────────────────────────────────────────
@@ -790,33 +815,72 @@ async def warm_archive_cache(group_id: str) -> bool:
 
 
 async def _build_entity_map(archive: List[ArchiveSegment], group_id: str) -> Dict[str, List[str]]:
-    """entity name -> the segment ids that mention it. Built by inverting
-    graph_memory.get_episode_entity_names per segment (the same read-only
-    graph access expand_graph_chunks already uses — no graph changes).
-    Fail-soft per segment: a Graphiti hiccup on one segment just omits its
-    entities rather than failing the whole read; the entity map is an aid
-    to the model, never a hard dependency."""
+    """entity name -> the segment ids that mention it.
+
+    ONE Postgres query for the whole archive. This used to be one Neo4j round
+    trip PER RECORDING, which measured 4.13s mean — 45% of a turn — and
+    carried ALL of the turn's latency variance (1.35s-9.55s across identical
+    passes). The per-segment shape was the cost, not the database, so the fix
+    is the bulk read rather than the move on its own.
+
+    Still fail-soft: the entity map is an aid to the model, never a hard
+    dependency, and an empty one costs measured accuracy of 0.991 vs 0.991.
+    Now it fails soft as a whole rather than per segment, which is the honest
+    shape for a single query — there is no longer a per-segment failure that
+    could omit one recording while keeping the rest.
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            by_segment = await entity_store.get_entity_names_for_segments(
+                db, [item.segment.id for item in archive], group_id
+            )
+    except Exception as e:
+        logger.warning(f"Entity map lookup failed for {group_id}, continuing without it: {e}")
+        return {}
+
     entity_to_segments: Dict[str, List[str]] = {}
+    # Iterate the ARCHIVE, not the query result, so the segment order in each
+    # entry follows the archive's own order rather than the database's.
     for item in archive:
-        seg_id = item.segment.id
-        try:
-            names = await graph_memory.get_episode_entity_names(seg_id, group_id=group_id)
-        except Exception as e:
-            logger.warning(f"Entity lookup failed for segment {seg_id}, omitting from map: {e}")
-            continue
-        for name in names:
+        for name in by_segment.get(item.segment.id, []):
             entity_to_segments.setdefault(name, [])
-            if seg_id not in entity_to_segments[name]:
-                entity_to_segments[name].append(seg_id)
+            if item.segment.id not in entity_to_segments[name]:
+                entity_to_segments[name].append(item.segment.id)
     return entity_to_segments
 
 
-def _format_entity_map(entity_map: Dict[str, List[str]]) -> str:
+def _format_entity_map(
+    entity_map: Dict[str, List[str]], ordinals: Dict[str, int]
+) -> str:
+    """The entity map as the model can actually use it.
+
+    THE POINT OF `ordinals`: this used to print raw segment UUIDs while the
+    transcript block labelled the same recordings `RECORDING 1..12`. The model
+    had no mapping between them — it could read `אילנה: 502fb283…` and had no
+    way to discover that this was RECORDING 1. Every pointer in this block was
+    unresolvable, which is the most likely reason accuracy measured 0.991 with
+    AND without the map: the only surviving signal was the bare existence and
+    spelling of the names.
+
+    It also contradicted a deliberate decision made in
+    `_format_annotated_transcript`, which goes out of its way NOT to print
+    segment UUIDs, because the model would return one where a unit id was
+    expected and silently produce a no-story. This block was feeding it those
+    UUIDs anyway.
+
+    Entities whose recordings are all filtered out of the transcript block are
+    OMITTED rather than printed without a pointer — a name pointing at a
+    recording the model cannot see is the same unresolvable reference in a
+    quieter form.
+    """
     if not entity_map:
         return "(none extracted)"
-    return "\n".join(
-        f"- {name}: {', '.join(seg_ids)}" for name, seg_ids in sorted(entity_map.items())
-    )
+    lines = []
+    for name, seg_ids in sorted(entity_map.items()):
+        refs = [f"RECORDING {ordinals[s]}" for s in seg_ids if s in ordinals]
+        if refs:
+            lines.append(f"- {name}: {', '.join(refs)}")
+    return "\n".join(lines) if lines else "(none extracted)"
 
 
 # ── Step 3: the single range-selection LLM call ─────────────────────────────
@@ -1028,7 +1092,8 @@ async def select_units(
     shown_keys, per_turn_units = await _load_shown_units(session_id)
 
     transcript_block = _format_annotated_transcript(archive, units, shown_keys)
-    entity_map_block = _format_entity_map(entity_map)
+    # Same ordinals the transcript block just printed — see _recording_ordinals.
+    entity_map_block = _format_entity_map(entity_map, _recording_ordinals(archive, units))
     turns = await retrieval_service._recent_turns(
         session_id, retrieval_service.COREFERENCE_HISTORY_TURNS
     )

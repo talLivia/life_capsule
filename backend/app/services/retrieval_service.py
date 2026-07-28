@@ -10,10 +10,10 @@ question during a live conversation with a family member (Prompt 9).
       judgment.
    b. ENTITY: extract any person/place named directly in the question
       (a second lightweight call, run concurrently with (a)), fuzzy-
-      resolve each against the graph's actual entity nodes
-      (`graph_memory.names_are_similar` — the same gate Prompt 5 uses at
+      resolve each against the stored entities
+      (`entity_names.names_are_similar` — the same gate Prompt 5 uses at
       ingestion time), and find segments that directly MENTION them
-      (`graph_memory.find_related_episodes`, max_hops=1). This exists
+      (`entity_store.find_segments_mentioning`). This exists
       because topic_tags are thematic ("military service"), never person
       names — a question naming someone directly ("tell me about Gila")
       must still find their segments even when its overall theme doesn't
@@ -31,16 +31,17 @@ question during a live conversation with a family member (Prompt 9).
       obviously the same). SEMANTIC_MATCH_THRESHOLD was picked from real
       cosine-similarity numbers measured against Prompt 10's QA questions,
       not guessed — see the constant's own comment.
-2. `expand_graph` — pull the entities Graphiti recorded for the primary
-   segment(s) (`graph_memory.get_episode_entity_names`) and call
-   `find_related_episodes_scored` (Prompt 3/6) to find other segments
-   sharing those entities, up to `max_hops` out, excluding whatever this
-   conversation session already surfaced (`session_visited_set` — Upstash
-   Redis via cache_service, Prompt 2).
-3. Only candidates meeting MIN_SHARED_ENTITY_COUNT survive — Graphiti's
-   MENTIONS-based traversal has no numeric edge weight, so "how many of the
+2. `expand_graph` — pull the entities recorded for the primary segment(s)
+   (`entity_store.get_entity_names_for_segments`, ONE query) and call
+   `find_segments_mentioning_scored` to find other segments sharing those
+   entities, excluding whatever this conversation session already surfaced
+   (`session_visited_set` — Upstash Redis via cache_service, Prompt 2).
+   NOTE: the old `max_hops` parameter is gone. It was 1 at every call site,
+   which made the Cypher `RELATES_TO*0..0` — matching only the origin node.
+   No traversal ever happened, so there is nothing here to replace.
+3. Only candidates meeting MIN_SHARED_ENTITY_COUNT survive — "how many of the
    primary segment(s)' entities does this candidate actually share" is the
-   confidence proxy (see `find_related_episodes_scored`'s docstring).
+   confidence proxy (see `find_segments_mentioning_scored`'s docstring).
 4. Capped to MAX_CANDIDATES per turn.
 
 Returns primary segment(s) + up to MAX_CANDIDATES related candidates, each
@@ -86,7 +87,8 @@ from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
 from app.models import InterviewSession, Message, RawSegment, TranscriptChunk
-from app.services import embeddings, graph_memory
+from app.services import embeddings, entity_store
+from app.services.entity_names import names_are_similar
 from app.services.cache import cache_service
 from app.services.llm import llm_service
 
@@ -281,19 +283,18 @@ async def _embed_question_for_primary_match(question: str) -> Optional[List[floa
 
 
 async def _resolve_entity_names(names: List[str], group_id: str) -> List[str]:
-    """Fuzzy-resolve each name extracted from the question against the
-    graph's actual entity nodes (graph_memory.names_are_similar — the same
-    token-aware lexical gate Prompt 5 uses at ingestion time), so e.g.
-    "גילה" still finds segments even if the graph's canonical node ended
-    up named "גילה כהן" after a human-in-the-loop resolution. Returns the
-    graph's own node names (not the raw extracted text) — find_related_
-    episodes matches exactly, so it needs the name as the graph knows it."""
+    """Fuzzy-resolve each name extracted from the question against the stored
+    entities (`names_are_similar` — the same token-aware lexical gate Prompt 5
+    uses at ingestion time), so e.g. "גילה" still finds segments even if the
+    stored entity ended up named "גילה כהן" after a human-in-the-loop
+    resolution. Returns the STORED names, not the raw extracted text."""
     resolved: set = set()
-    for name in names:
-        candidates = await graph_memory.get_entity_candidates(name, group_id=group_id)
-        for c in candidates:
-            if graph_memory.names_are_similar(name, c["name"]):
-                resolved.add(c["name"])
+    async with AsyncSessionLocal() as db:
+        for name in names:
+            candidates = await entity_store.get_entity_candidates(db, name, group_id)
+            for c in candidates:
+                if names_are_similar(name, c["name"]):
+                    resolved.add(c["name"])
     return list(resolved)
 
 
@@ -431,9 +432,10 @@ async def primary_match(
     if extracted_names:
         resolved_names = await _resolve_entity_names(extracted_names, group_id)
         if resolved_names:
-            entity_segment_ids = await graph_memory.find_related_episodes(
-                entity_names=resolved_names, exclude_ids=[], group_id=group_id, max_hops=1
-            )
+            async with AsyncSessionLocal() as db:
+                entity_segment_ids = await entity_store.find_segments_mentioning(
+                    db, entity_names=resolved_names, producer_id=group_id
+                )
             segments_by_id = {seg.id: seg for seg in segments}
             for sid in entity_segment_ids:
                 if sid in segments_by_id:
@@ -463,32 +465,32 @@ async def expand_graph(
     primary_segments: List[RawSegment],
     session_visited_set: set,
     group_id: str,
-    max_hops: int = 1,
 ) -> List[RetrievedSegment]:
     """Entities from the primary segment(s) -> related episodes, filtered by
     minimum shared-entity count and capped to MAX_CANDIDATES."""
     if not primary_segments:
         return []
 
-    entity_names: set = set()
-    for seg in primary_segments:
-        names = await graph_memory.get_episode_entity_names(seg.id, group_id=group_id)
-        entity_names.update(names)
-
-    if not entity_names:
-        return []
-
     # Exclude both the session's visited-set AND the primary segments
     # themselves — a primary segment trivially "shares" its own entities and
     # must never reappear as one of its own related candidates.
     exclude_ids = set(session_visited_set) | {seg.id for seg in primary_segments}
-    scored = await graph_memory.find_related_episodes_scored(
-        entity_names=list(entity_names),
-        exclude_ids=list(exclude_ids),
-        max_hops=max_hops,
-        group_id=group_id,
-        limit=MAX_CANDIDATES * 4,  # headroom before the threshold+cap below
-    )
+
+    async with AsyncSessionLocal() as db:
+        by_segment = await entity_store.get_entity_names_for_segments(
+            db, [seg.id for seg in primary_segments], group_id
+        )
+        entity_names = {name for names in by_segment.values() for name in names}
+        if not entity_names:
+            return []
+
+        scored = await entity_store.find_segments_mentioning_scored(
+            db,
+            entity_names=list(entity_names),
+            producer_id=group_id,
+            exclude_ids=list(exclude_ids),
+            limit=MAX_CANDIDATES * 4,  # headroom before the threshold+cap below
+        )
 
     qualifying = [c for c in scored if c["shared_entity_count"] >= MIN_SHARED_ENTITY_COUNT]
     top_ids = [c["segment_id"] for c in qualifying[:MAX_CANDIDATES]]
@@ -674,7 +676,6 @@ async def expand_graph_chunks(
     primary_chunks: List[TranscriptChunk],
     session_visited_set: set,
     group_id: str,
-    max_hops: int = 1,
 ) -> List[TranscriptChunk]:
     """Chunk-level parallel to expand_graph, for the video-clip mode only.
 
@@ -690,27 +691,18 @@ async def expand_graph_chunks(
     avatar path gets a second chance to surface related content anyway via
     shared entities; the chunk path didn't, until now.
 
-    Graphiti's entity/episode graph is per-SEGMENT (Prompt 11 didn't change
-    that — a chunk has no graph presence of its own), so this still looks
-    up entities via the primary chunks' PARENT segments, exactly like
-    expand_graph. The difference: what gets returned is chunk-granular, not
-    whole segments. For each segment expand_graph's own logic would have
-    surfaced, only ITS chunks whose OWN mentioned_entities (Prompt 11)
-    overlaps the bridging entity set are included — never a whole related
-    segment's worth of chunks indiscriminately. A related segment where
-    Graphiti's episode-level extraction found the shared entity but no
-    individual chunk's substring-tagging happened to catch it contributes
-    nothing here (fail-soft: no precise moment to point to beats guessing
-    one)."""
+    Entity mentions are per-SEGMENT (a chunk has no mention row of its own —
+    `entity_mentions.chunk_id` exists but ingestion writes segment-level
+    rows), so this looks up entities via the primary chunks' PARENT segments,
+    exactly like expand_graph. The difference: what gets returned is
+    chunk-granular, not whole segments. For each segment expand_graph's own
+    logic would have surfaced, only ITS chunks whose OWN mentioned_entities
+    (Prompt 11) overlaps the bridging entity set are included — never a whole
+    related segment's worth of chunks indiscriminately. A related segment
+    where segment-level extraction found the shared entity but no individual
+    chunk's substring-tagging happened to catch it contributes nothing here
+    (fail-soft: no precise moment to point to beats guessing one)."""
     if not primary_chunks:
-        return []
-
-    entity_names: set = set()
-    for chunk in primary_chunks:
-        names = await graph_memory.get_episode_entity_names(chunk.raw_segment_id, group_id=group_id)
-        entity_names.update(names)
-
-    if not entity_names:
         return []
 
     # Exclude both the session's visited-set AND the primary chunks' OWN
@@ -718,13 +710,22 @@ async def expand_graph_chunks(
     # own entities and must never bridge back to itself.
     primary_segment_ids = {chunk.raw_segment_id for chunk in primary_chunks}
     exclude_ids = set(session_visited_set) | primary_segment_ids
-    scored = await graph_memory.find_related_episodes_scored(
-        entity_names=list(entity_names),
-        exclude_ids=list(exclude_ids),
-        max_hops=max_hops,
-        group_id=group_id,
-        limit=MAX_CANDIDATES * 4,  # headroom before the threshold+cap below
-    )
+
+    async with AsyncSessionLocal() as db:
+        by_segment = await entity_store.get_entity_names_for_segments(
+            db, list(primary_segment_ids), group_id
+        )
+        entity_names = {name for names in by_segment.values() for name in names}
+        if not entity_names:
+            return []
+
+        scored = await entity_store.find_segments_mentioning_scored(
+            db,
+            entity_names=list(entity_names),
+            producer_id=group_id,
+            exclude_ids=list(exclude_ids),
+            limit=MAX_CANDIDATES * 4,  # headroom before the threshold+cap below
+        )
 
     qualifying_segment_ids = [
         c["segment_id"] for c in scored if c["shared_entity_count"] >= MIN_SHARED_ENTITY_COUNT

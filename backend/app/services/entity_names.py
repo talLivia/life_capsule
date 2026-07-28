@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from difflib import SequenceMatcher
 
 # Hebrew final letters (sofit). The same letter, positional variant only:
 # "ניר" written mid-word vs at the end is the same name. Folding these is
@@ -90,3 +91,43 @@ def names_match(a: str, b: str) -> bool:
     """Whether two raw names normalise to the same key — i.e. whether they
     would collide on the unique constraint. Never a fuzzy comparison."""
     return bool(a) and bool(b) and normalize_entity_name(a) == normalize_entity_name(b)
+
+
+_TOKEN_SIMILARITY_THRESHOLD = 0.75
+
+
+def names_are_similar(a: str, b: str) -> bool:
+    """The FUZZY gate — "could these be the same real-world thing", for a
+    human to then confirm. The opposite end from `names_match` above, which
+    decides identity outright.
+
+    Moved here from `graph_memory` unchanged, because it never had anything to
+    do with the graph: it is pure string comparison, and it is the reason the
+    graph's semantic candidate search bought nothing (every caller filtered
+    hybrid vector results through this purely lexical gate).
+
+    Deliberately token-aware rather than one whole-string similarity ratio:
+    comparing full strings character-by-character rewards a shared surname as
+    heavily as a shared full name — confirmed live that "גילה כהן" vs "דן כהן"
+    scores HIGHER (0.57) via SequenceMatcher than the genuinely-unrelated pair
+    should, while two different Cohens are obviously not the same person. Two
+    people sharing one surname must NOT count as similar; one name being a
+    more/less specific version of the other ("Gila" vs "Gila Cohen") should.
+    """
+    a_norm, b_norm = a.strip().lower(), b.strip().lower()
+    if not a_norm or not b_norm:
+        return False
+    if a_norm == b_norm:
+        return True
+
+    a_tokens, b_tokens = set(a_norm.split()), set(b_norm.split())
+    if a_tokens and b_tokens and (a_tokens <= b_tokens or b_tokens <= a_tokens):
+        return True
+
+    # Single-token names only: a strict character-similarity fallback for
+    # spelling/transliteration variants (e.g. "גילה" vs "גליה"). Never applied
+    # to multi-token names — that is exactly the shared-surname trap above.
+    if len(a_tokens) == 1 and len(b_tokens) == 1:
+        return SequenceMatcher(None, a_norm, b_norm).ratio() >= _TOKEN_SIMILARITY_THRESHOLD
+
+    return False

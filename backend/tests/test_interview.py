@@ -21,9 +21,6 @@ def deletion_uses_test_db(test_engine, monkeypatch):
     factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(segment_deletion, "AsyncSessionLocal", factory)
     monkeypatch.setattr(
-        segment_deletion.graph_memory, "remove_episodes_for_segment", AsyncMock(return_value=0)
-    )
-    monkeypatch.setattr(
         segment_deletion.storage_service, "delete_file", AsyncMock(return_value=None)
     )
     monkeypatch.setattr(segment_deletion, "_refresh_caches", AsyncMock())
@@ -512,10 +509,9 @@ async def test_local_upload_rejects_non_video_content_type(
 async def test_extraction_returns_everything_the_panel_shows(
     client: AsyncClient, auth_headers, test_user, db_session, monkeypatch
 ):
-    """One endpoint returns all four pieces, so the UI never learns that they
-    come from three different stores."""
-    from app.models import InterviewSession as IS, RawSegment as RS
-    from app.services import segment_extraction
+    """One endpoint returns all four pieces, so the UI never learns where any
+    of them are stored."""
+    from app.models import Entity, EntityMention, InterviewSession as IS, RawSegment as RS
 
     session = IS(id="ext-sess", user_id=test_user.id, status="active")
     db_session.add(session)
@@ -527,34 +523,43 @@ async def test_extraction_returns_everything_the_panel_shows(
     ))
     await db_session.commit()
 
-    async def fake_entities(segment_id, group_id):
-        assert segment_id == "ext-seg"
-        return [segment_extraction.ExtractedEntity(name="חיל האוויר", summary="חיל שבו שירת הדובר")]
-
-    monkeypatch.setattr(segment_extraction, "_load_entities", fake_entities)
+    # REAL rows, not a stubbed loader: entities live in the same database as
+    # the transcript now, so the panel's entity join is worth exercising
+    # rather than mocking past.
+    entity = Entity(
+        producer_id=test_user.id, name="חיל האוויר",
+        normalized_name="חיל האוויר", type="organisation",
+    )
+    db_session.add(entity)
+    await db_session.flush()
+    db_session.add(EntityMention(
+        entity_id=entity.id, raw_segment_id="ext-seg", summary="חיל שבו שירת הדובר"
+    ))
+    await db_session.commit()
 
     resp = await client.get("/api/v1/interview/segments/ext-seg/extraction", headers=auth_headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["transcript"] == "שירתתי בחיל האוויר"
     assert body["topic_tags"] == ["army", "service"]
+    # `kind` now carries the stored entities.type. It was null for every
+    # entity while entities lived in the graph, which had no person/place/
+    # organisation distinction — inventing one then would have defeated a
+    # screen meant to show what the system ACTUALLY understood. It no longer
+    # has to be invented.
     assert body["entities"] == [
-        {"name": "חיל האוויר", "summary": "חיל שבו שירת הדובר", "kind": None}
+        {"name": "חיל האוויר", "summary": "חיל שבו שירת הדובר", "kind": "organisation"}
     ]
     assert body["still_processing"] is False
     assert body["entities_unavailable"] is False
-    # kind is null for every entity today — the graph stores no
-    # person/place/organisation distinction, and inventing one on a screen
-    # meant to show what the system ACTUALLY understood would defeat it.
-    assert all(e["kind"] is None for e in body["entities"])
 
 
 @pytest.mark.asyncio
 async def test_extraction_survives_the_entity_store_being_down(
     client: AsyncClient, auth_headers, test_user, db_session, monkeypatch
 ):
-    """A dead graph must not take the whole panel with it — the transcript is
-    the part most likely to reveal a mishearing, and it comes from Postgres.
+    """A failed entity lookup must not take the whole panel with it — the
+    transcript is the part most likely to reveal a mishearing.
     The flag matters: an empty list would otherwise read as "no people found",
     which is a completely different claim from "we couldn't look"."""
     from app.models import InterviewSession as IS, RawSegment as RS
@@ -569,8 +574,8 @@ async def test_extraction_survives_the_entity_store_being_down(
     ))
     await db_session.commit()
 
-    async def boom(segment_id, group_id):
-        raise RuntimeError("neo4j unreachable")
+    async def boom(db, segment_id, group_id):
+        raise RuntimeError("entity lookup failed")
 
     monkeypatch.setattr(segment_extraction, "_load_entities", boom)
 

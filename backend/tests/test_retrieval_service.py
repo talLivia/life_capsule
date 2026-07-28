@@ -1,10 +1,10 @@
 """
-Tests for retrieval_service.py (Prompt 6). llm_service and graph_memory are
+Tests for retrieval_service.py (Prompt 6). llm_service and entity_store are
 mocked throughout — this suite verifies retrieval_service's own logic
 (topic classification handling, Postgres overlap matching, exclusion/
 threshold/cap behavior), not Graphiti's live Cypher behavior (see
 scripts/smoke_test_prompt5.py's live-verification approach for that, and
-the module docstring's note that graph_memory.find_related_episodes_scored
+the module docstring's note that entity_store.find_segments_mentioning_scored
 was spot-checked against a real instance).
 """
 
@@ -386,18 +386,18 @@ async def test_primary_match_finds_segment_by_entity_name_alone(
     )
     monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
     monkeypatch.setattr(
-        rsvc.graph_memory,
+        rsvc.entity_store,
         "get_entity_candidates",
         AsyncMock(return_value=[{"uuid": "u1", "name": "Gila", "summary": ""}]),
     )
     mock_find_related = AsyncMock(return_value=[producer_segments["matching"].id])
-    monkeypatch.setattr(rsvc.graph_memory, "find_related_episodes", mock_find_related)
+    monkeypatch.setattr(rsvc.entity_store, "find_segments_mentioning", mock_find_related)
 
     matches = await rsvc.primary_match("Tell me about Gila", test_user.id, "en", "sess-1")
 
     assert [s.id for s in matches] == [producer_segments["matching"].id]
     assert mock_find_related.call_args.kwargs["entity_names"] == ["Gila"]
-    assert mock_find_related.call_args.kwargs["group_id"] == test_user.id
+    assert mock_find_related.call_args.kwargs["producer_id"] == test_user.id
 
 
 async def test_primary_match_unions_topic_and_entity_signals_without_duplicates(
@@ -412,13 +412,13 @@ async def test_primary_match_unions_topic_and_entity_signals_without_duplicates(
     )
     monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
     monkeypatch.setattr(
-        rsvc.graph_memory,
+        rsvc.entity_store,
         "get_entity_candidates",
         AsyncMock(return_value=[{"uuid": "u1", "name": "Gila", "summary": ""}]),
     )
     monkeypatch.setattr(
-        rsvc.graph_memory,
-        "find_related_episodes",
+        rsvc.entity_store,
+        "find_segments_mentioning",
         AsyncMock(return_value=[producer_segments["matching"].id]),
     )
 
@@ -438,9 +438,9 @@ async def test_primary_match_entity_extraction_ignores_unresolved_names(
         rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=["Nobody"])
     )
     monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
-    monkeypatch.setattr(rsvc.graph_memory, "get_entity_candidates", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc.entity_store, "get_entity_candidates", AsyncMock(return_value=[]))
     mock_find_related = AsyncMock()
-    monkeypatch.setattr(rsvc.graph_memory, "find_related_episodes", mock_find_related)
+    monkeypatch.setattr(rsvc.entity_store, "find_segments_mentioning", mock_find_related)
 
     matches = await rsvc.primary_match("Tell me about Nobody", test_user.id, "en", "sess-1")
 
@@ -518,7 +518,9 @@ async def test_primary_match_semantic_signal_ignores_segments_without_embedding(
 
 
 async def test_expand_graph_no_entities_returns_empty(producer_segments, monkeypatch):
-    monkeypatch.setattr(rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        rsvc.entity_store, "get_entity_names_for_segments", AsyncMock(return_value={})
+    )
     result = await rsvc.expand_graph([producer_segments["matching"]], set(), "g1")
     assert result == []
 
@@ -528,10 +530,12 @@ async def test_expand_graph_excludes_visited_and_primary_ids(
 ):
     primary = producer_segments["matching"]
     monkeypatch.setattr(
-        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+        rsvc.entity_store,
+        "get_entity_names_for_segments",
+        AsyncMock(return_value={"any-seg": ["Gila"]}),
     )
     mock_find = AsyncMock(return_value=[])
-    monkeypatch.setattr(rsvc.graph_memory, "find_related_episodes_scored", mock_find)
+    monkeypatch.setattr(rsvc.entity_store, "find_segments_mentioning_scored", mock_find)
 
     await rsvc.expand_graph([primary], {"visited-1"}, "g1")
 
@@ -546,11 +550,13 @@ async def test_expand_graph_filters_below_threshold_and_caps(
     other = producer_segments["other_topic"]
     not_ready = producer_segments["not_ready"]
     monkeypatch.setattr(
-        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+        rsvc.entity_store,
+        "get_entity_names_for_segments",
+        AsyncMock(return_value={"any-seg": ["Gila"]}),
     )
     monkeypatch.setattr(
-        rsvc.graph_memory,
-        "find_related_episodes_scored",
+        rsvc.entity_store,
+        "find_segments_mentioning_scored",
         AsyncMock(
             return_value=[
                 {"segment_id": other.id, "shared_entity_count": 2},
@@ -591,11 +597,13 @@ async def test_expand_graph_caps_at_max_candidates(
         await db_session.refresh(seg)
 
     monkeypatch.setattr(
-        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+        rsvc.entity_store,
+        "get_entity_names_for_segments",
+        AsyncMock(return_value={"any-seg": ["Gila"]}),
     )
     monkeypatch.setattr(
-        rsvc.graph_memory,
-        "find_related_episodes_scored",
+        rsvc.entity_store,
+        "find_segments_mentioning_scored",
         AsyncMock(
             return_value=[{"segment_id": seg.id, "shared_entity_count": 5} for seg in extra_segments]
         ),
@@ -626,7 +634,9 @@ async def test_retrieve_reads_visited_set_but_never_writes_it(
     monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
     monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
     monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
-    monkeypatch.setattr(rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        rsvc.entity_store, "get_entity_names_for_segments", AsyncMock(return_value={})
+    )
     mock_get_visited = AsyncMock(return_value=set())
     mock_add_visited = AsyncMock()
     monkeypatch.setattr(rsvc.cache_service, "get_visited", mock_get_visited)
@@ -778,7 +788,7 @@ async def test_primary_match_chunks_finds_by_mentioned_entities_alone(
     )
     monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
     monkeypatch.setattr(
-        rsvc.graph_memory,
+        rsvc.entity_store,
         "get_entity_candidates",
         AsyncMock(return_value=[{"uuid": "u1", "name": "Gila", "summary": ""}]),
     )
@@ -797,7 +807,7 @@ async def test_primary_match_chunks_entity_signal_ignores_unresolved_names(
         rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=["Nobody"])
     )
     monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
-    monkeypatch.setattr(rsvc.graph_memory, "get_entity_candidates", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rsvc.entity_store, "get_entity_candidates", AsyncMock(return_value=[]))
 
     matches = await rsvc.primary_match_chunks("Tell me about Nobody", test_user.id, "en", "sess-1")
 
@@ -864,7 +874,7 @@ async def test_primary_match_chunks_unions_signals_without_duplicates(
         rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=["Gila"])
     )
     monkeypatch.setattr(
-        rsvc.graph_memory,
+        rsvc.entity_store,
         "get_entity_candidates",
         AsyncMock(return_value=[{"uuid": "u1", "name": "Gila", "summary": ""}]),
     )
@@ -1043,7 +1053,9 @@ async def related_chunks_setup(db_session, producer_segments, retrieval_session_
 
 
 async def test_expand_graph_chunks_no_entities_returns_empty(producer_chunks, monkeypatch):
-    monkeypatch.setattr(rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        rsvc.entity_store, "get_entity_names_for_segments", AsyncMock(return_value={})
+    )
     result = await rsvc.expand_graph_chunks([producer_chunks["matching"]], set(), "g1")
     assert result == []
 
@@ -1053,10 +1065,12 @@ async def test_expand_graph_chunks_excludes_visited_and_primary_segment_ids(
 ):
     primary = producer_chunks["matching"]
     monkeypatch.setattr(
-        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+        rsvc.entity_store,
+        "get_entity_names_for_segments",
+        AsyncMock(return_value={"any-seg": ["Gila"]}),
     )
     mock_find = AsyncMock(return_value=[])
-    monkeypatch.setattr(rsvc.graph_memory, "find_related_episodes_scored", mock_find)
+    monkeypatch.setattr(rsvc.entity_store, "find_segments_mentioning_scored", mock_find)
 
     await rsvc.expand_graph_chunks([primary], {"visited-1"}, "g1")
 
@@ -1073,11 +1087,13 @@ async def test_expand_graph_chunks_only_returns_chunks_mentioning_the_bridging_e
     mention the bridging entity should come back — not the whole segment's
     chunks indiscriminately."""
     monkeypatch.setattr(
-        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+        rsvc.entity_store,
+        "get_entity_names_for_segments",
+        AsyncMock(return_value={"any-seg": ["Gila"]}),
     )
     monkeypatch.setattr(
-        rsvc.graph_memory,
-        "find_related_episodes_scored",
+        rsvc.entity_store,
+        "find_segments_mentioning_scored",
         AsyncMock(
             return_value=[
                 {
@@ -1101,11 +1117,13 @@ async def test_expand_graph_chunks_segment_with_no_matching_chunk_contributes_no
     (Prompt 11) caught it — must contribute NO chunks from that segment,
     rather than falling back to including all of it."""
     monkeypatch.setattr(
-        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+        rsvc.entity_store,
+        "get_entity_names_for_segments",
+        AsyncMock(return_value={"any-seg": ["Gila"]}),
     )
     monkeypatch.setattr(
-        rsvc.graph_memory,
-        "find_related_episodes_scored",
+        rsvc.entity_store,
+        "find_segments_mentioning_scored",
         AsyncMock(
             return_value=[
                 {
@@ -1125,11 +1143,13 @@ async def test_expand_graph_chunks_filters_below_min_shared_entity_count(
     producer_chunks, related_chunks_setup, retrieval_session_factory, monkeypatch
 ):
     monkeypatch.setattr(
-        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+        rsvc.entity_store,
+        "get_entity_names_for_segments",
+        AsyncMock(return_value={"any-seg": ["Gila"]}),
     )
     monkeypatch.setattr(
-        rsvc.graph_memory,
-        "find_related_episodes_scored",
+        rsvc.entity_store,
+        "find_segments_mentioning_scored",
         AsyncMock(
             return_value=[
                 {
@@ -1178,11 +1198,13 @@ async def test_expand_graph_chunks_caps_at_max_candidates(
     await db_session.commit()
 
     monkeypatch.setattr(
-        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+        rsvc.entity_store,
+        "get_entity_names_for_segments",
+        AsyncMock(return_value={"any-seg": ["Gila"]}),
     )
     monkeypatch.setattr(
-        rsvc.graph_memory,
-        "find_related_episodes_scored",
+        rsvc.entity_store,
+        "find_segments_mentioning_scored",
         AsyncMock(
             return_value=[
                 {"segment_id": seg.id, "shared_entity_count": 5} for seg in extra_segments
@@ -1219,11 +1241,13 @@ async def test_retrieve_chunks_combines_primary_and_bridged_without_duplicates(
     monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
     monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
     monkeypatch.setattr(
-        rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=["Gila"])
+        rsvc.entity_store,
+        "get_entity_names_for_segments",
+        AsyncMock(return_value={"any-seg": ["Gila"]}),
     )
     monkeypatch.setattr(
-        rsvc.graph_memory,
-        "find_related_episodes_scored",
+        rsvc.entity_store,
+        "find_segments_mentioning_scored",
         AsyncMock(
             return_value=[
                 {
@@ -1250,7 +1274,9 @@ async def test_retrieve_chunks_reads_visited_set_but_never_writes_it(
     monkeypatch.setattr(rsvc, "_classify_topic", AsyncMock(return_value="military service"))
     monkeypatch.setattr(rsvc, "_extract_entity_names_from_question", AsyncMock(return_value=[]))
     monkeypatch.setattr(rsvc, "_embed_question_for_primary_match", AsyncMock(return_value=None))
-    monkeypatch.setattr(rsvc.graph_memory, "get_episode_entity_names", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        rsvc.entity_store, "get_entity_names_for_segments", AsyncMock(return_value={})
+    )
     mock_get_visited = AsyncMock(return_value=set())
     mock_add_visited = AsyncMock()
     monkeypatch.setattr(rsvc.cache_service, "get_visited", mock_get_visited)

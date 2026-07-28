@@ -1,8 +1,8 @@
 """
 Tests for analysis_graph.py (Prompt 5).
 
-No real Postgres/Neo4j/Anthropic here — node-level tests mock llm_service /
-graph_memory / storage_service / stt_service directly, and the DB layer is
+No real Postgres/Anthropic here — node-level tests mock llm_service /
+entity_store / storage_service / stt_service directly, and the DB layer is
 retargeted at the same in-memory SQLite engine the rest of the test suite
 uses (analysis_graph.py normally opens sessions via app.database's module-
 level AsyncSessionLocal, bypassing FastAPI's DI, so it needs its own
@@ -410,7 +410,7 @@ async def test_check_entities_node_tags_chunks_with_entities(db_session, segment
     await ag.create_transcript_chunks_node({"segment_id": segment.id, "phrases": _sample_phrases()})
 
     monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("carpenter")))
-    monkeypatch.setattr(ag.graph_memory, "get_entity_candidates", AsyncMock(return_value=[]))
+    monkeypatch.setattr(ag.entity_store, "get_entity_candidates", AsyncMock(return_value=[]))
 
     result = await ag.check_entities_node(
         {"segment_id": segment.id, "group_id": "g1", "transcript": segment.transcript}
@@ -471,7 +471,7 @@ async def test_extract_topics_node_tolerates_llm_failure(segment, monkeypatch):
 async def test_check_entities_node_auto_resolves_exact_match(segment, monkeypatch):
     monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Gila")))
     monkeypatch.setattr(
-        ag.graph_memory,
+        ag.entity_store,
         "get_entity_candidates",
         AsyncMock(return_value=[{"uuid": "u1", "name": "Gila", "summary": "grandmother"}]),
     )
@@ -487,7 +487,7 @@ async def test_check_entities_node_auto_resolves_exact_match(segment, monkeypatc
 async def test_check_entities_node_flags_fuzzy_match(segment, monkeypatch):
     monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Gila")))
     monkeypatch.setattr(
-        ag.graph_memory,
+        ag.entity_store,
         "get_entity_candidates",
         AsyncMock(return_value=[{"uuid": "u2", "name": "Gila Cohen", "summary": "a neighbor"}]),
     )
@@ -511,7 +511,7 @@ async def test_check_entities_node_multiple_candidates_stay_ambiguous(segment, m
     yes/no against it."""
     monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Moshe")))
     monkeypatch.setattr(
-        ag.graph_memory,
+        ag.entity_store,
         "get_entity_candidates",
         AsyncMock(
             return_value=[
@@ -542,7 +542,7 @@ async def test_check_entities_node_exact_match_among_others_still_ambiguous(segm
     the right one."""
     monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Moshe")))
     monkeypatch.setattr(
-        ag.graph_memory,
+        ag.entity_store,
         "get_entity_candidates",
         AsyncMock(
             return_value=[
@@ -563,7 +563,7 @@ async def test_check_entities_node_exact_match_among_others_still_ambiguous(segm
 
 async def test_check_entities_node_no_candidates_means_new_entity(segment, monkeypatch):
     monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Gila")))
-    monkeypatch.setattr(ag.graph_memory, "get_entity_candidates", AsyncMock(return_value=[]))
+    monkeypatch.setattr(ag.entity_store, "get_entity_candidates", AsyncMock(return_value=[]))
 
     result = await ag.check_entities_node(
         {"segment_id": segment.id, "group_id": "g1", "transcript": segment.transcript}
@@ -582,7 +582,7 @@ async def test_check_entities_node_ignores_unrelated_candidate(segment, monkeypa
     spuriously pause for human confirmation."""
     monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Dan Cohen")))
     monkeypatch.setattr(
-        ag.graph_memory,
+        ag.entity_store,
         "get_entity_candidates",
         AsyncMock(return_value=[{"uuid": "u1", "name": "Gila", "summary": "a commander"}]),
     )
@@ -604,7 +604,7 @@ async def test_check_entities_node_ignores_shared_surname_candidate(segment, mon
         ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Gila Cohen"))
     )
     monkeypatch.setattr(
-        ag.graph_memory,
+        ag.entity_store,
         "get_entity_candidates",
         AsyncMock(return_value=[{"uuid": "u1", "name": "Dan Cohen", "summary": "an engineer"}]),
     )
@@ -731,7 +731,7 @@ async def _mock_all_llm_calls(monkeypatch, *, entity_candidates, entity_name="Gi
 
     monkeypatch.setattr(ag.llm_service, "generate_response", fake_generate)
     monkeypatch.setattr(
-        ag.graph_memory, "get_entity_candidates", AsyncMock(return_value=entity_candidates)
+        ag.entity_store, "get_entity_candidates", AsyncMock(return_value=entity_candidates)
     )
     monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1, 0.2, 0.3]))
 
@@ -963,7 +963,7 @@ async def test_confirm_entity_multi_candidate_flow(
 
     monkeypatch.setattr(ag.llm_service, "generate_response", fake_generate)
     monkeypatch.setattr(
-        ag.graph_memory,
+        ag.entity_store,
         "get_entity_candidates",
         AsyncMock(
             return_value=[
