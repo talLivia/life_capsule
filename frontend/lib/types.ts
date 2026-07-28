@@ -164,18 +164,43 @@ export interface EntityCandidate {
   summary: string
 }
 
+export interface IdentityQuestion {
+  name: string
+  // One candidate -> a simple yes/no question. Two or more -> the
+  // storyteller picks which existing person/place this is (or "someone
+  // new") instead of being asked a yes/no about an arbitrary single guess.
+  candidates: EntityCandidate[]
+  question: string
+}
+
+export interface TypeQuestion {
+  name: string
+  // Exactly two options, always — the extractor names the runner-up it was
+  // torn between rather than reporting a confidence score, so the screen
+  // never has to invent choices or render a slider.
+  type: string
+  alternative_type: string
+  question: string
+}
+
 export interface PendingConfirmation {
   segment_id: string
   interview_session_id: string
   question_asked: string
+  // EVERY question one recording raises, asked on ONE screen with ONE submit.
+  // Either list may be empty; the payload only exists when at least one is not.
   pending_confirmation: {
-    entity_name: string
-    // One candidate -> a simple yes/no question. Two or more -> the
-    // storyteller picks which existing person/place this is (or "someone
-    // new") instead of being asked a yes/no about an arbitrary single guess.
-    candidates: EntityCandidate[]
-    question: string
+    identity_questions: IdentityQuestion[]
+    type_questions: TypeQuestion[]
   }
+}
+
+export interface EntityBatchAnswer {
+  // Keyed by entity name, matching the pending payload. Every question must
+  // be answered — the server rejects a partial submit rather than defaulting,
+  // because both plausible defaults are wrong in opposite directions.
+  identity: Record<string, { same_as_existing: boolean; candidate_uuid?: string }>
+  types: Record<string, string>
 }
 
 export interface ApiError {

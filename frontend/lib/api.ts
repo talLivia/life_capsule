@@ -1,5 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios'
 import { isJwtExpired } from './jwt'
+import type { EntityBatchAnswer } from './types'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -328,13 +329,13 @@ export const api = {
     return response.data
   },
 
-  confirmEntity: async (
-    segmentId: string,
-    params: { entity_name: string; same_as_existing: boolean; candidate_uuid?: string },
-  ) => {
+  // Answers EVERY question for one recording in a single call, so the
+  // pipeline resumes once and runs to completion. Replaced confirmEntity,
+  // which answered one name and left the graph to pause again with the next.
+  confirmEntities: async (segmentId: string, answers: EntityBatchAnswer) => {
     const response = await apiClient.post(
-      `/api/v1/interview/segments/${segmentId}/confirm-entity`,
-      params,
+      `/api/v1/interview/segments/${segmentId}/confirm-entities`,
+      answers,
     )
     return response.data
   },

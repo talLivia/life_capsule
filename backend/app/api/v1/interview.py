@@ -12,7 +12,7 @@ from app.database import get_db
 from app.interview_config import get_questions
 from app.models import InterviewSession, RawSegment, User
 from app.schemas import (
-    EntityConfirmRequest,
+    EntityBatchConfirmRequest,
     InterviewQuestion,
     InterviewSessionResponse,
     InterviewSessionState,
@@ -452,20 +452,28 @@ async def list_pending_confirmations(
     ]
 
 
-@router.post("/segments/{segment_id}/confirm-entity", response_model=RawSegmentResponse)
-async def confirm_entity(
+@router.post("/segments/{segment_id}/confirm-entities", response_model=RawSegmentResponse)
+async def confirm_entities(
     segment_id: str,
-    payload: EntityConfirmRequest,
+    payload: EntityBatchConfirmRequest,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_producer),
 ):
     """
-    Answer the currently-pending human_confirm question for a segment,
-    resuming analysis_graph.py exactly where it paused (LangGraph's
-    Postgres-backed checkpoint). If the segment has more than one ambiguous
-    entity, resuming answers only the CURRENT one — the graph will pause
-    again with the next question, and the frontend's poll of
-    pending-confirmations will pick that up.
+    Answer EVERY pending question for a segment at once, resuming
+    analysis_graph.py exactly where it paused (LangGraph's Postgres-backed
+    checkpoint). One submit, one resume, and the pipeline runs to completion —
+    it never pauses again for the same recording.
+
+    Replaces the per-name `confirm-entity` endpoint. That one answered a
+    single question and let the graph pause again with the next, so a
+    recording with three ambiguities meant three round trips.
+
+    EVERY question must be answered. Partial submission is rejected rather
+    than defaulted, because the two plausible defaults are both wrong: taking
+    "same as existing" would silently merge two people, and taking "someone
+    new" would silently split one. The producer is looking at the whole screen
+    — the answer to ask for is all of it.
     """
     result = await db.execute(
         select(RawSegment, InterviewSession)
@@ -480,30 +488,65 @@ async def confirm_entity(
         raise HTTPException(status_code=403, detail="Not authorised to confirm this segment")
     if segment.status != "pending_confirmation" or not segment.pending_confirmation:
         raise HTTPException(status_code=409, detail="This segment has no pending confirmation")
-    if segment.pending_confirmation.get("entity_name") != payload.entity_name:
+
+    pending = segment.pending_confirmation
+    identity_questions = {q["name"]: q for q in pending.get("identity_questions") or []}
+    type_questions = {q["name"]: q for q in pending.get("type_questions") or []}
+
+    # Staleness, both directions. An answer to a name this screen never asked
+    # about means the client is answering a payload the pipeline has moved
+    # past; a missing answer means the screen was submitted incomplete.
+    unknown = (set(payload.identity) - set(identity_questions)) | (
+        set(payload.types) - set(type_questions)
+    )
+    if unknown:
         raise HTTPException(
             status_code=409,
-            detail="The pending question has moved on — refresh pending-confirmations",
+            detail=(
+                f"Not questions for this recording: {sorted(unknown)} — "
+                "refresh pending-confirmations"
+            ),
+        )
+    missing = (set(identity_questions) - set(payload.identity)) | (
+        set(type_questions) - set(payload.types)
+    )
+    if missing:
+        raise HTTPException(
+            status_code=400, detail=f"Every question must be answered; missing: {sorted(missing)}"
         )
 
-    candidates = segment.pending_confirmation.get("candidates") or []
-    candidate_uuid = payload.candidate_uuid
-    if payload.same_as_existing:
-        if not candidate_uuid and len(candidates) == 1:
-            # Only one plausible match was ever shown — a bare "yes" is
-            # unambiguous. With 2+ candidates the caller must say which one.
-            candidate_uuid = candidates[0]["uuid"]
-        if not candidate_uuid or candidate_uuid not in {c["uuid"] for c in candidates}:
+    identity: dict = {}
+    for name, answer in payload.identity.items():
+        candidates = identity_questions[name].get("candidates") or []
+        candidate_uuid = answer.candidate_uuid
+        if answer.same_as_existing:
+            if not candidate_uuid and len(candidates) == 1:
+                # Only one plausible match was ever shown — a bare "yes" is
+                # unambiguous. With 2+ candidates the caller must say which.
+                candidate_uuid = candidates[0]["uuid"]
+            if not candidate_uuid or candidate_uuid not in {c["uuid"] for c in candidates}:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f'candidate_uuid for "{name}" must be one of its own candidates',
+                )
+        identity[name] = {
+            "same_as_existing": answer.same_as_existing,
+            "candidate_uuid": candidate_uuid,
+        }
+
+    for name, chosen in payload.types.items():
+        question = type_questions[name]
+        allowed = {question["type"], question["alternative_type"]}
+        if chosen not in allowed:
             raise HTTPException(
                 status_code=400,
-                detail="candidate_uuid must be one of the pending question's candidates",
+                detail=f'type for "{name}" must be one of {sorted(allowed)}',
             )
 
     from app.analysis_graph import resume_segment_analysis
 
     await resume_segment_analysis(
-        segment_id,
-        {"same_as_existing": payload.same_as_existing, "candidate_uuid": candidate_uuid},
+        segment_id, {"identity": identity, "types": dict(payload.types)}
     )
 
     await db.refresh(segment)

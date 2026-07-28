@@ -61,11 +61,14 @@ class EntityWriteResult:
     entities_matched: int = 0
     mentions_written: int = 0
     orphans_removed: int = 0
-    # Entities whose type the extractor was torn about. This is the ONLY
-    # trigger for asking the producer — see entity_extraction for why it is a
-    # runner-up type and not a confidence score. Chunk 4's batched
-    # confirmation screen is built from this; for now it is reported and
-    # logged so the signal is visible rather than silently discarded.
+    # Entities that STILL carry an unanswered type question by the time they
+    # are written. Expected to be EMPTY on the normal path: human_confirm runs
+    # before finalize_ingest and clears `alternative_type` on everything it
+    # asked about, so anything here means a torn classification reached storage
+    # without the producer being asked — the failure this reports is that the
+    # question was skipped, not that it exists. Logged rather than raised: a
+    # wrong `type` is a visibly wrong label the producer can correct, not a
+    # reason to fail an ingest whose transcript is already saved.
     needs_confirmation: List[ExtractedEntity] = field(default_factory=list)
 
 
@@ -128,8 +131,11 @@ async def write_segment_entities(
     result.orphans_removed = await delete_orphaned_entities(db, producer_id)
 
     if result.needs_confirmation:
-        logger.info(
-            "entity_type_confirmation_pending",
+        # WARNING, not INFO: on the normal path human_confirm has already
+        # asked and cleared these, so reaching here means the question was
+        # skipped and a coin-flip classification was stored unasked.
+        logger.warning(
+            "entity_type_confirmation_skipped",
             extra={
                 "segment_id": segment_id,
                 "producer_id": producer_id,

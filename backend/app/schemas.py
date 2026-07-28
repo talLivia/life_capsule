@@ -209,15 +209,36 @@ class SegmentExtractionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class EntityConfirmRequest(BaseModel):
-    """Answer to the currently-pending human_confirm question for a segment.
-    `entity_name` must match the segment's live pending_confirmation payload —
-    a safety check against confirming a stale/wrong question if the pipeline
-    already advanced to the next ambiguous name."""
+class IdentityAnswer(BaseModel):
+    """Whether a name in this recording is someone already in the archive."""
 
-    entity_name: str = Field(..., min_length=1)
     same_as_existing: bool
+    # Required when same_as_existing is true AND the question offered more
+    # than one candidate. Validated against that question's own candidates —
+    # a uuid from a different question is rejected, not silently applied.
     candidate_uuid: Optional[str] = None
+
+
+class EntityBatchConfirmRequest(BaseModel):
+    """Every answer for ONE recording, submitted together.
+
+    Replaces the per-name request that came before it. The old shape carried a
+    single `entity_name` and answered one question, so a recording with three
+    ambiguities took three round trips and three modals — and each was decided
+    without the producer seeing the others.
+
+    Both maps are keyed by ENTITY NAME as it appears in the pending payload,
+    which is also the staleness check: a name that is not one of this
+    segment's live questions is rejected rather than ignored, so answering a
+    screen the pipeline has moved past fails loudly.
+    """
+
+    identity: Dict[str, IdentityAnswer] = Field(default_factory=dict)
+    # entity name -> the chosen type. Must be one of exactly the two the
+    # question offered (its `type` or its `alternative_type`); anything else
+    # is a 400, since a third value could only come from a client inventing
+    # one and would land in a column with a CHECK constraint on it.
+    types: Dict[str, str] = Field(default_factory=dict)
 
 
 class PendingConfirmationResponse(BaseModel):

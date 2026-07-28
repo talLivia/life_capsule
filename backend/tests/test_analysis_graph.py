@@ -12,6 +12,7 @@ LangGraph InMemorySaver, which behaves identically to AsyncPostgresSaver
 from the graph's point of view — only the storage backend differs.
 """
 
+import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
@@ -827,13 +828,16 @@ async def test_full_pipeline_pauses_then_resumes_on_ambiguous_entity(
 
     await db_session.refresh(segment)
     assert segment.status == "pending_confirmation"
-    assert segment.pending_confirmation["entity_name"] == "Gila"
-    assert segment.pending_confirmation["candidates"] == [
+    pending = segment.pending_confirmation
+    assert [q["name"] for q in pending["identity_questions"]] == ["Gila"]
+    assert pending["identity_questions"][0]["candidates"] == [
         {"uuid": "u2", "name": "Gila Cohen", "summary": "a neighbor"}
     ]
+    assert pending["type_questions"] == []
 
     await ag.resume_segment_analysis(
-        segment.id, {"same_as_existing": True, "candidate_uuid": "u2"}
+        segment.id,
+        {"identity": {"Gila": {"same_as_existing": True, "candidate_uuid": "u2"}}, "types": {}},
     )
 
     await db_session.refresh(segment)
@@ -842,6 +846,80 @@ async def test_full_pipeline_pauses_then_resumes_on_ambiguous_entity(
     # the fuller resolved name, not the bare "Gila" the extraction returned.
     entity = (await db_session.execute(select(Entity))).scalar_one()
     assert entity.name == "Gila Cohen"
+
+
+async def test_full_pipeline_asks_identity_and_type_in_ONE_interrupt(
+    db_session, segment, analysis_session_factory, fake_checkpointer, monkeypatch
+):
+    """The whole point of chunk 4. A recording raising both kinds of question
+    must pause ONCE with both, not once per question — and one answer must run
+    it to completion rather than pausing again."""
+
+    async def fake_generate(messages, system_prompt=None, thinking=False, temperature=None):
+        if system_prompt == ag._EXTRACT_TOPICS_SYSTEM_PROMPT:
+            return '["childhood"]'
+        if system_prompt == entity_extraction._ENTITY_EXTRACTION_SYSTEM_PROMPT:
+            return json.dumps([
+                {"name": "Gila", "type": "person", "alternative_type": None, "summary": "s"},
+                {"name": "הכפר הירוק", "type": "place",
+                 "alternative_type": "organisation", "summary": "s"},
+            ])
+        if system_prompt == ag._IMPORTANCE_SYSTEM_PROMPT:
+            return "8"
+        raise AssertionError(f"unexpected system_prompt: {system_prompt}")
+
+    monkeypatch.setattr(ag.llm_service, "generate_response", fake_generate)
+    monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1]))
+    monkeypatch.setattr(
+        ag.entity_store,
+        "get_entity_candidates",
+        AsyncMock(return_value=[{"uuid": "u2", "name": "Gila Cohen", "summary": "a neighbor"}]),
+    )
+
+    await ag.run_segment_analysis(segment.id)
+
+    await db_session.refresh(segment)
+    assert segment.status == "pending_confirmation"
+    pending = segment.pending_confirmation
+    assert [q["name"] for q in pending["identity_questions"]] == ["Gila"]
+    assert [q["name"] for q in pending["type_questions"]] == ["הכפר הירוק"]
+    # Exactly two options, always — the extractor names the runner-up rather
+    # than reporting a confidence score.
+    assert pending["type_questions"][0]["type"] == "place"
+    assert pending["type_questions"][0]["alternative_type"] == "organisation"
+
+    await ag.resume_segment_analysis(
+        segment.id,
+        {
+            "identity": {"Gila": {"same_as_existing": True, "candidate_uuid": "u2"}},
+            "types": {"הכפר הירוק": "organisation"},
+        },
+    )
+
+    await db_session.refresh(segment)
+    assert segment.status == "ready", "one answer runs it to completion — it never pauses again"
+
+    entities = {
+        e.name: e.type
+        for e in (await db_session.execute(select(Entity))).scalars().all()
+    }
+    assert entities == {"Gila Cohen": "person", "הכפר הירוק": "organisation"}
+
+
+async def test_a_recording_with_no_ambiguity_never_pauses(
+    db_session, segment, analysis_session_factory, fake_checkpointer, monkeypatch
+):
+    """Asking about everything trains the producer to click through without
+    reading, which is worse than not asking. A clear classification and a
+    brand-new name together must produce no screen at all."""
+    await _mock_all_llm_calls(monkeypatch, entity_candidates=[])
+
+    result = await ag.run_segment_analysis(segment.id)
+
+    assert "__interrupt__" not in result
+    await db_session.refresh(segment)
+    assert segment.status == "ready"
+    assert segment.pending_confirmation is None
 
 
 async def test_full_pipeline_entity_write_failure_reaches_failed(
@@ -873,147 +951,218 @@ async def test_full_pipeline_entity_write_failure_reaches_failed(
 # after every out-of-band write below.
 
 
-async def test_confirm_entity_endpoint_resumes_and_returns_ready(
-    client: AsyncClient,
-    db_session,
-    segment,
-    analysis_session_factory,
-    fake_checkpointer,
-    auth_headers,
-    monkeypatch,
-):
-    await _mock_all_llm_calls(
-        monkeypatch,
-        entity_candidates=[{"uuid": "u2", "name": "Gila Cohen", "summary": "a neighbor"}],
-    )
-    segment_id = segment.id
-
-    await ag.run_segment_analysis(segment_id)
-    db_session.expire_all()
-
-    pending = await client.get("/api/v1/interview/segments/pending-confirmations", headers=auth_headers)
-    assert pending.status_code == 200
-    body = pending.json()
-    assert len(body) == 1
-    assert body[0]["segment_id"] == segment_id
-    assert body[0]["pending_confirmation"]["entity_name"] == "Gila"
-
-    resp = await client.post(
-        f"/api/v1/interview/segments/{segment_id}/confirm-entity",
-        json={"entity_name": "Gila", "same_as_existing": True, "candidate_uuid": "u2"},
-        headers=auth_headers,
-    )
-    db_session.expire_all()
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "ready"
-
-    pending_after = await client.get(
-        "/api/v1/interview/segments/pending-confirmations", headers=auth_headers
-    )
-    assert pending_after.json() == []
-
-
-async def test_confirm_entity_rejects_stale_question(
-    client: AsyncClient,
-    db_session,
-    segment,
-    analysis_session_factory,
-    fake_checkpointer,
-    auth_headers,
-    monkeypatch,
-):
-    await _mock_all_llm_calls(
-        monkeypatch,
-        entity_candidates=[{"uuid": "u2", "name": "Gila Cohen", "summary": "a neighbor"}],
-    )
-    segment_id = segment.id
-    await ag.run_segment_analysis(segment_id)
-    db_session.expire_all()
-
-    resp = await client.post(
-        f"/api/v1/interview/segments/{segment_id}/confirm-entity",
-        json={"entity_name": "SomeoneElse", "same_as_existing": True},
-        headers=auth_headers,
-    )
-    assert resp.status_code == 409
-
-
-async def test_confirm_entity_multi_candidate_flow(
-    client: AsyncClient,
-    db_session,
-    segment,
-    analysis_session_factory,
-    fake_checkpointer,
-    auth_headers,
-    monkeypatch,
-):
-    """End-to-end HTTP coverage for the fix: a bare "Moshe" ambiguous
-    against two existing entities surfaces both, rejects an unlisted
-    candidate_uuid, rejects an omitted one (no single-candidate default
-    applies with 2+ candidates), and succeeds when the right one is named."""
+async def _pause_with(monkeypatch, segment_id, *, extraction, candidates):
+    """Run the pipeline to its pause, with a given extraction and candidate set."""
 
     async def fake_generate(messages, system_prompt=None, thinking=False, temperature=None):
         if system_prompt == ag._EXTRACT_TOPICS_SYSTEM_PROMPT:
             return '["childhood"]'
         if system_prompt == entity_extraction._ENTITY_EXTRACTION_SYSTEM_PROMPT:
-            return _extraction_reply("Moshe")
+            return json.dumps(extraction)
         if system_prompt == ag._IMPORTANCE_SYSTEM_PROMPT:
             return "8"
         raise AssertionError(f"unexpected system_prompt: {system_prompt}")
 
     monkeypatch.setattr(ag.llm_service, "generate_response", fake_generate)
-    monkeypatch.setattr(
-        ag.entity_store,
-        "get_entity_candidates",
-        AsyncMock(
-            return_value=[
-                {"uuid": "u1", "name": "Moshe Cohen", "summary": "army friend"},
-                {"uuid": "u2", "name": "Moshe Levi", "summary": "neighbor"},
-            ]
-        ),
-    )
     monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1, 0.2, 0.3]))
-    segment_id = segment.id
-
+    monkeypatch.setattr(
+        ag.entity_store, "get_entity_candidates", AsyncMock(return_value=candidates)
+    )
     await ag.run_segment_analysis(segment_id)
+
+
+_MOSHE = [{"name": "Moshe", "type": "person", "alternative_type": None, "summary": "s"}]
+_TWO_MOSHES = [
+    {"uuid": "u1", "name": "Moshe Cohen", "summary": "army friend"},
+    {"uuid": "u2", "name": "Moshe Levi", "summary": "neighbor"},
+]
+_MOSHE_AND_A_TYPE_QUESTION = [
+    {"name": "Moshe", "type": "person", "alternative_type": None, "summary": "s"},
+    {"name": "הכפר הירוק", "type": "place", "alternative_type": "organisation", "summary": "s"},
+]
+
+
+async def test_confirm_entities_answers_everything_in_one_call(
+    client: AsyncClient, db_session, segment, analysis_session_factory,
+    fake_checkpointer, auth_headers, monkeypatch,
+):
+    """One screen, one submit, and the recording is done — where this used to
+    take one round trip per ambiguous name."""
+    segment_id = segment.id
+    await _pause_with(
+        monkeypatch, segment_id,
+        extraction=_MOSHE_AND_A_TYPE_QUESTION,
+        candidates=[{"uuid": "u2", "name": "Moshe Cohen", "summary": "army friend"}],
+    )
     db_session.expire_all()
 
-    pending = await client.get(
+    body = (await client.get(
+        "/api/v1/interview/segments/pending-confirmations", headers=auth_headers
+    )).json()
+    assert len(body) == 1
+    payload = body[0]["pending_confirmation"]
+    assert [q["name"] for q in payload["identity_questions"]] == ["Moshe"]
+    assert [q["name"] for q in payload["type_questions"]] == ["הכפר הירוק"]
+
+    resp = await client.post(
+        f"/api/v1/interview/segments/{segment_id}/confirm-entities",
+        json={
+            "identity": {"Moshe": {"same_as_existing": True, "candidate_uuid": "u2"}},
+            "types": {"הכפר הירוק": "organisation"},
+        },
+        headers=auth_headers,
+    )
+    db_session.expire_all()
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ready"
+
+    after = await client.get(
         "/api/v1/interview/segments/pending-confirmations", headers=auth_headers
     )
-    candidates = pending.json()[0]["pending_confirmation"]["candidates"]
+    assert after.json() == [], "one submit clears the recording entirely"
+
+
+async def test_confirm_entities_rejects_a_partial_submit(
+    client: AsyncClient, db_session, segment, analysis_session_factory,
+    fake_checkpointer, auth_headers, monkeypatch,
+):
+    """Both plausible defaults are wrong in opposite directions — "same"
+    silently merges two people, "new" silently splits one — so an unanswered
+    question is a 400 rather than a guess."""
+    segment_id = segment.id
+    await _pause_with(
+        monkeypatch, segment_id,
+        extraction=_MOSHE_AND_A_TYPE_QUESTION,
+        candidates=[{"uuid": "u2", "name": "Moshe Cohen", "summary": "army friend"}],
+    )
+    db_session.expire_all()
+
+    resp = await client.post(
+        f"/api/v1/interview/segments/{segment_id}/confirm-entities",
+        json={"identity": {"Moshe": {"same_as_existing": False}}, "types": {}},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400
+    assert "הכפר הירוק" in resp.json()["detail"]
+
+    # Still pending — a rejected submit must not consume the pause.
+    db_session.expire_all()
+    still = await client.get(
+        "/api/v1/interview/segments/pending-confirmations", headers=auth_headers
+    )
+    assert len(still.json()) == 1
+
+
+async def test_confirm_entities_rejects_a_stale_answer(
+    client: AsyncClient, db_session, segment, analysis_session_factory,
+    fake_checkpointer, auth_headers, monkeypatch,
+):
+    """Answering a name this screen never asked about means the client is
+    working from a payload the pipeline has moved past."""
+    segment_id = segment.id
+    await _pause_with(monkeypatch, segment_id, extraction=_MOSHE, candidates=_TWO_MOSHES)
+    db_session.expire_all()
+
+    resp = await client.post(
+        f"/api/v1/interview/segments/{segment_id}/confirm-entities",
+        json={"identity": {"SomeoneElse": {"same_as_existing": True}}, "types": {}},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409
+
+
+async def test_confirm_entities_multi_candidate_validation(
+    client: AsyncClient, db_session, segment, analysis_session_factory,
+    fake_checkpointer, auth_headers, monkeypatch,
+):
+    """A bare "Moshe" ambiguous against two existing entities surfaces both,
+    rejects an omitted candidate_uuid (no single-candidate default applies
+    with 2+), rejects an unlisted one, and succeeds when the right one is
+    named."""
+    segment_id = segment.id
+    await _pause_with(monkeypatch, segment_id, extraction=_MOSHE, candidates=_TWO_MOSHES)
+    db_session.expire_all()
+
+    payload = (await client.get(
+        "/api/v1/interview/segments/pending-confirmations", headers=auth_headers
+    )).json()[0]["pending_confirmation"]
+    candidates = payload["identity_questions"][0]["candidates"]
     assert {c["uuid"] for c in candidates} == {"u1", "u2"}
 
-    # Omitting candidate_uuid with 2+ candidates must not silently default.
-    resp = await client.post(
-        f"/api/v1/interview/segments/{segment_id}/confirm-entity",
-        json={"entity_name": "Moshe", "same_as_existing": True},
-        headers=auth_headers,
-    )
-    assert resp.status_code == 400
+    for bad in ({"same_as_existing": True}, {"same_as_existing": True, "candidate_uuid": "nope"}):
+        resp = await client.post(
+            f"/api/v1/interview/segments/{segment_id}/confirm-entities",
+            json={"identity": {"Moshe": bad}, "types": {}},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400, bad
 
-    # A candidate_uuid not among the pending options must be rejected.
     resp = await client.post(
-        f"/api/v1/interview/segments/{segment_id}/confirm-entity",
-        json={"entity_name": "Moshe", "same_as_existing": True, "candidate_uuid": "not-a-real-uuid"},
-        headers=auth_headers,
-    )
-    assert resp.status_code == 400
-
-    # Naming the right one succeeds.
-    resp = await client.post(
-        f"/api/v1/interview/segments/{segment_id}/confirm-entity",
-        json={"entity_name": "Moshe", "same_as_existing": True, "candidate_uuid": "u1"},
+        f"/api/v1/interview/segments/{segment_id}/confirm-entities",
+        json={"identity": {"Moshe": {"same_as_existing": True, "candidate_uuid": "u1"}},
+              "types": {}},
         headers=auth_headers,
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "ready"
 
 
-async def test_confirm_entity_404_when_not_pending(client: AsyncClient, segment, auth_headers):
+async def test_confirm_entities_rejects_a_type_outside_the_two_offered(
+    client: AsyncClient, db_session, segment, analysis_session_factory,
+    fake_checkpointer, auth_headers, monkeypatch,
+):
+    """A third value could only come from a client inventing one, and it would
+    land in a column with a CHECK constraint on it."""
+    segment_id = segment.id
+    await _pause_with(
+        monkeypatch, segment_id,
+        extraction=[{"name": "הכפר הירוק", "type": "place",
+                     "alternative_type": "organisation", "summary": "s"}],
+        candidates=[],
+    )
+    db_session.expire_all()
+
     resp = await client.post(
-        f"/api/v1/interview/segments/{segment.id}/confirm-entity",
-        json={"entity_name": "Gila", "same_as_existing": True},
+        f"/api/v1/interview/segments/{segment_id}/confirm-entities",
+        json={"identity": {}, "types": {"הכפר הירוק": "event"}},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400
+    assert "must be one of" in resp.json()["detail"]
+
+
+async def test_confirm_entities_409_when_nothing_is_pending(
+    client: AsyncClient, segment, auth_headers
+):
+    resp = await client.post(
+        f"/api/v1/interview/segments/{segment.id}/confirm-entities",
+        json={"identity": {}, "types": {}},
         headers=auth_headers,
     )
     assert resp.status_code == 409
+
+
+def test_type_question_gets_the_article_right_in_both_slots():
+    """The runner-up is as likely to be the vowel-initial one, so both slots
+    need the article — not just the second."""
+    q = ag._type_question({"name": "X", "type": "organisation", "alternative_type": "place"})
+    assert q == 'Is "X" an organisation or a place?'
+    q = ag._type_question({"name": "X", "type": "place", "alternative_type": "organisation"})
+    assert q == 'Is "X" a place or an organisation?'
+
+
+def test_type_questions_only_covers_entities_the_extractor_was_torn_about():
+    """Asking about everything trains the producer to click through without
+    reading, which is worse than not asking."""
+    questions = ag.type_questions([
+        {"name": "ניר", "type": "person", "alternative_type": None},
+        {"name": "הכפר הירוק", "type": "place", "alternative_type": "organisation"},
+    ])
+    assert [q["name"] for q in questions] == ["הכפר הירוק"]
+
+
+def test_type_questions_offers_exactly_the_two_the_extractor_named():
+    q = ag.type_questions(
+        [{"name": "X", "type": "place", "alternative_type": "organisation"}]
+    )[0]
+    assert (q["type"], q["alternative_type"]) == ("place", "organisation")

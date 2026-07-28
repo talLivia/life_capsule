@@ -576,38 +576,115 @@ def _confirmation_question(entity_name: str, candidates: List[Dict[str, str]]) -
     )
 
 
+def _article(word: str) -> str:
+    """"an organisation", "a place". Both slots need this, not just the second
+    — the runner-up is as likely to be the vowel-initial one."""
+    return "an" if word[:1].lower() in "aeiou" else "a"
+
+
+def _type_question(entity: Dict[str, Any]) -> str:
+    primary, alternative = entity["type"], entity["alternative_type"]
+    return (
+        f'Is "{entity["name"]}" {_article(primary)} {primary} '
+        f"or {_article(alternative)} {alternative}?"
+    )
+
+
+def type_questions(extracted: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The type questions this recording raises — one per entity the extractor
+    was genuinely TORN about, and no others.
+
+    `alternative_type` is the whole trigger. It is deliberately not a
+    confidence score: self-reported confidence is uncalibrated, whereas "which
+    two are you torn between" is concrete, checkable, and gives the screen
+    exactly two options to render. An entity named plainly produces no
+    question at all, which is the point — asking about everything trains the
+    producer to click through without reading, which is worse than not asking.
+    """
+    return [
+        {
+            "name": e["name"],
+            "type": e["type"],
+            "alternative_type": e["alternative_type"],
+            "question": _type_question(e),
+        }
+        for e in extracted
+        if e.get("alternative_type")
+    ]
+
+
 async def human_confirm_node(state: AnalysisState) -> dict:
-    queue = list(state.get("names_to_check") or [])
-    if not queue:
+    """ONE interrupt per recording, carrying every question it raises.
+
+    This used to interrupt once PER ambiguous name and loop back into itself,
+    so a recording with three questions became three modals in sequence. Now
+    identity and type questions go out together and come back in one answer.
+
+    Why batching is the right shape and not just fewer clicks: a sequence of
+    modals gives the producer no idea how many are coming, and each one is
+    decided without seeing the others — even though "is this the same Moshe"
+    and "is הכפר הירוק a place or an organisation" are both really the same
+    question, "did the system understand this recording". One screen shows the
+    whole of what was unclear about one recording, which is also the only
+    scale at which a producer can tell a small misreading from a big one.
+    """
+    identity_questions = list(state.get("names_to_check") or [])
+    pending_types = type_questions(state.get("extracted_entities") or [])
+    if not identity_questions and not pending_types:
         return {}
-    current = queue[0]
-    remaining = queue[1:]
-    candidates = current["candidates"]
 
     answer = interrupt(
         {
-            "entity_name": current["name"],
-            "candidates": candidates,
-            "question": _confirmation_question(current["name"], candidates),
+            "identity_questions": identity_questions,
+            "type_questions": pending_types,
         }
     )
 
     resolutions = dict(state.get("entity_resolutions") or {})
-    if answer.get("same_as_existing"):
-        chosen_uuid = answer.get("candidate_uuid")
-        chosen = next((c for c in candidates if c["uuid"] == chosen_uuid), None)
-        resolutions[current["name"]] = {
-            "same_as_uuid": chosen_uuid,
-            # Fall back to the raw extracted name only if the resume
-            # payload names a uuid that isn't actually one of the pending
-            # candidates — shouldn't happen through the API (which
-            # validates this), but this keeps the node itself safe either way.
-            "resolved_name": chosen["name"] if chosen else current["name"],
-        }
-    else:
-        resolutions[current["name"]] = {"same_as_uuid": None, "resolved_name": current["name"]}
+    identity_answers = answer.get("identity") or {}
+    for question in identity_questions:
+        name = question["name"]
+        given = identity_answers.get(name) or {}
+        candidates = question["candidates"]
+        if given.get("same_as_existing"):
+            chosen_uuid = given.get("candidate_uuid")
+            chosen = next((c for c in candidates if c["uuid"] == chosen_uuid), None)
+            resolutions[name] = {
+                "same_as_uuid": chosen_uuid,
+                # Fall back to the raw extracted name only if the resume
+                # payload names a uuid that isn't actually one of the pending
+                # candidates — shouldn't happen through the API (which
+                # validates it), but this keeps the node safe on its own.
+                "resolved_name": chosen["name"] if chosen else name,
+            }
+        else:
+            # Covers both "someone new" and an unanswered question. Treating
+            # silence as "someone new" is the SAFE default in a way the
+            # opposite would not be: it creates a separate entity, which shows
+            # up in the extraction panel as two similar names and can be
+            # merged later. Defaulting to "same" would silently attribute one
+            # person's story to another with nothing in the UI to reveal it.
+            resolutions[name] = {"same_as_uuid": None, "resolved_name": name}
 
-    return {"names_to_check": remaining, "entity_resolutions": resolutions}
+    # Types: rewrite the extraction the confirmed answer disagrees with, and
+    # clear alternative_type either way — the question has been asked, so it
+    # must not be raised again by the writer's needs_confirmation report.
+    type_answers = answer.get("types") or {}
+    entities = []
+    for entity in state.get("extracted_entities") or []:
+        entity = dict(entity)
+        if entity.get("alternative_type"):
+            chosen = type_answers.get(entity["name"])
+            if chosen in (entity["type"], entity["alternative_type"]):
+                entity["type"] = chosen
+            entity["alternative_type"] = None
+        entities.append(entity)
+
+    return {
+        "names_to_check": [],
+        "entity_resolutions": resolutions,
+        "extracted_entities": entities,
+    }
 
 
 async def score_importance_node(state: AnalysisState) -> dict:
@@ -712,8 +789,17 @@ def _route_on_error(state: AnalysisState) -> str:
     return "fail" if state.get("error") else "next"
 
 
-def _has_pending_names(state: AnalysisState) -> str:
-    return "confirm" if state.get("names_to_check") else "skip"
+def _has_confirmation_questions(state: AnalysisState) -> str:
+    """Whether this recording raises ANY question — identity or type.
+
+    Both kinds route to the same single node, which is what makes the
+    confirmation batched rather than a sequence.
+    """
+    if state.get("names_to_check"):
+        return "confirm"
+    if type_questions(state.get("extracted_entities") or []):
+        return "confirm"
+    return "skip"
 
 
 def build_graph(checkpointer):
@@ -739,11 +825,15 @@ def build_graph(checkpointer):
     graph.add_edge("embed_transcript", "extract_topics")
     graph.add_edge("extract_topics", "check_entities")
     graph.add_conditional_edges(
-        "check_entities", _has_pending_names, {"confirm": "human_confirm", "skip": "score_importance"}
+        "check_entities",
+        _has_confirmation_questions,
+        {"confirm": "human_confirm", "skip": "score_importance"},
     )
-    graph.add_conditional_edges(
-        "human_confirm", _has_pending_names, {"confirm": "human_confirm", "skip": "score_importance"}
-    )
+    # A PLAIN edge onward, not a loop back into human_confirm: one interrupt
+    # carries every question this recording raises, so there is never a second
+    # one to ask. The self-edge that used to be here is what made a recording
+    # with three ambiguities into three modals in sequence.
+    graph.add_edge("human_confirm", "score_importance")
     graph.add_edge("score_importance", "finalize_ingest")
     graph.add_conditional_edges(
         "finalize_ingest", _route_on_error, {"fail": "fail", "next": END}

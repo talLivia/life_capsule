@@ -11,9 +11,10 @@ updated as work lands.
 
 # NEXT UP: move entities from Graphiti/Neo4j into Postgres
 
-**This is the agreed next piece of work.** Plan settled 2026-07-28; **chunks 1,
-2 and 3 are DONE and signed off — chunk 4 is next.** See "Build chunks" below.
-Read this section before touching anything entity-related.
+**This is the agreed next piece of work.** Plan settled 2026-07-28; **chunks 1
+to 4 are DONE. Chunk 5 is BLOCKED on an explicit go-ahead and a live
+end-to-end run — see "Review points".** Read this section before touching
+anything entity-related.
 
 ## Where it stands right now
 
@@ -31,6 +32,9 @@ Read this section before touching anything entity-related.
 - **Chunk 3 has landed**: all seven read call sites are on Postgres. No
   functional `graph_memory` reference remains in `app/`; what is left is
   historical comments and the module's own tests, both of which go in chunk 5.
+- **Chunk 4 has landed**: batched confirmation. One screen per recording
+  covering identity AND type, one submit; `confirm-entities` replaces
+  `confirm-entity`.
 - **Chunks 1-3 are REVIEWED AND SIGNED OFF** (2026-07-28). The import was
   approved as-is, including the deliberate NULL summary.
 - **Migration `0012` is APPLIED** to the live Neon database (`alembic current`
@@ -218,7 +222,11 @@ confusable-letter pairs.
    functional reference to it remains in `app/`. The read primitives live in
    `entity_store.py` alongside the write path. Folded in as planned: the
    entity map now emits **recording ordinals** instead of raw segment UUIDs.
-4. **Batched confirmation** covering identity + type.
+4. ✅ **DONE — batched confirmation covering identity + type.** ONE interrupt
+   per recording carrying both question kinds, ONE screen, ONE submit. The
+   self-edge that made `human_confirm` loop is gone, and
+   `POST /segments/{id}/confirm-entities` replaces the per-name
+   `confirm-entity`. See "Chunk 4 decisions" below.
 5. **Delete `graph_memory`**, drop the Neo4j/Graphiti dependencies and config.
 
 ## What 1b decided that the plan did not
@@ -252,6 +260,51 @@ offered as a confirmation candidate for later recordings, and new recordings
 do not appear in the entity map until the read sites move. Accepted: accuracy
 measured 0.991 with *and* without the entity map.
 
+## Chunk 4 decisions
+
+**The `pending_confirmation` payload changed shape**, from one question to
+all of them:
+
+```json
+{"identity_questions": [{"name", "candidates", "question"}],
+ "type_questions":     [{"name", "type", "alternative_type", "question"}]}
+```
+
+Safe to change outright because nothing was mid-flight: zero segments were in
+`pending_confirmation` when it landed (checked against the live database
+first). Had there been any, they would have needed draining or a shim — worth
+checking again before changing it a second time.
+
+**`POST /segments/{id}/confirm-entity` is REPLACED by `confirm-entities`**
+(plural). Not versioned, not kept alongside: the old endpoint answered one
+question and let the graph pause again, which is the exact behaviour being
+removed. Frontend and backend deploy together here, so there is no window
+where one calls the other's shape.
+
+**A partial submit is a 400, never a default.** Both plausible defaults are
+wrong in opposite directions — taking "same as existing" silently merges two
+people, taking "someone new" silently splits one — and neither leaves a trace
+in the UI. The producer is looking at the whole screen; the answer to ask for
+is all of it. The button stays disabled until every question is answered, and
+the server re-checks rather than trusting that.
+
+**Inside the node, an unanswered identity question resolves to "someone
+new".** That looks like it contradicts the above, and does not: the API can
+never send one, so this is the node's own last-resort default, and it is the
+recoverable direction. A false split shows up in the extraction panel as two
+similar names and can be merged; a false merge silently attributes one
+person's story to another with nothing to reveal it.
+
+**A type answer must be one of exactly the two offered.** A third value could
+only come from a client inventing one, and it would land in a column with a
+CHECK constraint on it. `alternative_type` is cleared once asked, either way,
+so the writer never re-raises a question already answered.
+
+**`needs_confirmation` reaching `entity_store` is now a WARNING**, not
+information. Confirmation runs before the write and clears what it asked
+about, so a non-empty list means a torn classification was stored without the
+producer ever being asked.
+
 ## Review points — DO NOT SKIP
 
 - **After chunk 2: entities must be visible for review before going further.**
@@ -259,10 +312,23 @@ measured 0.991 with *and* without the entity map.
 - ✅ **DONE — eval re-run after chunk 3: v2 = 0.999, stdev 0.000 over 5 runs,
   every question returning ONE distinct answer. Identical to the baseline, so
   moving all seven read sites cost nothing.**
-- **Nothing irreversible before explicit confirmation.** In particular chunk 5
-  (deleting `graph_memory`, dropping Neo4j) does not happen until the earlier
-  chunks are reviewed and signed off. Neo4j data is the only copy of the
-  entity summaries until chunk 2 has been verified.
+- 🛑 **CHUNK 5 IS BLOCKED ON AN EXPLICIT GO-AHEAD, AND ON A LIVE END-TO-END
+  RUN.** Stated by the producer on 2026-07-28: *"I want to use the app end to
+  end on the new tables before `graph_memory` is deleted, since that's the one
+  step I can't walk back."* Deleting `graph_memory` and dropping Neo4j is the
+  only irreversible step in this plan — Neo4j still holds the pre-import
+  entity data, which is the sole way back if the import turns out to have lost
+  something the review did not catch.
+
+  Nothing in chunks 1–4 depends on chunk 5 happening. **Do not start it, and
+  do not "tidy up" the leftover `graph_memory` references, on the assumption
+  that it is next.**
+
+  What the live run needs to cover, since the review only exercised the
+  read/write paths through tests and scripts: record a take and watch the
+  batched confirmation screen appear and submit; check the "extracted from
+  this" panel shows per-recording summaries; ask questions in `/talk`; and
+  delete a take, confirming a shared entity survives.
 
 ## Chunk 1b verified against real data
 
@@ -556,7 +622,7 @@ Queued, in no fixed order — both are blocked on this work landing:
   `MIN_SPEECH_MS=400`. Gating is enforced **during** a recording, not just at
   its start — see the mic section below for why that mattered.
 
-**Tests:** 524 backend passing; frontend `tsc`, `eslint`, `next build` clean.
+**Tests:** 531 backend passing; frontend `tsc`, `eslint`, `next build` clean.
 
 ---
 
@@ -722,5 +788,5 @@ cd backend
 python scripts/rebaseline_accuracy.py      # v2 accuracy as a MEAN over runs — quote this
 python scripts/compare_retrieval_modes.py  # v1 vs v2: consistency, latency, calls, tokens
 python scripts/seed_sweep.py               # single-run IoU vs known-correct
-python -m pytest -q -m 'not integration'   # 524 tests
+python -m pytest -q -m 'not integration'   # 531 tests
 ```
