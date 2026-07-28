@@ -227,6 +227,33 @@ ingestion → producer confirms in the batched step) and the family-tree page
 are separate, later work. The schema is settled now only so the tables do not
 have to move twice.
 
+## After this migration
+
+Queued, in no fixed order — both are blocked on this work landing:
+
+- **Re-evaluate seek mode.** Player-side seeking (select ranges, seek the
+  original video, skip the ffmpeg trim/concat) was built and then discarded:
+  its ~3s saving was inside the Neo4j entity-map variance (1.35s–9.55s), so it
+  could not be told apart from noise. With that variance gone the measurement
+  becomes meaningful, and the idea deserves a second look on its own merits
+  rather than being written off on a measurement that could never have shown
+  it. Note the discarded implementation had a real bug worth not repeating: a
+  `setTimeout` measured WALL time rather than MEDIA time, so a paused or
+  buffering clip cut in the wrong place.
+- **Family-tree page.** Built from `entity_relations` once they are populated:
+  `type='person'` entities as nodes, `is_tree_edge` relations as edges, the
+  `is_self` entity as root, `year_start`/`year_end` as lifespan. The property
+  worth designing around is that every edge carries `source_segment_id`, so a
+  relationship links back to the recording where it was said — clicking
+  "brother" can play the producer saying "I have four brothers". That is a
+  materially better artifact than a tree drawn from a form, and it falls out
+  of the schema for free.
+
+  Needs first: the relation capture flow (LLM proposes at ingestion → producer
+  confirms in the batched step from chunk 4), and note that relations cannot
+  be expressed at all without the `is_self` root, which migration 0012
+  creates.
+
 ---
 
 ## Working
@@ -322,17 +349,32 @@ lighter load; the harness average is the one to trust.
 
 - **Retest after the mic fixes.** The clip-echo and gate-stranding fixes below
   are committed and build clean but have not been exercised live.
-- **`מה עשית בצבא?` returns the whole army recording** (u6-u9, 19s), including
-  "I'd go home every two weeks". Traced and **stable 5/5**, so this is a
-  genuine relevance judgment, not the accepted marginal variance. The model
-  reads the question as a paraphrase of that recording's own interview
-  question ("tell me about your military service…") and matches at RECORDING
-  level rather than unit level — asked about the *role* specifically it
-  correctly returns u6 alone. Undecided how (or whether) to address; note it
-  is the interview-question anchor (which fixed the wife case) working
-  against us here.
 - **Follow-up suggestions have not been seen live**, only verified against the
   real archive through `select_units`.
+
+### DECIDED — not a bug: `מה עשית בצבא?` returns the whole army recording
+
+Returns u6-u9 (19s), including "I'd go home every two weeks". Traced and
+**stable 5/5**, so it is a genuine relevance judgment, not the accepted
+marginal variance.
+
+**This is correct behaviour and must not be "fixed".** A broad question
+deserves a broad answer. The mechanism narrows correctly when the question
+narrows — asked about the corps/role specifically ("which corps did you serve
+in?") it returns u6 alone. Both halves of that are the same mechanism working,
+not one working and one failing.
+
+What produces it: the model reads the question as a paraphrase of that
+recording's own interview question ("tell me about your military service…")
+and matches at RECORDING level rather than unit level. That is the
+interview-question anchor — the same thing that fixed the unnamed-spouse case
+— applied to a broad question.
+
+Anyone tempted to narrow this should note that the only way to do so is to
+weaken the question-level match, which breaks the narrow case in exchange.
+See CLAUDE.md's "breadth falls out of the question" rule: there is
+deliberately no duration cap, no question-type classifier and no length
+heuristic anywhere in the code.
 
 ### Resolved: the mic bugs that were corrupting live testing
 
