@@ -12,21 +12,27 @@ updated as work lands.
 # NEXT UP: move entities from Graphiti/Neo4j into Postgres
 
 **This is the agreed next piece of work.** Plan settled 2026-07-28; **chunk 1
-is in progress** — see "Build chunks" below for exactly where to resume. Read
-this section before touching anything entity-related.
+is done, chunk 2 is next** — see "Build chunks" below for exactly where to
+resume. Read this section before touching anything entity-related.
 
 ## Where it stands right now
 
 - **Chunk 1a has landed** (`df25171`): the merge key
   (`app/services/entity_names.py`, 21 direct tests) and the four ORM models
-  (`Entity`, `EntityMention`, `RelationType`, `EntityRelation`). Both inert —
-  nothing writes these tables yet. 445 backend tests pass.
-- **Resume at the write path** — see chunk 1 below.
+  (`Entity`, `EntityMention`, `RelationType`, `EntityRelation`).
+- **Chunk 1b has landed**: the write path. `entity_extraction.py` (structured
+  `{name, type, alternative_type, summary}`) and `entity_store.py` (the
+  merge-on-`normalized_name` writer) replace `add_episode` in
+  `finalize_ingest_node`. **Newly ingested recordings now write entities to
+  Postgres and nothing else.**
+- **Resume at chunk 2** — import the 11 existing entities.
 - Migration `0012_entities_in_postgres.py` is **written, committed and pushed**
   — and **NOT APPLIED**.
 - ⚠️ **`entrypoint.sh` runs `alembic upgrade head` on startup, so the next
-  deploy applies it automatically.** Judged safe: it is purely additive (new
-  tables only, no existing table altered) and nothing reads or writes them yet.
+  deploy applies it automatically.** It is purely additive (new tables only,
+  no existing table altered). **It must now be applied BEFORE the next
+  ingestion**, though — the write path targets these tables, so ingesting
+  against a database without them fails the segment.
 - Validated by executing `upgrade()` **and** `downgrade()` against the real
   database inside a rolled-back transaction: 5 self-entities created, 20
   relation types seeded, 6 tree-bearing, CHECK constraints firing, database
@@ -52,9 +58,9 @@ chat modes**, so this is not a v2-only change:
 | Call site | Function | Mode |
 | --- | --- | --- |
 | `full_archive_retrieval._build_entity_map` | `get_episode_entity_names` | v2 |
-| `segment_deletion` + `analysis_graph.transcribe_node` | `remove_episodes_for_segment` | all |
+| `segment_deletion` (+ `transcribe_node`, **✅ removed in 1b**) | `remove_episodes_for_segment` | all |
 | `analysis_graph.check_entities_node` | `get_entity_candidates` | ingestion |
-| `analysis_graph.finalize_ingest_node` | `add_episode` (**the write path**) | ingestion |
+| ~~`analysis_graph.finalize_ingest_node`~~ **✅ DONE in 1b** | was `add_episode` (**the write path**) | ingestion |
 | `segment_extraction._load_entities` | direct Cypher (name + summary) | panel |
 | `retrieval_service` ×4 | `find_related_episodes`, `..._scored`, `get_episode_entity_names`, `get_entity_candidates` | **v1 `video_clips`** |
 | `relevance_scorer` + `response_assembler` ×3 | `get_episode_entity_names` | **`avatar`** |
@@ -161,18 +167,48 @@ confusable-letter pairs.
 1. **Models + normalisation + the write path.**
    - ✅ **1a DONE** (`df25171`) — `entity_names.normalize_entity_name` and the
      four ORM models.
-   - ⬜ **1b — RESUME HERE.** The write path: extraction returns
-     `{name, type, alternative_type, summary}`; a writer service upserts
-     `entities` on the unique constraint and inserts one `entity_mentions` row
-     per recording carrying that recording's own summary. Replaces
-     `analysis_graph.finalize_ingest_node`'s `add_episode` call. Note the
-     extraction prompt also needs the "if it fits no category it is not a
-     named entity — omit it" instruction (the `עכבר` case).
-2. **Import the 11 existing entities.** Verify the `מונטריאול` merge lands as
-   ONE row with TWO mentions.
+   - ✅ **1b DONE** — `entity_extraction.py` + `entity_store.py`, wired into
+     `check_entities_node` (one extraction, used twice) and
+     `finalize_ingest_node` (writes entities, no longer calls `add_episode`).
+     See "What 1b decided that the plan did not" below.
+2. ⬜ **Import the 11 existing entities — RESUME HERE.** Verify the
+   `מונטריאול` merge lands as ONE row with TWO mentions. Types come from the
+   backfill table below. Neo4j is now frozen and read-only, so it is still the
+   authoritative source for this import.
 3. **Move the seven read call sites off `graph_memory`.**
 4. **Batched confirmation** covering identity + type.
 5. **Delete `graph_memory`**, drop the Neo4j/Graphiti dependencies and config.
+
+## What 1b decided that the plan did not
+
+Three things the plan did not settle, decided while building and worth
+knowing before chunk 2:
+
+**Neo4j is now FROZEN — nothing writes to it.** `transcribe_node`'s
+`remove_episodes_for_segment` call was **removed**, not just `add_episode`.
+It existed to stop a re-ingest duplicating an episode, which was correct for
+as long as a rewrite followed it. With no rewrite it would delete and never
+replace — and until chunk 2 imports them, the graph holds the ONLY copy of the
+entity summaries, so re-analysing a recording would have silently destroyed
+them. `segment_deletion` keeps its own removal call; there the deletion is the
+point. Re-ingest is still idempotent one layer down: `entity_store` replaces a
+segment's mentions rather than appending.
+
+**A confirmed identity is applied by RENAMING.** `same_as_uuid` is a Neo4j
+uuid and means nothing to Postgres, where the merge is not a suggestion to an
+engine but `UNIQUE (producer_id, normalized_name)`. So "Moshe is the Moshe
+Cohen you already have" is applied by writing the entity under the fuller
+name, landing it on that row by the merge key. The opposite answer — *same
+name, different person* — **cannot be expressed yet** and is chunk 4's job:
+two entities with one name need a distinguishing name first. That is the same
+single row the archive has today, not a regression.
+
+**Known gap for the duration of chunks 2–3:** extraction and the WRITE path
+are Postgres while the disambiguation READ (`get_entity_candidates`) still
+queries the frozen graph. So a name first introduced after this change is not
+offered as a confirmation candidate for later recordings, and new recordings
+do not appear in the entity map until the read sites move. Accepted: accuracy
+measured 0.991 with *and* without the entity map.
 
 ## Review points — DO NOT SKIP
 
@@ -253,6 +289,14 @@ invisible to answers, and re-runnable.
 
 ## Not in scope for this work
 
+**No self-entity is created at signup.** Migration 0012 creates one per
+EXISTING producer and its own comment says new producers get theirs "at
+signup (application code)" — that code does not exist yet. Nothing breaks
+today (`entity_store` never needs the row, and its orphan sweep skips
+`is_self` rather than requiring it), but a producer who signs up after the
+migration has no tree root, and relations cannot be expressed without one.
+Belongs with the relation capture flow, not before it.
+
 `entity_relations` and the year columns are created by migration 0012 but
 **nothing populates them**. The capture flow (LLM proposes relations at
 ingestion → producer confirms in the batched step) and the family-tree page
@@ -310,8 +354,9 @@ Queued, in no fixed order — both are blocked on this work landing:
 - "Extracted from this" panel per recording (`segment_extraction.py` →
   `GET /segments/{id}/extraction`), read-only. `_load_entities` is the single
   seam the Postgres migration replaces.
-- Graphiti entity extraction per segment, feeding the entity map —
-  **being replaced; see NEXT UP above.**
+- Entity extraction per segment now writes `entities` / `entity_mentions` in
+  Postgres (`entity_extraction.py` → `entity_store.py`). Reads still go
+  through Graphiti until chunk 3 — **see NEXT UP above.**
 
 **Chat modes** (producer-level `User.chat_mode`, migration `0011`)
 - `avatar` — LLM → TTS → MuseTalk.
@@ -336,7 +381,7 @@ Queued, in no fixed order — both are blocked on this work landing:
   `MIN_SPEECH_MS=400`. Gating is enforced **during** a recording, not just at
   its start — see the mic section below for why that mattered.
 
-**Tests:** 424 backend passing; frontend `tsc`, `eslint`, `next build` clean.
+**Tests:** 491 backend passing; frontend `tsc`, `eslint`, `next build` clean.
 
 ---
 
@@ -502,5 +547,5 @@ cd backend
 python scripts/rebaseline_accuracy.py      # v2 accuracy as a MEAN over runs — quote this
 python scripts/compare_retrieval_modes.py  # v1 vs v2: consistency, latency, calls, tokens
 python scripts/seed_sweep.py               # single-run IoU vs known-correct
-python -m pytest -q -m 'not integration'   # 424 tests
+python -m pytest -q -m 'not integration'   # 491 tests
 ```

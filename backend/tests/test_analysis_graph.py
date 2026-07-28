@@ -18,12 +18,32 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import AsyncClient
 from langgraph.checkpoint.memory import InMemorySaver
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import analysis_graph as ag
-from app.models import InterviewSession, RawSegment
+from app.models import Entity, EntityMention, InterviewSession, RawSegment
+from app.services import entity_extraction
+from app.services.entity_extraction import ExtractedEntity
 
 pytestmark = pytest.mark.asyncio
+
+
+def _extraction_reply(*names):
+    """The structured extraction's reply, as the LLM would produce it."""
+    import json
+
+    return json.dumps(
+        [
+            {
+                "name": name,
+                "type": "person",
+                "alternative_type": None,
+                "summary": f"{name} in this recording",
+            }
+            for name in names
+        ]
+    )
 
 
 @pytest.fixture
@@ -120,29 +140,40 @@ def test_parse_importance_score_clamps_range():
     assert ag._parse_importance_score("no number here") == 5
 
 
-def test_build_custom_extraction_instructions_empty():
-    assert ag._build_custom_extraction_instructions({}) is None
+def test_apply_entity_resolutions_without_resolutions_changes_nothing():
+    entities = [ExtractedEntity(name="Gila", type="person")]
+    assert ag._apply_entity_resolutions(entities, {}) == entities
 
 
-def test_build_custom_extraction_instructions_same_and_different():
-    text = ag._build_custom_extraction_instructions(
-        {"Gila": {"same_as_uuid": "uuid-1"}, "Dan": {"same_as_uuid": None}}
+def test_apply_entity_resolutions_renames_onto_the_confirmed_entity():
+    """In Postgres the merge is not a suggestion to a graph engine — it is
+    UNIQUE (producer_id, normalized_name). So confirming that "Moshe" is the
+    existing "Moshe Cohen" is applied by writing the entity under the fuller
+    name, which lands it on that row by the merge key."""
+    resolved = ag._apply_entity_resolutions(
+        [ExtractedEntity(name="Moshe", type="person", summary="an army friend")],
+        {"Moshe": {"same_as_uuid": "uuid-1", "resolved_name": "Moshe Cohen"}},
     )
-    assert "uuid-1" in text
-    assert "Gila" in text
-    assert "distinct from any other same-named entity" in text
-    assert "Dan" in text
+    assert resolved[0].name == "Moshe Cohen"
+    # Only the name is redirected; what THIS recording said is untouched.
+    assert resolved[0].summary == "an army friend"
+    assert resolved[0].type == "person"
 
 
-def test_build_custom_extraction_instructions_uses_fuller_resolved_name():
-    """The whole point of this fix: a bare mention ("Moshe") resolved to an
-    existing fuller-named entity ("Moshe Cohen") must steer Graphiti using
-    the fuller name, not just the ambiguous bare one."""
-    text = ag._build_custom_extraction_instructions(
-        {"Moshe": {"same_as_uuid": "uuid-1", "resolved_name": "Moshe Cohen"}}
+def test_apply_entity_resolutions_leaves_a_someone_new_answer_alone():
+    resolved = ag._apply_entity_resolutions(
+        [ExtractedEntity(name="Moshe", type="person")],
+        {"Moshe": {"same_as_uuid": None, "resolved_name": "Moshe"}},
     )
-    assert "Moshe Cohen" in text
-    assert "uuid-1" in text
+    assert resolved[0].name == "Moshe"
+
+
+def test_apply_entity_resolutions_ignores_resolutions_for_other_names():
+    resolved = ag._apply_entity_resolutions(
+        [ExtractedEntity(name="Gila", type="person")],
+        {"Moshe": {"same_as_uuid": "uuid-1", "resolved_name": "Moshe Cohen"}},
+    )
+    assert resolved[0].name == "Gila"
 
 
 # ── Node-level tests ─────────────────────────────────────────────────────────
@@ -378,7 +409,7 @@ async def test_check_entities_node_tags_chunks_with_entities(db_session, segment
     monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value="[]"))
     await ag.create_transcript_chunks_node({"segment_id": segment.id, "phrases": _sample_phrases()})
 
-    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value='["carpenter"]'))
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("carpenter")))
     monkeypatch.setattr(ag.graph_memory, "get_entity_candidates", AsyncMock(return_value=[]))
 
     result = await ag.check_entities_node(
@@ -438,7 +469,7 @@ async def test_extract_topics_node_tolerates_llm_failure(segment, monkeypatch):
 
 
 async def test_check_entities_node_auto_resolves_exact_match(segment, monkeypatch):
-    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value='["Gila"]'))
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Gila")))
     monkeypatch.setattr(
         ag.graph_memory,
         "get_entity_candidates",
@@ -454,7 +485,7 @@ async def test_check_entities_node_auto_resolves_exact_match(segment, monkeypatc
 
 
 async def test_check_entities_node_flags_fuzzy_match(segment, monkeypatch):
-    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value='["Gila"]'))
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Gila")))
     monkeypatch.setattr(
         ag.graph_memory,
         "get_entity_candidates",
@@ -478,7 +509,7 @@ async def test_check_entities_node_multiple_candidates_stay_ambiguous(segment, m
     that real-matches MULTIPLE existing entities ("Moshe Cohen" AND "Moshe
     Levi") must surface all of them, not silently pick one and ask a plain
     yes/no against it."""
-    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value='["Moshe"]'))
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Moshe")))
     monkeypatch.setattr(
         ag.graph_memory,
         "get_entity_candidates",
@@ -509,7 +540,7 @@ async def test_check_entities_node_exact_match_among_others_still_ambiguous(segm
     matching an existing bare "Moshe" node while ALSO fuzzy-matching
     "Moshe Cohen" must still ask, since the exact match isn't necessarily
     the right one."""
-    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value='["Moshe"]'))
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Moshe")))
     monkeypatch.setattr(
         ag.graph_memory,
         "get_entity_candidates",
@@ -531,7 +562,7 @@ async def test_check_entities_node_exact_match_among_others_still_ambiguous(segm
 
 
 async def test_check_entities_node_no_candidates_means_new_entity(segment, monkeypatch):
-    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value='["Gila"]'))
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Gila")))
     monkeypatch.setattr(ag.graph_memory, "get_entity_candidates", AsyncMock(return_value=[]))
 
     result = await ag.check_entities_node(
@@ -549,7 +580,7 @@ async def test_check_entities_node_ignores_unrelated_candidate(segment, monkeypa
     querying "דן כהן" against a graph containing only "גילה" still returned
     "גילה" as a "candidate"). A brand-new, lexically unrelated name must NOT
     spuriously pause for human confirmation."""
-    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value='["Dan Cohen"]'))
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Dan Cohen")))
     monkeypatch.setattr(
         ag.graph_memory,
         "get_entity_candidates",
@@ -570,7 +601,7 @@ async def test_check_entities_node_ignores_shared_surname_candidate(segment, mon
     surname "Cohen" — two different people, not the same one referred to
     with different specificity, so this must not pause for confirmation."""
     monkeypatch.setattr(
-        ag.llm_service, "generate_response", AsyncMock(return_value='["Gila Cohen"]')
+        ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Gila Cohen"))
     )
     monkeypatch.setattr(
         ag.graph_memory,
@@ -604,17 +635,24 @@ async def test_score_importance_node_defaults_on_failure(segment, monkeypatch):
     assert result["importance_score"] == 5.0
 
 
-async def test_finalize_ingest_node_marks_ready_and_builds_instructions(db_session, segment, monkeypatch):
-    mock_add_episode = AsyncMock()
-    monkeypatch.setattr(ag.graph_memory, "add_episode", mock_add_episode)
-
+async def test_finalize_ingest_node_writes_entities_and_marks_ready(
+    db_session, segment, test_user
+):
     result = await ag.finalize_ingest_node(
         {
             "segment_id": segment.id,
-            "group_id": "producer-1",
+            "group_id": test_user.id,
             "transcript": segment.transcript,
             "topic_tags": ["childhood"],
-            "entity_resolutions": {"Gila": {"same_as_uuid": "u1"}},
+            "extracted_entities": [
+                {
+                    "name": "Gila",
+                    "type": "person",
+                    "alternative_type": None,
+                    "summary": "the speaker's grandmother",
+                }
+            ],
+            "entity_resolutions": {},
         }
     )
 
@@ -622,19 +660,49 @@ async def test_finalize_ingest_node_marks_ready_and_builds_instructions(db_sessi
     await db_session.refresh(segment)
     assert segment.status == "ready"
 
-    mock_add_episode.assert_awaited_once()
-    kwargs = mock_add_episode.call_args.kwargs
-    assert kwargs["group_id"] == "producer-1"
-    assert "u1" in kwargs["custom_extraction_instructions"]
+    entity = (await db_session.execute(select(Entity))).scalar_one()
+    assert (entity.name, entity.type, entity.producer_id) == (
+        "Gila",
+        "person",
+        test_user.id,
+    )
+    mention = (await db_session.execute(select(EntityMention))).scalar_one()
+    assert mention.raw_segment_id == segment.id
+    assert mention.summary == "the speaker's grandmother"
+
+
+async def test_finalize_ingest_node_applies_a_confirmed_resolution(
+    db_session, segment, test_user
+):
+    """A confirmed "Moshe is Moshe Cohen" has to reach the row that gets
+    written, or the producer answered a question that changed nothing."""
+    await ag.finalize_ingest_node(
+        {
+            "segment_id": segment.id,
+            "group_id": test_user.id,
+            "transcript": segment.transcript,
+            "extracted_entities": [
+                {"name": "Moshe", "type": "person", "alternative_type": None, "summary": None}
+            ],
+            "entity_resolutions": {
+                "Moshe": {"same_as_uuid": "u1", "resolved_name": "Moshe Cohen"}
+            },
+        }
+    )
+
+    entity = (await db_session.execute(select(Entity))).scalar_one()
+    assert entity.name == "Moshe Cohen"
 
 
 async def test_finalize_ingest_node_marks_failed_on_error(db_session, segment, monkeypatch):
     """finalize_ingest_node itself only reports the error — the graph's
     conditional edge routes to `fail_node`, which is what actually persists
-    status='failed' (see test_full_pipeline_add_episode_failure_reaches_failed
+    status='failed' (see test_full_pipeline_entity_write_failure_reaches_failed
     below for that end-to-end behavior)."""
     monkeypatch.setattr(
-        ag.graph_memory, "add_episode", AsyncMock(side_effect=RuntimeError("neo4j down"))
+        ag.entity_store,
+        "write_segment_entities",
+        AsyncMock(side_effect=RuntimeError("postgres down")),
     )
 
     result = await ag.finalize_ingest_node(
@@ -642,18 +710,21 @@ async def test_finalize_ingest_node_marks_failed_on_error(db_session, segment, m
     )
 
     assert result["status"] == "failed"
-    assert "neo4j down" in result["error"]
+    assert "postgres down" in result["error"]
+    # The segment must NOT have been marked ready behind a failed write.
+    await db_session.refresh(segment)
+    assert segment.status == "pending_analysis"
 
 
 # ── Full-graph tests (real LangGraph, InMemorySaver) ────────────────────────
 
 
-async def _mock_all_llm_calls(monkeypatch, *, entity_candidates):
+async def _mock_all_llm_calls(monkeypatch, *, entity_candidates, entity_name="Gila"):
     async def fake_generate(messages, system_prompt=None, thinking=False, temperature=None):
         if system_prompt == ag._EXTRACT_TOPICS_SYSTEM_PROMPT:
             return '["childhood"]'
-        if system_prompt == ag._ENTITY_NAME_SYSTEM_PROMPT:
-            return '["Gila"]'
+        if system_prompt == entity_extraction._ENTITY_EXTRACTION_SYSTEM_PROMPT:
+            return _extraction_reply(entity_name)
         if system_prompt == ag._IMPORTANCE_SYSTEM_PROMPT:
             return "8"
         raise AssertionError(f"unexpected system_prompt: {system_prompt}")
@@ -662,14 +733,6 @@ async def _mock_all_llm_calls(monkeypatch, *, entity_candidates):
     monkeypatch.setattr(
         ag.graph_memory, "get_entity_candidates", AsyncMock(return_value=entity_candidates)
     )
-    # transcribe_node clears the segment's prior episode before entity
-    # resolution (see its comment). Unmocked, that reaches a REAL Graphiti
-    # client — these are unit tests, and the live Neo4j/aiohttp connections it
-    # opened were never closed, surfacing later as an "Event loop is closed"
-    # teardown error on the integration test that runs after them.
-    monkeypatch.setattr(
-        ag.graph_memory, "remove_episodes_for_segment", AsyncMock(return_value=0)
-    )
     monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1, 0.2, 0.3]))
 
 
@@ -677,8 +740,6 @@ async def test_full_pipeline_no_ambiguity_reaches_ready(
     db_session, segment, analysis_session_factory, fake_checkpointer, monkeypatch
 ):
     await _mock_all_llm_calls(monkeypatch, entity_candidates=[])
-    mock_add_episode = AsyncMock()
-    monkeypatch.setattr(ag.graph_memory, "add_episode", mock_add_episode)
 
     result = await ag.run_segment_analysis(segment.id)
 
@@ -688,8 +749,15 @@ async def test_full_pipeline_no_ambiguity_reaches_ready(
     assert segment.topic_tags == ["childhood"]
     assert segment.importance_score == 8.0
     assert segment.embedding == [0.1, 0.2, 0.3]
-    mock_add_episode.assert_awaited_once()
-    assert mock_add_episode.call_args.kwargs["custom_extraction_instructions"] is None
+
+    # The entity the extraction found is in Postgres, with the summary THIS
+    # recording produced attached to the mention rather than to the entity.
+    entity = (await db_session.execute(select(Entity))).scalar_one()
+    assert entity.name == "Gila"
+    mention = (await db_session.execute(select(EntityMention))).scalar_one()
+    assert mention.entity_id == entity.id
+    assert mention.raw_segment_id == segment.id
+    assert mention.summary == "Gila in this recording"
 
 
 async def test_full_pipeline_creates_transcript_chunks_for_a_fresh_transcription(
@@ -728,7 +796,6 @@ async def test_full_pipeline_creates_transcript_chunks_for_a_fresh_transcription
         ),
     )
     await _mock_all_llm_calls(monkeypatch, entity_candidates=[])
-    monkeypatch.setattr(ag.graph_memory, "add_episode", AsyncMock())
 
     result = await ag.run_segment_analysis(segment.id)
 
@@ -755,8 +822,6 @@ async def test_full_pipeline_pauses_then_resumes_on_ambiguous_entity(
         monkeypatch,
         entity_candidates=[{"uuid": "u2", "name": "Gila Cohen", "summary": "a neighbor"}],
     )
-    mock_add_episode = AsyncMock()
-    monkeypatch.setattr(ag.graph_memory, "add_episode", mock_add_episode)
 
     await ag.run_segment_analysis(segment.id)
 
@@ -773,18 +838,20 @@ async def test_full_pipeline_pauses_then_resumes_on_ambiguous_entity(
 
     await db_session.refresh(segment)
     assert segment.status == "ready"
-    mock_add_episode.assert_awaited_once()
-    instructions = mock_add_episode.call_args.kwargs["custom_extraction_instructions"]
-    assert "u2" in instructions
-    assert "Gila Cohen" in instructions  # the fuller resolved name, not just "Gila"
+    # The confirmed answer survives the pause and reaches the written row:
+    # the fuller resolved name, not the bare "Gila" the extraction returned.
+    entity = (await db_session.execute(select(Entity))).scalar_one()
+    assert entity.name == "Gila Cohen"
 
 
-async def test_full_pipeline_add_episode_failure_reaches_failed(
+async def test_full_pipeline_entity_write_failure_reaches_failed(
     db_session, segment, analysis_session_factory, fake_checkpointer, monkeypatch
 ):
     await _mock_all_llm_calls(monkeypatch, entity_candidates=[])
     monkeypatch.setattr(
-        ag.graph_memory, "add_episode", AsyncMock(side_effect=RuntimeError("neo4j down"))
+        ag.entity_store,
+        "write_segment_entities",
+        AsyncMock(side_effect=RuntimeError("postgres down")),
     )
 
     result = await ag.run_segment_analysis(segment.id)
@@ -819,7 +886,6 @@ async def test_confirm_entity_endpoint_resumes_and_returns_ready(
         monkeypatch,
         entity_candidates=[{"uuid": "u2", "name": "Gila Cohen", "summary": "a neighbor"}],
     )
-    monkeypatch.setattr(ag.graph_memory, "add_episode", AsyncMock())
     segment_id = segment.id
 
     await ag.run_segment_analysis(segment_id)
@@ -860,7 +926,6 @@ async def test_confirm_entity_rejects_stale_question(
         monkeypatch,
         entity_candidates=[{"uuid": "u2", "name": "Gila Cohen", "summary": "a neighbor"}],
     )
-    monkeypatch.setattr(ag.graph_memory, "add_episode", AsyncMock())
     segment_id = segment.id
     await ag.run_segment_analysis(segment_id)
     db_session.expire_all()
@@ -890,8 +955,8 @@ async def test_confirm_entity_multi_candidate_flow(
     async def fake_generate(messages, system_prompt=None, thinking=False, temperature=None):
         if system_prompt == ag._EXTRACT_TOPICS_SYSTEM_PROMPT:
             return '["childhood"]'
-        if system_prompt == ag._ENTITY_NAME_SYSTEM_PROMPT:
-            return '["Moshe"]'
+        if system_prompt == entity_extraction._ENTITY_EXTRACTION_SYSTEM_PROMPT:
+            return _extraction_reply("Moshe")
         if system_prompt == ag._IMPORTANCE_SYSTEM_PROMPT:
             return "8"
         raise AssertionError(f"unexpected system_prompt: {system_prompt}")
@@ -908,7 +973,6 @@ async def test_confirm_entity_multi_candidate_flow(
         ),
     )
     monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1, 0.2, 0.3]))
-    monkeypatch.setattr(ag.graph_memory, "add_episode", AsyncMock())
     segment_id = segment.id
 
     await ag.run_segment_analysis(segment_id)

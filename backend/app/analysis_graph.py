@@ -1,8 +1,17 @@
 """
 LangGraph analysis pipeline (Prompt 5) — turns a raw recorded segment into a
-Graphiti episode, with a human-in-the-loop pause when an entity name in the
-new segment might (or might not) be the same real-world person/place/event
-as one already in the story archive.
+transcript, chunks, and a set of ENTITIES AND MENTIONS IN POSTGRES, with a
+human-in-the-loop pause when an entity name in the new segment might (or
+might not) be the same real-world person/place/event as one already in the
+story archive.
+
+Entities used to be written to Graphiti/Neo4j here (`add_episode`). They are
+now written by `services/entity_store.py` — see `docs/PROJECT_STATUS.md` for
+why, and note the transitional state this leaves: extraction and the WRITE
+path are Postgres, while the disambiguation READ below (`get_entity_candidates`)
+still queries the graph until the read call sites move. The practical effect
+is that a name first introduced after this change is not yet offered as a
+confirmation candidate for later recordings.
 
 Nodes, in order: transcribe -> embed_transcript -> extract_topics ->
 check_entities -> human_confirm (loops until every ambiguous name this
@@ -28,14 +37,14 @@ returns that node as a "candidate", so a lexical-similarity gate
 Prompt 6/10 entity-based primary matching) runs first — only a name that's
 actually similar to a candidate's name (substring or a high SequenceMatcher
 ratio) counts as a real match at all. A name with zero real matches is
-brand new and never interrupts — Graphiti will just create it during
-finalize_ingest.
+brand new and never interrupts — entity_store creates it during
+finalize_ingest, or merges it onto an existing row by normalized_name.
 
 Auto-resolve without asking ONLY when there is exactly one real match and
 it's an exact case-insensitive name match — anything else is ambiguous and
 interrupts, INCLUDING a first-name-only mention (e.g. "Moshe") that real-
 matches more than one existing entity (e.g. "Moshe Cohen" AND "Moshe
-Levi"). That case used to silently pick whichever candidate Graphiti's
+Levi"). That case used to silently pick whichever candidate the graph's
 hybrid search ranked first and ask a plain yes/no against just that one —
 a real bug (the other equally-plausible candidate was never even
 mentioned). human_confirm now surfaces every real match at once so the
@@ -44,13 +53,12 @@ asked about an arbitrary single guess, and the confirmed resolution stores
 the FULLER identifying name (e.g. "Moshe Cohen", not just "Moshe") so
 future retrieval never confuses the two people again.
 
-Entity name extraction here is our OWN lightweight Claude call (see
-_ENTITY_NAME_SYSTEM_PROMPT below), not graphiti_core's internal
-`extract_nodes` (utils.maintenance.node_operations) — that function exists
-but requires constructing EpisodicNode/GraphitiClients objects and isn't
-part of Graphiti's stable public surface, so depending on it here would be
-one version bump away from breaking silently. This module only ever calls
-Graphiti through graph_memory.py's public wrapper functions.
+Entity extraction is our OWN call (`services/entity_extraction.py`), never
+graphiti_core's internal `extract_nodes` — that function exists but requires
+constructing EpisodicNode/GraphitiClients objects and isn't part of
+Graphiti's stable public surface, so depending on it would be one version
+bump away from breaking silently. Owning the call is also what makes the
+richer `{name, type, alternative_type, summary}` shape possible at all.
 
 Checkpointing: LangGraph's `human_confirm` interrupt needs to survive well
 past the request that triggered it (the storyteller may finish the whole
@@ -67,6 +75,7 @@ import json
 import logging
 import re
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -77,7 +86,8 @@ from sqlalchemy import delete, select
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import InterviewSession, RawSegment, TranscriptChunk, User
-from app.services import embeddings, graph_memory
+from app.services import embeddings, entity_extraction, entity_store, graph_memory
+from app.services.entity_extraction import ExtractedEntity
 from app.services.graph_memory import names_are_similar as _names_are_similar
 from app.services.llm import llm_service
 from app.services.storage import storage_service
@@ -103,6 +113,13 @@ class AnalysisState(TypedDict, total=False):
     topic_tags: List[str]
     names_to_check: List[Dict[str, str]]
     entity_resolutions: Dict[str, Dict[str, Optional[str]]]
+    # The structured extraction from check_entities_node, as plain dicts —
+    # {name, type, alternative_type, summary}. Carried through state rather
+    # than re-extracted in finalize_ingest so that the names a human is asked
+    # to confirm are exactly the names that get written; two calls over one
+    # transcript can disagree. Dicts, not dataclasses, because this state is
+    # checkpointed and may sit through a human confirmation lasting days.
+    extracted_entities: List[Dict[str, Any]]
     importance_score: float
     status: str
     error: str
@@ -117,14 +134,10 @@ about - its real content, not the interview question that prompted it. \
 Do not include any commentary, explanation, or text outside the JSON \
 array. Example output: ["military service", "friendship", "loss"]"""
 
-_ENTITY_NAME_SYSTEM_PROMPT = """\
-You are a strict named-entity extractor for a personal life-story \
-archive. Given a transcript, output ONLY a JSON array of distinct \
-proper names of PEOPLE, PLACES, or notable EVENTS mentioned in the \
-text, written exactly as they appear there (same language/script). Do \
-not include pronouns, generic nouns, or anything that is not a proper \
-name. Do not include any commentary or text outside the JSON array. \
-Example output: ["Gila", "Tel Aviv"]"""
+# Entity extraction moved to services/entity_extraction.py, which returns
+# {name, type, alternative_type, summary} instead of bare names. It had to:
+# the summaries used to come from Graphiti's own extraction inside
+# add_episode, and with the write path in Postgres nothing else produces them.
 
 _IMPORTANCE_SYSTEM_PROMPT = """\
 You are scoring the significance of a single memory for a personal \
@@ -164,33 +177,40 @@ def _parse_importance_score(text: str) -> int:
     return max(0, min(10, int(match.group(0))))
 
 
-def _build_custom_extraction_instructions(
+def _apply_entity_resolutions(
+    entities: List[ExtractedEntity],
     resolutions: Dict[str, Dict[str, Optional[str]]],
-) -> Optional[str]:
+) -> List[ExtractedEntity]:
+    """Carry a human's disambiguation answer into the entity that gets written.
+
+    This used to build a natural-language instruction steering Graphiti's own
+    dedup. In Postgres the merge is not a suggestion — it is
+    UNIQUE (producer_id, normalized_name) — so a confirmation is applied by
+    RENAMING: when the producer confirms that "Moshe" is the "Moshe Cohen"
+    already in their archive, the entity is written under "Moshe Cohen" and
+    lands on that row by the merge key. The fuller name is also the better
+    one to store, exactly as before: it stays disambiguated against the other
+    Moshe for every future recording.
+
+    The opposite answer — "same name, DIFFERENT person" — is deliberately not
+    handled here, and cannot be: the merge key is the name, so two entities
+    with one name need a distinguishing name before Postgres can hold them
+    apart. That is chunk 4's confirmation flow, which asks for one. Until
+    then this is the same behaviour the archive has today (a single row), not
+    a regression introduced by the move.
+    """
     if not resolutions:
-        return None
-    lines = []
-    for name, resolution in resolutions.items():
-        same_as_uuid = resolution.get("same_as_uuid")
-        resolved_name = resolution.get("resolved_name") or name
-        if same_as_uuid:
-            # Use the FULLER identifying name (e.g. "Moshe Cohen", confirmed
-            # by the storyteller) rather than the bare mention ("Moshe") —
-            # so the entity's name in the graph stays disambiguated for
-            # future retrieval, not just linked by id.
-            lines.append(
-                f'Treat the name "{name}" as referring to the existing entity with id '
-                f'{same_as_uuid}, also known as "{resolved_name}" - this is the same '
-                f"real-world person, place, or event mentioned before. Do not create a "
-                f'duplicate node for it; use "{resolved_name}" as this entity\'s name.'
-            )
+        return entities
+
+    resolved: List[ExtractedEntity] = []
+    for entity in entities:
+        resolution = resolutions.get(entity.name)
+        if resolution and resolution.get("same_as_uuid"):
+            name = resolution.get("resolved_name") or entity.name
+            resolved.append(replace(entity, name=name))
         else:
-            lines.append(
-                f'The name "{name}" in this text refers to a person, place, or event '
-                f"distinct from any other same-named entity already in the graph. Do "
-                f"not merge it with an existing entity of the same name."
-            )
-    return "\n".join(lines)
+            resolved.append(entity)
+    return resolved
 
 
 async def _load_segment_and_user(db, segment_id: str):
@@ -212,35 +232,24 @@ async def _load_segment_and_user(db, segment_id: str):
 async def transcribe_node(state: AnalysisState) -> dict:
     segment_id = state["segment_id"]
 
-    # Clear this segment's PREVIOUS graph contribution before anything else in
-    # the pipeline runs.
+    # REMOVED: this node used to clear the segment's previous Graphiti episode
+    # before anything else ran, so that re-ingesting could not duplicate it.
+    # It must not do that any more, and the reason is worth stating because
+    # deleting-before-rewriting looked correct for as long as there was a
+    # rewrite.
     #
-    # ORDERING BUG THIS FIXES: check_entities (several nodes later) resolves
-    # names against the producer's existing graph and records a same_as_uuid.
-    # add_episode then removed the segment's old episode — which deletes any
-    # entity whose last remaining source was that episode. If check_entities
-    # had resolved onto exactly such an entity, the extraction instruction
-    # pointed at a uuid that no longer existed, and Graphiti created a fresh
-    # node instead of reusing it. That is precisely how "מונטריאול" became two
-    # nodes. Removing first means every candidate check_entities sees is one
-    # that will still be there when the episode is written.
+    # finalize_ingest no longer writes episodes — it writes entities to
+    # Postgres. So a removal here would delete and never replace, and until
+    # chunk 2 imports the existing entities, the graph holds the ONLY copy of
+    # their summaries. Re-analysing a recording would silently destroy them.
+    # Neo4j is deliberately frozen (read-only) between this chunk and its
+    # import: nothing writes to it, so nothing needs to clean up after itself.
     #
-    # Safe to do here: the pipeline only reaches this node when a segment is
-    # being (re)analysed, and its NEW episode isn't written until
-    # finalize_ingest. Any episode present now is from a previous completed
-    # ingestion OF THIS SAME SEGMENT, which is exactly what should go — a
-    # no-op on the common path, where the segment is brand new.
+    # Re-ingest is still idempotent, one layer down: entity_store replaces
+    # this segment's mentions rather than appending to them.
     #
-    # Scoped to this segment id and nothing else. Siblings (other takes on
-    # the same question) have their own episodes and are untouched; a take is
-    # only ever destroyed by an explicit DELETE /segments/{id}.
-    if state.get("group_id"):
-        try:
-            await graph_memory.remove_episodes_for_segment(
-                segment_id, group_id=state["group_id"]
-            )
-        except Exception as e:
-            logger.warning(f"Could not clear prior episode for {segment_id}: {e}")
+    # segment_deletion keeps its own remove_episodes_for_segment call — there
+    # the deletion is the point, not a prelude to a rewrite.
 
     async with AsyncSessionLocal() as db:
         segment, user = await _load_segment_and_user(db, segment_id)
@@ -481,18 +490,14 @@ async def check_entities_node(state: AnalysisState) -> dict:
     group_id = state["group_id"]
     transcript = state.get("transcript") or ""
     if not transcript:
-        return {"names_to_check": [], "entity_resolutions": {}}
+        return {"names_to_check": [], "entity_resolutions": {}, "extracted_entities": []}
 
-    try:
-        raw = await llm_service.generate_response(
-            messages=[{"role": "user", "content": transcript}],
-            system_prompt=_ENTITY_NAME_SYSTEM_PROMPT,
-            temperature=0,  # structured extraction — deterministic
-        )
-        names = _parse_json_array(raw)
-    except Exception as e:
-        logger.warning(f"check_entities_node name extraction failed for segment {segment_id}: {e}")
-        names = []
+    # ONE extraction, used twice: the names drive disambiguation here, and the
+    # full objects are written by finalize_ingest. Extracting again there
+    # could return a different list, and then the names the producer confirmed
+    # would not be the names that got stored.
+    extracted = await entity_extraction.extract_entities(transcript)
+    names = [e.name for e in extracted]
 
     if names:
         # Prompt 11: trace each extracted entity name back to the specific
@@ -553,7 +558,11 @@ async def check_entities_node(state: AnalysisState) -> dict:
             }
         )
 
-    return {"names_to_check": to_check, "entity_resolutions": auto_resolutions}
+    return {
+        "names_to_check": to_check,
+        "entity_resolutions": auto_resolutions,
+        "extracted_entities": [e.as_dict() for e in extracted],
+    }
 
 
 def _confirmation_question(entity_name: str, candidates: List[Dict[str, str]]) -> str:
@@ -638,25 +647,32 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
         if segment is None:
             return {"error": "segment not found", "status": "failed"}
 
-        instructions = _build_custom_extraction_instructions(
-            state.get("entity_resolutions") or {}
+        entities = _apply_entity_resolutions(
+            [
+                ExtractedEntity.from_dict(d)
+                for d in state.get("extracted_entities") or []
+            ],
+            state.get("entity_resolutions") or {},
         )
+
         try:
-            await graph_memory.add_episode(
+            await entity_store.write_segment_entities(
+                db,
                 segment_id=segment_id,
-                transcript=state.get("transcript") or segment.transcript or "",
-                topic_tags=state.get("topic_tags") or segment.topic_tags or [],
-                timestamp=segment.created_at,
-                group_id=state["group_id"],
-                custom_extraction_instructions=instructions,
+                producer_id=state["group_id"],
+                entities=entities,
             )
+            # ONE commit for the entities AND the status. entity_store
+            # deliberately does not commit, so a recording can never be marked
+            # ready behind a half-written entity set — which would be
+            # indistinguishable from one that genuinely mentioned nobody.
+            segment.status = "ready"
+            segment.pending_confirmation = None
+            await db.commit()
         except Exception as e:
+            await db.rollback()
             logger.error(f"finalize_ingest_node failed for segment {segment_id}: {e}")
             return {"error": str(e), "status": "failed"}
-
-        segment.status = "ready"
-        segment.pending_confirmation = None
-        await db.commit()
 
     # This recording is now part of the producer's archive. Drop the cached
     # archive/entity-map/units so the very next question sees it, rather than

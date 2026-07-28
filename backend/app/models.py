@@ -11,6 +11,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -412,6 +413,16 @@ class Entity(Base):
     )
 
     __table_args__ = (
+        # THE merge rule, declared here as well as in migration 0012 (which
+        # remains the authority for the real database, along with the CHECK
+        # constraints and the one-self-per-producer partial index, neither of
+        # which SQLAlchemy can express portably). Declared so the test
+        # database enforces it too: without it SQLite would happily accept the
+        # duplicate row the write path exists to prevent, and the merge would
+        # be untested exactly where it matters.
+        UniqueConstraint(
+            "producer_id", "normalized_name", name="uq_entities_producer_normalized"
+        ),
         Index("ix_entities_producer_type", "producer_id", "type"),
     )
 

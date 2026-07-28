@@ -11,8 +11,16 @@ What it does per ready segment:
      a silent no-op reusing the bad text.
   2. re-transcribes from the stored video, rebuilds chunks (that node deletes
      existing ones first), re-embeds, re-tags topics, re-scores importance
-  3. re-runs finalize_ingest -> add_episode, which now REPLACES the segment's
-     episode instead of adding a second one
+  3. re-runs finalize_ingest, which writes entities and mentions to Postgres
+     via entity_store, REPLACING the segment's previous mentions rather than
+     appending to them
+
+CAUTION until the entity import (chunk 2 of the Postgres migration) has run:
+finalize_ingest no longer writes to Graphiti, so re-ingesting a segment does
+NOT refresh its graph episode. The graph still holds the only copy of the
+existing entity summaries — this script will not destroy them (nothing removes
+episodes any more), but the two stores will disagree for any segment it
+touches. Import first, re-ingest after.
 
 Calls the graph nodes directly rather than re-invoking the LangGraph thread:
 a completed thread would resume oddly, and human_confirm would interrupt a
