@@ -4,6 +4,7 @@ import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # psycopg3's async mode (LangGraph's AsyncPostgresSaver checkpointer,
 # app/analysis_graph.py) can't run under Windows' default ProactorEventLoop —
@@ -66,6 +67,32 @@ if settings.SENTRY_DSN:
         logger.warning(f"Failed to initialize Sentry: {e}")
 
 
+_LOCAL_DB_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "db", "postgres"})
+
+
+def _is_local_database(url: str) -> bool:
+    """Whether `url` points somewhere it is safe to build a schema from the ORM.
+
+    An allowlist, not a blocklist of known-remote providers: the failure this
+    guards against is a remote host nobody thought to exclude. SQLite (a file
+    or :memory:) is local by construction; "db" and "postgres" are the
+    docker-compose service names, local to a compose stack.
+
+    Anything else — unparseable, or with no host at all — counts as NOT local.
+    Hostless deliberately fails closed: an empty string parses to no host just
+    as a unix-socket URL does, and a URL we cannot read is exactly the case
+    where guessing wrong is expensive. The cost of being wrong in this
+    direction is one log line telling you to run `alembic upgrade head`.
+    """
+    if url.startswith("sqlite"):
+        return True
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return False
+    return bool(host) and host in _LOCAL_DB_HOSTS
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting AI Avatar System...")
@@ -79,14 +106,28 @@ async def lifespan(app: FastAPI):
     #     migration drift and leave prod without the indexes.
     #   * Local dev / quick starts without the entrypoint get create_all as a
     #     convenience so `uvicorn main:app` against a fresh DB just works.
-    # Gate on DEBUG to pick the right behavior.
-    if settings.DEBUG:
+    #   * DEBUG alone is NOT enough to authorise it. A local run with DEBUG=true
+    #     and DATABASE_URL pointing at the shared/production database will
+    #     happily create tables THERE. That is not hypothetical: it is how the
+    #     four entity tables came to exist on Neon while Alembic still reported
+    #     0011 — created from the ORM models, so without a single CHECK
+    #     constraint, without the unique constraint that IS the entity merge
+    #     rule, and without the seeded relation types. A schema that looks
+    #     present and enforces nothing is worse than one that is absent, because
+    #     nothing fails until data is already wrong.
+    # Gate on DEBUG *and* a local database to pick the right behavior.
+    if settings.DEBUG and _is_local_database(settings.DATABASE_URL):
         try:
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
-            logger.info("Database tables created/verified (DEBUG create_all)")
+            logger.info("Database tables created/verified (DEBUG create_all, local DB)")
         except Exception as e:
             logger.warning(f"Database not available at startup (will retry on first request): {e}")
+    elif settings.DEBUG:
+        logger.warning(
+            "DEBUG is on but DATABASE_URL is not local — skipping create_all. "
+            "Run `alembic upgrade head` to change this database's schema."
+        )
     else:
         logger.info("Skipping create_all; schema is managed by Alembic (alembic upgrade head)")
 

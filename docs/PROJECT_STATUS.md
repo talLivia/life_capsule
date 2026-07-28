@@ -11,9 +11,9 @@ updated as work lands.
 
 # NEXT UP: move entities from Graphiti/Neo4j into Postgres
 
-**This is the agreed next piece of work.** Plan settled 2026-07-28; **chunk 1
-is done, chunk 2 is next** — see "Build chunks" below for exactly where to
-resume. Read this section before touching anything entity-related.
+**This is the agreed next piece of work.** Plan settled 2026-07-28; **chunks 1
+and 2 are done and AWAITING REVIEW** — see "Build chunks" below. Read this
+section before touching anything entity-related.
 
 ## Where it stands right now
 
@@ -25,19 +25,47 @@ resume. Read this section before touching anything entity-related.
   merge-on-`normalized_name` writer) replace `add_episode` in
   `finalize_ingest_node`. **Newly ingested recordings now write entities to
   Postgres and nothing else.**
-- **Resume at chunk 2** — import the 11 existing entities.
-- Migration `0012_entities_in_postgres.py` is **written, committed and pushed**
-  — and **NOT APPLIED**.
-- ⚠️ **`entrypoint.sh` runs `alembic upgrade head` on startup, so the next
-  deploy applies it automatically.** It is purely additive (new tables only,
-  no existing table altered). **It must now be applied BEFORE the next
-  ingestion**, though — the write path targets these tables, so ingesting
-  against a database without them fails the segment.
-- Validated by executing `upgrade()` **and** `downgrade()` against the real
-  database inside a rolled-back transaction: 5 self-entities created, 20
-  relation types seeded, 6 tree-bearing, CHECK constraints firing, database
-  unchanged. That run caught a real bug — `users.full_name` is NULL for
-  several producers, so the self-entity name falls back `full_name → username`.
+- **Chunk 2 has landed**: the 11 graph entities are imported (10 rows — `עכבר`
+  dropped). `scripts/import_graph_entities.py` is the record of what was
+  decided and is idempotent.
+- **AWAITING REVIEW — do not start chunk 3 until the imported rows are
+  signed off.**
+- **Migration `0012` is APPLIED** to the live Neon database (`alembic current`
+  = `0012 (head)`). Verified afterwards: 4 tables, 5 self-entities (1 via the
+  `full_name → username` fallback), 20 relation types with 6 tree-bearing,
+  every CHECK and UNIQUE constraint present, `pg_trgm` installed, and a
+  before/after schema diff showing the 14 pre-existing tables **unchanged** in
+  columns, constraints, indexes and row counts.
+- Exactly **one** producer has `full_name IS NULL` (`prodspot1784624977`), so
+  the username fallback applied to that one row. (An earlier note here said
+  "several producers" — that was wrong.)
+
+### ⚠️ The migration could not be applied as-is — read this before the next one
+
+`alembic current` said `0011`, but all four tables **already existed** on Neon.
+They had been created by `Base.metadata.create_all`, which `main.py` ran
+because `DEBUG=true` locally while `DATABASE_URL` pointed at the live database.
+Any local `uvicorn main:app` after chunk 1a added the ORM models did it.
+
+They were the ORM's tables, not the migration's — **empty, and missing every
+invariant**: no CHECK constraints, no `uq_entities_producer_normalized` (which
+IS the entity merge rule), no `UNIQUE NULLS NOT DISTINCT` on mentions, no
+trigram index, no `pg_trgm`, no seeded relation types, no self-entities. Index
+names gave it away (`ix_entities_producer_id`, SQLAlchemy's `index=True`
+naming, rather than the migration's `ix_entity_mentions_entity`).
+
+**This is worse than the tables being absent.** Chunk 2 would have imported
+into a schema with nothing enforcing the merge, and `מונטריאול` could have
+landed as two rows without anything failing.
+
+Resolved by dropping the four (verified empty inside the same transaction that
+dropped them, so a row arriving first would have aborted rather than been
+destroyed) and then running `alembic upgrade head` normally.
+
+**Guarded against recurring:** `main._is_local_database` now gates `create_all`
+on the database being local as well as `DEBUG` — an allowlist of hosts, failing
+closed on anything unparseable or hostless. `tests/test_startup_schema_guard.py`
+covers it, including the exact Neon URL shape that caused this.
 
 ## Why we're doing it
 
@@ -171,11 +199,11 @@ confusable-letter pairs.
      `check_entities_node` (one extraction, used twice) and
      `finalize_ingest_node` (writes entities, no longer calls `add_episode`).
      See "What 1b decided that the plan did not" below.
-2. ⬜ **Import the 11 existing entities — RESUME HERE.** Verify the
-   `מונטריאול` merge lands as ONE row with TWO mentions. Types come from the
-   backfill table below. Neo4j is now frozen and read-only, so it is still the
-   authoritative source for this import.
-3. **Move the seven read call sites off `graph_memory`.**
+2. ✅ **DONE — the 11 existing entities are imported.** 10 rows, 11 mentions;
+   `מונטריאול` verified as ONE row with TWO mentions by direct query.
+   `scripts/import_graph_entities.py`, idempotent, dry-run by default.
+3. ⬜ **Move the seven read call sites off `graph_memory` — NEXT, once the
+   import is signed off.**
 4. **Batched confirmation** covering identity + type.
 5. **Delete `graph_memory`**, drop the Neo4j/Graphiti dependencies and config.
 
@@ -220,6 +248,24 @@ measured 0.991 with *and* without the entity map.
   (deleting `graph_memory`, dropping Neo4j) does not happen until the earlier
   chunks are reviewed and signed off. Neo4j data is the only copy of the
   entity summaries until chunk 2 has been verified.
+
+## One imported summary is NULL, deliberately
+
+`מונטריאול` is the only entity two recordings mention, and Graphiti stored one
+summary per entity. That summary — "the place he flew to for a year and a half
+right after discharge from the air force" — is a restatement of `5d128933`
+("right after discharge I flew to Montreal for a year and a half") and contains
+nothing from `097b606b` ("when I was in Montreal I studied programming"). It
+was never really consolidated: Graphiti kept one account and dropped the other.
+
+So it is attributed to `5d128933`, and **`097b606b`'s mention has `summary =
+NULL`**. Copying it to both would make the career recording claim something it
+never said — the exact failure per-mention summaries exist to prevent.
+
+**To fill it in:** re-run that segment through the normal ingestion path.
+Chunk 1b's extractor produces a per-recording summary by construction, so this
+needs no special tooling — it is the one place where the import is lossy and
+the fix is ordinary.
 
 ## Type backfill for the 11 existing entities
 
@@ -381,7 +427,7 @@ Queued, in no fixed order — both are blocked on this work landing:
   `MIN_SPEECH_MS=400`. Gating is enforced **during** a recording, not just at
   its start — see the mic section below for why that mattered.
 
-**Tests:** 491 backend passing; frontend `tsc`, `eslint`, `next build` clean.
+**Tests:** 504 backend passing; frontend `tsc`, `eslint`, `next build` clean.
 
 ---
 
@@ -547,5 +593,5 @@ cd backend
 python scripts/rebaseline_accuracy.py      # v2 accuracy as a MEAN over runs — quote this
 python scripts/compare_retrieval_modes.py  # v1 vs v2: consistency, latency, calls, tokens
 python scripts/seed_sweep.py               # single-run IoU vs known-correct
-python -m pytest -q -m 'not integration'   # 491 tests
+python -m pytest -q -m 'not integration'   # 504 tests
 ```
