@@ -73,9 +73,10 @@ def upgrade() -> None:
         # `name` is what the storyteller actually said, preserved verbatim —
         # it is what gets shown back to them.
         sa.Column("name", sa.String(), nullable=False),
-        # `normalized_name` is the match key: final-letter forms folded,
-        # ט/ת and other confusable pairs normalised. This is what makes
-        # תבריה/טבריה resolve without fuzzy guessing at query time.
+        # `normalized_name` is the match key. Its exact rules live in
+        # app/services/entity_names.py — that function is the authority, and
+        # this comment deliberately does not restate them, because a copy
+        # here would drift from the code that actually builds the key.
         sa.Column("normalized_name", sa.String(), nullable=False),
         # NO summary column here — deliberately. A summary describes what ONE
         # recording said, so it lives on the mention. See entity_mentions.

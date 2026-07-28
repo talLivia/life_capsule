@@ -367,3 +367,164 @@ class FamilyInvite(Base):
     redeemed_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (Index("ix_family_invites_producer_status", "producer_id", "status"),)
+
+
+class Entity(Base):
+    """A person, place, organisation or event named in this producer's
+    archive — the Postgres replacement for Graphiti's Entity nodes.
+
+    Holds only what is true of the THING, independent of any one recording:
+    its name, what kind of thing it is, and (for events) when it happened.
+    What a particular recording SAID about it lives on EntityMention, one row
+    per recording — see that class for why.
+    """
+
+    __tablename__ = "entities"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    producer_id = Column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # What the storyteller actually said, verbatim — this is what gets shown
+    # back to them.
+    name = Column(String, nullable=False)
+    # The MERGE KEY: two names normalising to the same value are one entity,
+    # enforced by the unique constraint below. Always produced by
+    # entity_names.normalize_entity_name, never hand-built — the constraint
+    # cannot tell a correctly-derived key from a careless one.
+    normalized_name = Column(String, nullable=False)
+    # person | place | organisation | event | other. A CHECK constraint in
+    # migration 0012 enforces the vocabulary; this column is deliberately not
+    # an Enum so adding a type is a migration, not a code deploy.
+    type = Column(String, nullable=False, default="other", server_default="other")
+    # Mainly meaningful on events. Nullable everywhere: most entities have no
+    # year, and guessing one is worse than leaving it open.
+    year_start = Column(Integer, nullable=True)
+    year_end = Column(Integer, nullable=True)
+    # The producer themselves. Extracted summaries are phrased relative to
+    # "the speaker", so relations need a node for that person to point at;
+    # the family tree roots here. One per producer (partial unique index).
+    is_self = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    mentions = relationship(
+        "EntityMention", back_populates="entity", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_entities_producer_type", "producer_id", "type"),
+    )
+
+
+class EntityMention(Base):
+    """One recording naming one entity, and what THAT recording said about it.
+
+    The summary lives here rather than on Entity so that it can never go
+    stale: it describes exactly one recording, so adding a recording inserts a
+    row and deleting one drops a row, and no existing row is ever rewritten.
+    Where something needs "a summary for Gila", it lists these in the
+    recordings' chronological order — no LLM call, no merge step, correct by
+    construction. A single summary on Entity would have needed regenerating on
+    every ingest AND every delete to stay honest.
+
+    This table is also both halves of the load-bearing work the graph used to
+    do: the entity map ("which recordings mention this name") and the deletion
+    safety check ("is any other recording still mentioning it"). Both are
+    joins on raw_segment_id.
+    """
+
+    __tablename__ = "entity_mentions"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    entity_id = Column(
+        String, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # REQUIRED, and cascading — this is what makes deleting a recording a
+    # single Postgres transaction rather than a two-database dance.
+    raw_segment_id = Column(
+        String,
+        ForeignKey("raw_segments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # OPTIONAL, and repopulated on re-ingest rather than preserved: moving to
+    # Deepgram turned one chunk into eight, invalidating every stored chunk
+    # id. Losing chunk-level precision on re-ingest is acceptable; losing the
+    # entity-to-recording link is not.
+    chunk_id = Column(
+        String, ForeignKey("transcript_chunks.id", ondelete="SET NULL"), nullable=True
+    )
+    # What THIS recording said about the entity — "a fellow soldier in her
+    # unit", not a merged portrait.
+    summary = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    entity = relationship("Entity", back_populates="mentions")
+
+
+class RelationType(Base):
+    """The vocabulary of entity relations, and everything true of each type.
+
+    A lookup table rather than a `category` column on EntityRelation, because
+    category is a FUNCTION of the type — 'sibling' is always family — and a
+    per-row column could contradict it. It also constrains the vocabulary via
+    FK (an LLM inventing "brother-ish" fails loudly), and is where symmetry
+    and inverses live instead of a hardcoded dict.
+
+    Seeded by migration 0012, not by application code: the FK means rows must
+    exist before any relation can be written.
+    """
+
+    __tablename__ = "relation_types"
+
+    relation_type = Column(String, primary_key=True)
+    # family | social | professional | other — for display grouping.
+    category = Column(String, nullable=False)
+    # AUTHORITATIVE for the family tree, and deliberately allowed to disagree
+    # with `category`: in-laws and cousins are family but a tree that drew
+    # them stops being readable. The tree page never guesses.
+    is_tree_edge = Column(Boolean, nullable=False)
+    # NULL for symmetric types — 'sibling' inverted is still 'sibling'.
+    inverse_type = Column(String, nullable=True)
+    is_symmetric = Column(Boolean, nullable=False)
+    label_en = Column(String, nullable=False)
+    label_he = Column(String, nullable=False)
+
+
+class EntityRelation(Base):
+    """A relationship between two entities, learned from one recording.
+
+    NOT populated yet — the capture flow is separate, later work. The table
+    exists now so the schema does not have to move twice.
+
+    A relation rather than a column on the person, because "uncle" is a
+    property of a PAIR: the same person is a sibling to one and a parent to
+    another. ONE directed row per relation, never two — storing both
+    directions means every edit and delete has to keep a pair in sync, and
+    they will eventually disagree. The inverse is derived at read time from
+    RelationType.
+    """
+
+    __tablename__ = "entity_relations"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    from_entity_id = Column(
+        String, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    to_entity_id = Column(
+        String, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    relation_type = Column(
+        String, ForeignKey("relation_types.relation_type"), nullable=False
+    )
+    # The recording this was learned from, cascading — a relation must never
+    # outlive the recording that established it. Same ghost problem as
+    # חיל האוויר, and worse here: a wrong edge in a family tree is highly
+    # visible.
+    source_segment_id = Column(
+        String,
+        ForeignKey("raw_segments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
