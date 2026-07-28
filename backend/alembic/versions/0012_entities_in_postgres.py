@@ -77,7 +77,8 @@ def upgrade() -> None:
         # ט/ת and other confusable pairs normalised. This is what makes
         # תבריה/טבריה resolve without fuzzy guessing at query time.
         sa.Column("normalized_name", sa.String(), nullable=False),
-        sa.Column("summary", sa.Text(), nullable=True),
+        # NO summary column here — deliberately. A summary describes what ONE
+        # recording said, so it lives on the mention. See entity_mentions.
         sa.Column(
             "type",
             sa.String(),
@@ -167,6 +168,20 @@ def upgrade() -> None:
             sa.ForeignKey("transcript_chunks.id", ondelete="SET NULL"),
             nullable=True,
         ),
+        # What THIS recording said about this entity — "a fellow soldier in
+        # her unit", not a merged portrait.
+        #
+        # On the mention rather than the entity, which removes the need to
+        # regenerate a summary entirely rather than relocating it. Adding a
+        # recording inserts a row; deleting one drops a row; no existing row
+        # is ever rewritten, so no summary can go stale relative to the
+        # recording it describes — the same one-source-of-truth rule this
+        # migration exists to enforce, applied one level down.
+        #
+        # Where something needs "a summary for Gila", it lists the mention
+        # summaries in the recordings' chronological order. No LLM call, no
+        # concatenation logic, correct by construction on insert and delete.
+        sa.Column("summary", sa.Text(), nullable=True),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now()
         ),
@@ -346,13 +361,12 @@ def upgrade() -> None:
     op.execute(
         """
         INSERT INTO entities
-            (id, producer_id, name, normalized_name, summary, type, is_self, created_at)
+            (id, producer_id, name, normalized_name, type, is_self, created_at)
         SELECT
             gen_random_uuid()::text,
             u.id,
             COALESCE(NULLIF(TRIM(u.full_name), ''), u.username),
             LOWER(TRIM(COALESCE(NULLIF(TRIM(u.full_name), ''), u.username))),
-            'The storyteller — the person whose archive this is.',
             'person',
             true,
             NOW()
