@@ -481,7 +481,24 @@ async def _trim_clip(source_path: Path, start_sec: float, end_sec: float, output
     """Re-encodes (not stream-copy) for frame-accurate cut points — a
     stream-copy trim only snaps to keyframes, which could be off by a
     second or more depending on the source's GOP structure, undermining
-    the whole point of a word-timestamp-precise pinpointed answer."""
+    the whole point of a word-timestamp-precise pinpointed answer.
+
+    `-preset veryfast` because re-encoding is ~98% of assembly time and the
+    default (medium) buys nothing here. MEASURED on a real 4.2s cut from this
+    archive, 5 runs: 1.149s -> 0.491s, and the output got SMALLER (0.79 MB ->
+    0.57 MB, 1432 -> 1000 kbps) with identical duration, resolution and frame
+    count. Faster AND smaller is unusual for a faster preset; it holds here
+    because the footage is a static talking head, which x264 encodes well
+    without the slower motion search. Confirmed by eye on the face/lip region
+    before landing, since that is where compression artefacts would show
+    first and this footage is a person talking.
+
+    Whole-assembly effect, same archive: 0.761s -> 0.338s for a
+    single-recording answer, 3.057s -> 1.275s for one spanning two.
+
+    Do NOT reach for `-preset ultrafast`: measured 0.284s but 2.10 MB — it
+    trades away far more bitrate than the extra 0.2s is worth, and the client
+    downloads the result."""
     cmd = [
         "ffmpeg",
         "-y",
@@ -493,6 +510,8 @@ async def _trim_clip(source_path: Path, start_sec: float, end_sec: float, output
         str(source_path),
         "-c:v",
         "libx264",
+        "-preset",
+        "veryfast",
         "-c:a",
         "aac",
         str(output_path),
