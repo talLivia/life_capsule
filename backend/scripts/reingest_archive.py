@@ -15,12 +15,15 @@ What it does per ready segment:
      via entity_store, REPLACING the segment's previous mentions rather than
      appending to them
 
-CAUTION until the entity import (chunk 2 of the Postgres migration) has run:
-finalize_ingest no longer writes to Graphiti, so re-ingesting a segment does
-NOT refresh its graph episode. The graph still holds the only copy of the
-existing entity summaries — this script will not destroy them (nothing removes
-episodes any more), but the two stores will disagree for any segment it
-touches. Import first, re-ingest after.
+CAUTION: re-ingesting re-runs entity extraction, so a segment's entities and
+per-mention summaries are REPLACED by whatever the new transcript yields. That
+is the point — but it also means the before/after entity comparison below is
+the check that matters, not a formality. An entity that disappears means the
+new transcription lost the words that named it.
+
+It also moves UNIT BOUNDARIES, which the eval's reference ranges are measured
+against. Re-baseline (scripts/rebaseline_accuracy.py) after any run, and treat
+scores from before it as not comparable.
 
 Calls the graph nodes directly rather than re-invoking the LangGraph thread:
 a completed thread would resume oddly, and human_confirm would interrupt a
@@ -56,24 +59,31 @@ from app import analysis_graph as ag  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.database import AsyncSessionLocal  # noqa: E402
 from app.models import InterviewSession, RawSegment, TranscriptChunk  # noqa: E402
-from app.services import full_archive_retrieval as ar, graph_memory  # noqa: E402
+from app.services import entity_store, full_archive_retrieval as ar  # noqa: E402
+from app.database import AsyncSessionLocal  # noqa: E402
 
 GROUP_ID = "79820a49-b07d-41fe-941b-f5ceba09f7b5"
 APPLY = "--apply" in sys.argv
 
 
 async def _entity_counts() -> dict[str, int]:
-    g = graph_memory.get_graphiti()
-    res = await g.driver.execute_query(
-        """
-        MATCH (e:Episodic)-[:MENTIONS]->(n:Entity)
-        WHERE e.group_id = $gid
-        RETURN n.name AS name, count(DISTINCT e) AS episodes
-        """,
-        gid=GROUP_ID,
-        routing_="r",
-    )
-    return {r["name"]: r["episodes"] for r in res.records}
+    """entity name -> how many recordings mention it.
+
+    The before/after comparison this feeds is the whole safety story of a
+    re-ingest: an entity that vanishes means a re-transcription lost the words
+    that named it, which is exactly the חיל האוויר failure this script exists
+    to undo.
+    """
+    async with AsyncSessionLocal() as db:
+        segments = [item.segment.id for item in await ar._load_archive(GROUP_ID)]
+        by_segment = await entity_store.get_entity_names_for_segments(
+            db, segments, GROUP_ID
+        )
+    counts: dict[str, int] = {}
+    for names in by_segment.values():
+        for name in names:
+            counts[name] = counts.get(name, 0) + 1
+    return counts
 
 
 async def _snapshot() -> dict:

@@ -3,8 +3,8 @@ Family access control (Prompt 9) — a producer issues an invite token, a
 family member redeems it to link their account (User.producer_id) to that
 producer's archive, unlocking /talk. Deliberately simple: one producer per
 family account, no multi-producer sharing — matches this POC's
-single-storyteller-per-deployment design (see graph_memory.py's module
-docstring for the same assumption on the graph side).
+single-storyteller-per-deployment design — the same assumption
+`entity_store` makes by scoping every entity to one producer_id.
 """
 
 import logging

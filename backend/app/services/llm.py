@@ -12,8 +12,8 @@ unconstrained general-knowledge answering.
 
 Provider-agnostic interface that currently supports Anthropic (default),
 OpenAI, and Gemini — LLM_PROVIDER=gemini reuses GEMINI_API_KEY (the same key
-already used for Graphiti's own extraction, see graph_memory.py) instead of
-requiring a separate Anthropic/OpenAI account. The Anthropic path takes
+services/embeddings.py uses) instead of requiring a separate
+Anthropic/OpenAI account. The Anthropic path takes
 advantage of:
 
   * **Prompt caching** — the system prompt is wrapped in a content block

@@ -10,10 +10,10 @@ back from it for disambiguation. Both now go through `services/entity_store.py`
 against Postgres — see `docs/PROJECT_STATUS.md` for why.
 
 Nodes, in order: transcribe -> embed_transcript -> extract_topics ->
-check_entities -> human_confirm (loops until every ambiguous name this
-segment introduces is resolved) -> score_importance -> finalize_ingest. Any
-node that hits an unrecoverable error routes to `fail` instead of
-continuing.
+check_entities -> human_confirm (ONE pause carrying every question this
+recording raises, identity and type together) -> score_importance ->
+finalize_ingest. Any node that hits an unrecoverable error routes to `fail`
+instead of continuing.
 
 embed_transcript (Prompt 7) computes and persists the segment's transcript
 embedding once, at ingestion time, so relevance_scorer.py's cosine-
@@ -49,12 +49,11 @@ asked about an arbitrary single guess, and the confirmed resolution stores
 the FULLER identifying name (e.g. "Moshe Cohen", not just "Moshe") so
 future retrieval never confuses the two people again.
 
-Entity extraction is our OWN call (`services/entity_extraction.py`), never
-graphiti_core's internal `extract_nodes` — that function exists but requires
-constructing EpisodicNode/GraphitiClients objects and isn't part of
-Graphiti's stable public surface, so depending on it would be one version
-bump away from breaking silently. Owning the call is also what makes the
-richer `{name, type, alternative_type, summary}` shape possible at all.
+Entity extraction is our OWN call (`services/entity_extraction.py`). It was
+always ours rather than graphiti_core's internal `extract_nodes`, which was
+lucky as well as deliberate: owning the call is what made the richer
+`{name, type, alternative_type, summary}` shape possible, and it meant
+removing Graphiti cost the extraction nothing.
 
 Checkpointing: LangGraph's `human_confirm` interrupt needs to survive well
 past the request that triggered it (the storyteller may finish the whole
@@ -419,7 +418,7 @@ async def extract_topics_node(state: AnalysisState) -> dict:
 
 # Deterministic, known Hebrew ASR-confusion normalization for the substring
 # check in _tag_chunks_with_entities below ONLY — never applied to the
-# stored mentioned_entities value itself (that stays exactly as Graphiti/
+# stored mentioned_entities value itself (that stays exactly as
 # check_entities_node extracted it), and never used anywhere near Prompt
 # 13's answer text (which pinpoints verbatim from the real chunk, so this
 # has zero effect on what a family member actually hears). Deliberately
@@ -525,7 +524,7 @@ async def check_entities_node(state: AnalysisState) -> dict:
         # confirmation against whatever's already there.
         relevant = [c for c in candidates if _names_are_similar(name, c["name"])]
         if not relevant:
-            continue  # brand-new entity — Graphiti will just create it
+            continue  # brand-new entity — entity_store will just create it
 
         if len(relevant) == 1 and relevant[0]["name"].strip().lower() == key:
             # Exactly one real match AND it's the same name verbatim —
@@ -753,8 +752,9 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
     # freshly recorded story silently not existing as far as answers go.
     #
     # Then REBUILD it here rather than leaving the next question to do it.
-    # Rebuilding costs up to ~15s (almost entirely the per-recording Neo4j
-    # fan-out), and ingestion is offline with nobody waiting — whereas the
+    # Rebuilding used to cost up to ~15s (almost entirely the per-recording
+    # Neo4j fan-out) and is now well under a second, but ingestion is offline
+    # with nobody waiting — whereas the
     # first person to ask afterwards very much is. Awaited rather than fired
     # and forgotten, so it cannot race that first question into doing the same
     # work twice; warm_archive_cache is internally bounded and fail-soft, so

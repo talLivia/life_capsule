@@ -9,8 +9,8 @@ adds one; discarding a take is an explicit delete by the producer.
 
 Writing these separately is how orphans happen: the two paths drift, one
 forgets a store, and data survives that the user believes is gone. A recording
-fans out into Postgres rows, a stored file, a Graphiti episode with its
-entities, and derived caches — so "delete" has to mean all of them.
+fans out into Postgres rows, a stored file, entity mentions, and derived
+caches — so "delete" has to mean all of them.
 
 WHAT IS DELETED, and how each is verified:
 

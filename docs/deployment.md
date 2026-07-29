@@ -10,7 +10,6 @@ for this project.
 |---|---|---|
 | App server | Fly.io (Docker) | `docker compose up` (`backend` service) |
 | App database | Neon Postgres | `postgres` container |
-| Graph / associative memory | Neo4j AuraDB (via Graphiti) | `neo4j` container |
 | Object storage (raw video) | Cloudflare R2 | local filesystem (`USE_LOCAL_STORAGE=true`, default) or live R2 |
 | Session state / visited-set | Upstash Redis | `redis` container |
 
@@ -25,9 +24,6 @@ fly launch --no-deploy --copy-config --name <your-app-name>   # first time only,
 
 fly secrets set \
   DATABASE_URL="postgresql://<user>:<password>@<host>.neon.tech/<db>?sslmode=require" \
-  NEO4J_URI="neo4j+s://<instance-id>.databases.neo4j.io" \
-  NEO4J_USER="neo4j" \
-  NEO4J_PASSWORD="<auradb-generated-password>" \
   R2_ACCOUNT_ID="<cloudflare-account-id>" \
   R2_ACCESS_KEY_ID="<r2-access-key-id>" \
   R2_SECRET_ACCESS_KEY="<r2-secret-access-key>" \
@@ -75,20 +71,16 @@ recorded answer, carrying `video_url`/`transcript`/`question_asked`/
 `status` through the Prompt 5 analysis pipeline). See migration
 `0004_interview_sessions_and_raw_segments.py`.
 
-## 3. Neo4j AuraDB
+## 3. Entities
 
-1. Create a free/small instance at https://console.neo4j.io.
-2. AuraDB shows the connection URI (`neo4j+s://...`) and an
-   auto-generated password exactly once at creation — save both
-   immediately.
-3. Set `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD`.
-4. Verify connectivity via `GET /health` — the `services.neo4j` field
-   reports `connected`, `disconnected`, or `not configured`.
+No separate service. Entities, their per-recording mentions and the relation
+vocabulary all live in the same Postgres database as everything else
+(migration `0012`), read and written through `app/services/entity_store.py`.
 
-This prompt only wires up the raw connection + health check
-(`app/services/neo4j_client.py`). Graphiti itself — entity/relationship
-extraction, episodes, temporal tracking — is Prompt 3's `graph_memory.py`,
-built on top of this same connection.
+This used to be a Neo4j AuraDB instance driving Graphiti. It was removed
+after measuring that the one capability a graph engine bought — relationship
+traversal — had produced zero edges on real data, while the per-recording
+round trips cost 45% of a turn. See `docs/PROJECT_STATUS.md`.
 
 ## 4. Cloudflare R2 (object storage)
 
@@ -165,7 +157,7 @@ regions this project targets, so the split is:
    `alembic upgrade head` from two deployments on every boot just races
    without adding anything.
 3. Set the pod's environment variables — it needs the **same secrets** as
-   the Fly.io deployment (`DATABASE_URL`, `NEO4J_*`, `R2_*`, `GEMINI_API_KEY`,
+   the Fly.io deployment (`DATABASE_URL`, `R2_*`, `GEMINI_API_KEY`,
    `SECRET_KEY`, `JWT_SECRET_KEY`, ...) since it's the same codebase and
    the rest of the app initializes at import time regardless of which
    routes actually get hit, **plus**:
@@ -242,9 +234,8 @@ cp .env.example .env   # fill in ANTHROPIC_API_KEY at minimum; SECRET_KEY/JWT_SE
 docker compose up
 ```
 
-This brings up `postgres`, `redis`, `neo4j` (Neo4j Community Edition —
-functionally equivalent to AuraDB for graph operations, just
-self-hosted), `backend`, `celery-worker`, `flower`, and `frontend`.
+This brings up `postgres`, `redis`, `backend`, `celery-worker`, `flower`,
+and `frontend`.
 Object storage defaults to the local filesystem (`USE_LOCAL_STORAGE=true`)
 so you don't need a live R2 bucket just to run the stack end-to-end; set
 `USE_LOCAL_STORAGE=false` + the `R2_*` vars in `.env` if you want local

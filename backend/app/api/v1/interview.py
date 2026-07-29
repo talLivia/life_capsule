@@ -366,9 +366,9 @@ async def get_segment_extraction(
     Transparency, so a mishearing or a missed person is caught here rather
     than later through a bad answer. Read-only.
 
-    All assembly lives in segment_extraction, which is also the only place
-    that knows entities currently come from Graphiti. This endpoint stays
-    valid when they move to Postgres.
+    All assembly lives in segment_extraction, which is the only place that
+    knows where entities are stored. That seam held when they moved out of
+    Graphiti into Postgres: this endpoint did not change.
     """
     from app.services.segment_extraction import get_segment_extraction as load
 
@@ -394,8 +394,8 @@ async def delete_segment(
     the previous one.
 
     The work itself is delegated to segment_deletion, the same implementation
-    the account-reset path uses: row, chunks, stored file, Graphiti episode
-    and derived caches. Ownership is checked by joining through the session,
+    the account-reset path uses: row, chunks, stored file, entity mentions
+    (and any entity left with none) and derived caches. Ownership is checked by joining through the session,
     so a producer can only ever reach their own recordings.
     """
     from app.services.segment_deletion import delete_segment_data

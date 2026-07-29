@@ -11,10 +11,10 @@ updated as work lands.
 
 # NEXT UP: move entities from Graphiti/Neo4j into Postgres
 
-**This is the agreed next piece of work.** Plan settled 2026-07-28; **chunks 1
-to 4 are DONE. Chunk 5 is BLOCKED on an explicit go-ahead and a live
-end-to-end run — see "Review points".** Read this section before touching
-anything entity-related.
+**COMPLETE.** Plan settled 2026-07-28, all five chunks landed 2026-07-28/29,
+signed off after a live end-to-end run. Graphiti and Neo4j are gone from the
+codebase. Kept here as the record of what was decided and why — read it before
+touching anything entity-related.
 
 ## Where it stands right now
 
@@ -29,9 +29,12 @@ anything entity-related.
 - **Chunk 2 has landed**: the 11 graph entities are imported (10 rows — `עכבר`
   dropped). `scripts/import_graph_entities.py` is the record of what was
   decided and is idempotent.
-- **Chunk 3 has landed**: all seven read call sites are on Postgres. No
-  functional `graph_memory` reference remains in `app/`; what is left is
-  historical comments and the module's own tests, both of which go in chunk 5.
+- **Chunk 3 has landed**: all seven read call sites are on Postgres.
+- **Chunk 5 has landed**: `graph_memory`, `neo4j_client`, their tests, four
+  Graphiti-era scripts, the `neo4j` compose service, the `/health` probe and
+  every `NEO4J_*`/`GRAPHITI_*` setting are gone, as are the `neo4j` and
+  `graphiti-core` dependencies. **The AuraDB instance can now be shut down —
+  see "Shutting down AuraDB" below.**
 - **Chunk 4 has landed**: batched confirmation. One screen per recording
   covering identity AND type, one submit; `confirm-entities` replaces
   `confirm-entity`.
@@ -227,7 +230,8 @@ confusable-letter pairs.
    self-edge that made `human_confirm` loop is gone, and
    `POST /segments/{id}/confirm-entities` replaces the per-name
    `confirm-entity`. See "Chunk 4 decisions" below.
-5. **Delete `graph_memory`**, drop the Neo4j/Graphiti dependencies and config.
+5. ✅ **DONE — `graph_memory` deleted, Neo4j/Graphiti dependencies and config
+   removed.** See "Chunk 5" below, including two things it nearly broke.
 
 ## What 1b decided that the plan did not
 
@@ -304,6 +308,124 @@ so the writer never re-raises a question already answered.
 information. Confirmation runs before the write and clears what it asked
 about, so a non-empty list means a torn classification was stored without the
 producer ever being asked.
+
+## Chunk 5 — what it removed, and the two things it nearly broke
+
+Deleted: `services/graph_memory.py`, `services/neo4j_client.py`, their tests,
+four one-off Graphiti-era scripts, the `neo4j` docker-compose service and
+volume, the `/health` neo4j probe, all `NEO4J_*` / `GRAPHITI_*` settings, and
+`neo4j` + `graphiti-core` from requirements.
+
+Verified by BLOCKING both packages at import time and importing the whole app,
+rather than by grepping — a transitive import would not have shown up in a
+grep.
+
+### ⚠️ `embeddings.py` imported from `graphiti_core`
+
+Its docstring said it was "Independent module from graph_memory.py on
+purpose", and it was — of the graph. Not of the *package*: it used
+graphiti-core's `GeminiEmbedder`/`OpenAIEmbedder` wrappers and the
+`GRAPHITI_EMBEDDING_*` settings. Deleting the dependency would have broken
+every embedding in the app: chunk embeddings, transcript embeddings, and the
+semantic term in both retrieval paths.
+
+Worse, it would have broken them SILENTLY on a re-embed. **Every vector in the
+database was produced by that exact model at that exact dimensionality**, and
+cosine similarity across two different embedding spaces still returns a
+plausible number — retrieval would just have quietly degraded.
+
+Reimplemented directly against `google-genai` / `openai`, reproducing the call
+graphiti-core made **exactly**: `contents` as a LIST containing the string,
+and `output_dimensionality` passed explicitly. Both matter; either one changes
+the vector. Proven rather than assumed — a stored vector re-embedded through
+the new path scores **cosine 1.000000** against itself. Settings renamed
+`EMBEDDING_PROVIDER` / `EMBEDDING_MODEL` / `EMBEDDING_DIM`, values unchanged,
+now carrying a loud warning about what changing them costs.
+`tests/test_embeddings.py` (new, 12 tests) pins the call shape.
+
+### ⚠️ `google-genai` was only installed transitively
+
+`llm.py` does `from google import genai` directly — the archive-read call and
+every Gemini LLM call go through it — but it was never declared, arriving via
+`graphiti-core[google-genai]`. Removing graphiti-core would have taken Gemini
+with it. Now declared explicitly.
+
+The `fastapi`/`starlette`/`httpx` pins existed only to satisfy that same
+extra. They are now free-standing; **left pinned deliberately**, since
+unpinning them is its own change with its own testing.
+
+### 🚨 Leftover env vars now CRASH the app on boot
+
+`Settings` uses pydantic-settings' default `extra="forbid"`, so an env var the
+code no longer declares is a hard failure at import — `config.py` already
+carried a comment about this trap for `DEEPGRAM_API_KEY`. This migration hits
+it from the other direction: production still has `NEO4J_*` secrets set.
+
+**Unset the secrets BEFORE deploying this**, in that order — it is safe
+because the OLD code has defaults for all of them, so the running image
+tolerates their absence:
+
+```bash
+fly secrets unset NEO4J_URI NEO4J_USER NEO4J_PASSWORD NEO4J_DATABASE \
+  GRAPHITI_LLM_PROVIDER GRAPHITI_LLM_MODEL GRAPHITI_LLM_SMALL_MODEL \
+  GRAPHITI_EMBEDDER_PROVIDER GRAPHITI_EMBEDDING_MODEL GRAPHITI_EMBEDDING_DIM
+fly deploy
+```
+
+The local `.env` was cleaned of the same keys (it blocked startup outright).
+
+## Shutting down AuraDB
+
+**Yes — it can be shut down. Nothing reads or writes it.** Verified by
+blocking `neo4j` and `graphiti-core` at import time and importing the whole
+app, not by grepping.
+
+Recommended order, because it is the one that cannot break the running app:
+
+1. `fly secrets unset NEO4J_URI NEO4J_USER NEO4J_PASSWORD NEO4J_DATABASE` and
+   the `GRAPHITI_*` ones (see the chunk 5 section — the deployed image must
+   lose them BEFORE it gains code that no longer declares them).
+2. Deploy.
+3. **Pause** the AuraDB instance rather than deleting it, and leave it paused
+   for a while. Pausing is free or near-free on Aura, reversible in a click,
+   and buys a window in which "we deleted the only copy" is still recoverable.
+4. Delete it once you are satisfied. Nothing here depends on that ever
+   happening.
+
+**What is lost when it goes, and why that is acceptable:** the graph held the
+pre-import entity data — 11 entities and their summaries. All of it is
+preserved in the repository, verbatim, in `scripts/import_graph_entities.py`:
+the `IMPORT` table lists every name, type and summary as literal text, and
+`SKIPPED` records `עכבר` and why. So the graph's content survives its
+deletion in a form that is readable, diffable and version-controlled — which
+the graph itself never was.
+
+The one thing genuinely unrecoverable is Graphiti's own bookkeeping
+(episode uuids, embeddings of entity names, `valid_at`/`invalid_at`). None of
+it was ever read: the bi-temporal fields were unused, and the entity
+embeddings were discarded downstream by a purely lexical gate.
+
+## Known gap in the EVAL ITSELF: a failed API call scores 0.00
+
+Found while running the chunk 5 gate, and it is not about chunk 5.
+
+`_read_archive_for_ranges` catches **any** exception, logs a warning and
+returns `[], None` — a no-story. That is correct fail-soft behaviour for a
+live turn (a family member gets "I don't have a story about that" rather than
+an error), but it means the eval **cannot distinguish "the model correctly
+chose nothing" from "the API call failed"**. Both score 0.00.
+
+`ARCHIVE_READ_MODEL=gemini-flash-latest` is the model `.env.prod.example`
+already notes hit sustained 503s, so this is a live possibility, not a
+theoretical one. It looks exactly like an accuracy regression: one cell of the
+matrix drops to 0.00 and drags the mean down.
+
+**When a rebaseline shows a single question at 0.00 while its neighbours are
+fine, re-run before believing it**, and check the logs for
+"Archive-read LLM call failed". A real regression is systematic; a 503 is one
+cell. Worth fixing properly by having the harness distinguish the two — an
+empty selection and a raised error are different events and the eval should
+not average them together.
 
 ## Review points — DO NOT SKIP
 
@@ -622,7 +744,7 @@ Queued, in no fixed order — both are blocked on this work landing:
   `MIN_SPEECH_MS=400`. Gating is enforced **during** a recording, not just at
   its start — see the mic section below for why that mattered.
 
-**Tests:** 531 backend passing; frontend `tsc`, `eslint`, `next build` clean.
+**Tests:** 541 backend passing; frontend `tsc`, `eslint`, `next build` clean.
 
 ---
 
@@ -788,5 +910,5 @@ cd backend
 python scripts/rebaseline_accuracy.py      # v2 accuracy as a MEAN over runs — quote this
 python scripts/compare_retrieval_modes.py  # v1 vs v2: consistency, latency, calls, tokens
 python scripts/seed_sweep.py               # single-run IoU vs known-correct
-python -m pytest -q -m 'not integration'   # 531 tests
+python -m pytest -q -m 'not integration'   # 541 tests
 ```

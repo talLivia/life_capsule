@@ -35,40 +35,25 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
 
-    # Graph / associative memory — Graphiti, backed by Neo4j AuraDB. Wired up
-    # in Prompt 3 (graph_memory.py); declared here so the connection and
-    # health-check land in Prompt 2 without another settings pass.
-    NEO4J_URI: str = "bolt://localhost:7687"
-    NEO4J_USER: str = "neo4j"
-    NEO4J_PASSWORD: str = ""
-    # Some AuraDB instances use a non-default database name (matching the
-    # instance id rather than the usual "neo4j") — check your AuraDB
-    # connection details before assuming the default is correct.
-    NEO4J_DATABASE: str = "neo4j"
-
-    # Graphiti's OWN internal LLM (entity/relationship extraction) and
-    # embedder — independent of LLM_PROVIDER above, which is the main
-    # app's topic-classification/importance-scoring model (Prompts 5-7).
-    # The project plan calls for Claude here; "gemini" is a fully
-    # cloud-based, cheaper default for iteration (no local model to run —
-    # swap to "anthropic" before relying on real ingestion quality, since
-    # Claude's extraction is more reliable).
-    # "gemini-2.0-flash"/"text-embedding-001" (Graphiti's own docs example)
-    # turned out to be unavailable to new API keys — verified against a
-    # live key which google.genai's models.list() only actually serves
-    # for these two rolling-alias / current names.
-    GRAPHITI_LLM_PROVIDER: str = "gemini"  # anthropic | gemini
-    GRAPHITI_LLM_MODEL: str = "gemini-flash-latest"
-    # graphiti-core's GeminiClient uses a separate, cheaper "small_model"
-    # for some internal calls, defaulting to "gemini-2.5-flash-lite" if
-    # unset — also unavailable to new API keys, so set explicitly.
-    GRAPHITI_LLM_SMALL_MODEL: str = "gemini-flash-lite-latest"
-    GRAPHITI_EMBEDDER_PROVIDER: str = "gemini"  # openai | gemini
-    GRAPHITI_EMBEDDING_MODEL: str = "gemini-embedding-001"
-    GRAPHITI_EMBEDDING_DIM: int = 3072
-    # Used by both GRAPHITI_LLM_PROVIDER=gemini and
-    # GRAPHITI_EMBEDDER_PROVIDER=gemini — one key covers both.
+    # Gemini API key — used by LLM_PROVIDER=gemini and by the archive-read
+    # call (ARCHIVE_READ_MODEL). It used to be shared with Graphiti's own
+    # extractor; that is gone, but this is still load-bearing on its own.
     GEMINI_API_KEY: str = ""
+
+    # Embeddings — ONE config, because a question's vector and a segment's
+    # vector must live in the same space for cosine similarity to mean
+    # anything. Values carried over UNCHANGED from the former
+    # GRAPHITI_EMBEDDER_PROVIDER / GRAPHITI_EMBEDDING_MODEL /
+    # GRAPHITI_EMBEDDING_DIM, so every vector already in the database stays
+    # comparable.
+    #
+    # ⚠️ CHANGING ANY OF THESE INVALIDATES EVERY STORED EMBEDDING, and nothing
+    # fails loudly when it happens — cosine similarity across two models still
+    # returns a number, it just stops meaning anything. A change here needs
+    # every RawSegment and TranscriptChunk re-embedded.
+    EMBEDDING_PROVIDER: str = "gemini"  # gemini | openai
+    EMBEDDING_MODEL: str = "gemini-embedding-001"
+    EMBEDDING_DIM: int = 3072
 
     # Storage — local by default; set USE_LOCAL_STORAGE=false to use a
     # remote provider, selected by STORAGE_PROVIDER ("r2", the default
@@ -101,12 +86,12 @@ class Settings(BaseSettings):
     # API Keys
     # Whichever of Anthropic/OpenAI/Gemini LLM_PROVIDER selects below is the
     # ONLY model used for anything that touches the storyteller's actual
-    # content — Graphiti's entity extraction (Prompt 3), topic/importance
-    # classification and entity-name NER (Prompt 5), and retrieval-time topic
+    # content — entity extraction (services/entity_extraction.py),
+    # topic/importance classification (Prompt 5), and retrieval-time topic
     # matching (Prompt 6). Every one of those calls passes an explicit,
     # narrowly-scoped system prompt (see services/llm.py) — never a general
     # chat persona. Anthropic was the original project-plan default; Gemini
-    # (LLM_PROVIDER=gemini, reusing GEMINI_API_KEY below) is a fully
+    # (LLM_PROVIDER=gemini, reusing GEMINI_API_KEY above) is a fully
     # supported cheaper alternative for deployments that want a single paid
     # provider instead of separately funding Anthropic too.
     ANTHROPIC_API_KEY: str = ""
@@ -155,9 +140,9 @@ class Settings(BaseSettings):
     # "ollama" runs fully local & free: set LLM_MODEL to e.g. llama3.1 and
     # optionally OPENAI_BASE_URL (defaults to http://localhost:11434/v1).
     # "gemini" needs GEMINI_API_KEY set and LLM_MODEL overridden to a real
-    # Gemini model name (e.g. gemini-flash-latest — see GRAPHITI_LLM_MODEL's
-    # comment above for why the "gemini-2.0-flash" docs example doesn't work
-    # on new API keys).
+    # Gemini model name (e.g. gemini-flash-latest). NOTE: the "gemini-2.0-flash"
+    # name from Google's own docs is NOT served to new API keys — verified
+    # against a live key, whose models.list() only offers the rolling aliases.
     LLM_PROVIDER: str = "anthropic"  # anthropic, openai, ollama, gemini
     LLM_MODEL: str = "claude-sonnet-4-6"
     LLM_TEMPERATURE: float = 0.7

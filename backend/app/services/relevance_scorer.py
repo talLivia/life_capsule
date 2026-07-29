@@ -212,7 +212,7 @@ async def score_chunk_candidates(
     """Score retrieval_service.primary_match_chunks's candidate chunks,
     sorted by score descending. `group_id` isn't needed here (unlike
     score_candidates) — recency uses the chunk's OWN mentioned_entities
-    (Prompt 11) rather than a fresh Graphiti lookup, so there's no graph
+    (Prompt 11) rather than a fresh entity lookup, so there's no extra
     call to scope.
 
     importance_score is inherited from the chunk's PARENT RawSegment: a

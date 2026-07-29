@@ -52,8 +52,9 @@ adds what they left out. Consequences that are easy to get wrong:
   Replacing one is delete + record, both explicit. `DELETE /segments/{id}`
   is the only thing that destroys a recording, and it delegates to
   `segment_deletion.delete_segment_data` — the same implementation account
-  reset uses. Graphiti drops an entity only when its MENTIONS count is 1, so
-  a shared entity survives a sibling's deletion.
+  reset uses. An entity is dropped only when no recording mentions it any
+  more (one `NOT EXISTS` sweep in the same transaction), so a shared entity
+  survives a sibling's deletion.
 - **Count DISTINCT `question_index` for "answered"**, never segment rows —
   three takes on one question is one question answered.
 - **Uploading a video reuses the recording entry point exactly** (presign →

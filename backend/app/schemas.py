@@ -182,9 +182,10 @@ class RawSegmentResponse(BaseModel):
 class ExtractedEntityResponse(BaseModel):
     name: str
     summary: Optional[str] = None
-    # Always null today: the graph stores one generic Entity label with no
-    # person/place/organisation distinction. Present so typed entities can
-    # land later without changing this shape. See segment_extraction.py.
+    # entities.type — person/place/organisation/event/other. Was always null
+    # while entities lived in the graph, which had no such distinction; the
+    # field was present so typed entities could land without changing this
+    # shape, and they have. See segment_extraction.py.
     kind: Optional[str] = None
 
     model_config = {"from_attributes": True}
@@ -193,8 +194,8 @@ class ExtractedEntityResponse(BaseModel):
 class SegmentExtractionResponse(BaseModel):
     """What the system understood from one recording — read-only, for the
     producer to check and catch a mistake. Deliberately says nothing about
-    WHERE each piece is stored: entities are moving from Graphiti to
-    Postgres and this contract must not move with them."""
+    WHERE each piece is stored — which is why it survived entities moving
+    out of Graphiti into Postgres without changing."""
 
     segment_id: str
     question_asked: str

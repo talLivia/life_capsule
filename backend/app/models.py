@@ -218,7 +218,7 @@ class RawSegment(Base):
     One recorded answer to one guided-interview question. Starts as just
     the raw upload; `status` tracks it through the Prompt 5 analysis
     pipeline (transcription -> entity resolution -> importance scoring ->
-    Graphiti ingest).
+    entity write).
     """
 
     __tablename__ = "raw_segments"

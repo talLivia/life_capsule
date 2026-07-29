@@ -1,8 +1,8 @@
-# fastapi/starlette/httpx are pinned together — graphiti-core's
-# [google-genai] extra (added in Prompt 3) requires httpx>=0.28.1, which
-# requires starlette>=0.47 (dropped the httpx.Client(app=...) shortcut
-# starlette<0.36 relied on), which requires fastapi>=~0.115. Bumping only
-# one of the three breaks the other two.
+# fastapi/starlette/httpx are pinned together. The constraint originally came
+# from graphiti-core's [google-genai] extra (httpx>=0.28.1 -> starlette>=0.47
+# -> fastapi>=~0.115). graphiti-core is GONE, so nothing forces these versions
+# any more — but they are what the suite is green against, and unpinning them
+# is its own change with its own testing. Left deliberately, not by oversight.
 fastapi==0.139.2
 starlette==1.3.1
 httpx==0.28.1
@@ -21,18 +21,6 @@ sqlalchemy==2.0.25
 asyncpg==0.29.0
 alembic==1.13.1
 psycopg2-binary==2.9.9
-
-# Graph / associative memory (Neo4j AuraDB via Graphiti)
-# neo4j: plain driver backing the standalone connection check in
-#   app/services/neo4j_client.py and /health (Prompt 2)
-# graphiti-core: entity/relationship extraction + temporal episodes,
-#   wrapped in app/services/graph_memory.py (Prompt 3). [anthropic] pulls
-#   the Claude LLM client (production-quality extraction, per the project
-#   plan); [google-genai] pulls the Gemini client/embedder/reranker
-#   (fully cloud-based, cheaper default for iteration — see
-#   GRAPHITI_LLM_PROVIDER/GRAPHITI_EMBEDDER_PROVIDER in config.py).
-neo4j==5.17.0
-graphiti-core[anthropic,google-genai]==0.29.2
 
 # Orchestration (Prompt 5) — analysis_graph.py's transcribe/extract_topics/
 # check_entities/human_confirm/score_importance/finalize_ingest pipeline.
@@ -60,6 +48,11 @@ python-socketio==5.11.0
 # and the cache_control parameter used in app/services/llm.py
 anthropic>=0.45.0
 openai>=1.50.0
+# google-genai: the Gemini client, used DIRECTLY by services/llm.py (the
+# archive-read call, ARCHIVE_READ_MODEL) and services/embeddings.py. It used
+# to arrive transitively via graphiti-core[google-genai]; removing that
+# dependency without declaring this one broke both — declared explicitly now.
+google-genai>=1.0.0
 torch==2.2.0
 torchvision==0.17.0
 torchaudio==2.2.0

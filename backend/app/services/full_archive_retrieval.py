@@ -779,9 +779,10 @@ def invalidate_archive_cache(group_id: Optional[str] = None) -> None:
         _ARCHIVE_CACHE.pop(group_id, None)
 
 
-# Rebuilding costs up to ~15s, almost all of it Neo4j. Bounded so a hung or
-# unreachable graph can't wedge the ingestion task indefinitely — a failed
-# warm just means the next question rebuilds, which is the old behaviour.
+# Rebuilding used to cost up to ~15s, almost all of it Neo4j; it is now well
+# under a second. The bound stays anyway — it guards the whole warm (archive
+# load, entity map, unit split), and a failed warm just means the next
+# question rebuilds, which is the old behaviour.
 _WARM_TIMEOUT_SECONDS = 60
 
 
