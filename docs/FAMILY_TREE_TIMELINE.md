@@ -95,9 +95,29 @@ to exactly one life period, with zero new capture.**
 
 ---
 
-## 2. Open decisions — I want your input before building
+## 2. Decisions — settled 2026-08-02
 
-### 🛑 2.1 What is a timeline milestone? (blocks Phase 3+)
+**2.1 — Option C approved.** Ship the timeline on the existing question
+categories; add `event`-entity milestones as an additive second source later.
+
+**2.2 — Phase 2 is family-only.** `friend`/`commander`/`colleague` are stored
+fine by the schema and can be widened to later; they are not proposed now.
+
+**2.3 — Two classes of question in one modal.** Identity and type stay
+mandatory (partial submit still 400). Relations and years are explicitly
+skippable, and must be *visually distinct* so the difference is obvious.
+
+**Self-entity name** — the producer's `full_name` from their `User` row, with
+the existing `full_name → username` fallback. No new producer input.
+
+**2.4 remains open** (empty-state tree vs hidden nav item). My recommendation
+stands: show it with a real empty state, because a hidden feature is
+undiscoverable and the empty state is where you explain that relations come
+from recording. Not a blocker for any phase.
+
+The original reasoning for each is preserved below.
+
+### 2.1 What is a timeline milestone? (RESOLVED — Option C)
 
 The brief says milestones are `event` entities with `year_start`. That data
 does not exist and is awkward to create: the extractor deliberately refuses
@@ -171,6 +191,64 @@ state is where you explain that relations come from recording.
 
 ---
 
+## 2A. The category list is DATA, never code (constraint added 2026-08-02)
+
+The category set is about to change — roughly 5 → 10 categories with many more
+questions each. Nothing may hardcode today's categories, their names, their
+count, or their `question_index` ranges. After the JSON is updated the timeline
+must pick up the new categories **with zero code changes**.
+
+### Blast radius — grepped 2026-08-02, and it is small
+
+| What | Where | Verdict |
+| --- | --- | --- |
+| Category name strings (`childhood`, `military_service`, …) | `interview_questions.json` **only** | ✅ nothing in code |
+| Category count / list | nowhere | ✅ nothing assumes 5 |
+| Question count | `interview.py:117` uses `len(get_questions(...))`; `RecordPanel.tsx` uses `state.questions.length` | ✅ already derived |
+| JSON readers | `interview_config.py` **only** (`get_questions`, `lru_cache`) | ✅ single seam |
+| `category` / `category_label` in code | `schemas.py` + `types.ts` (field declarations), `RecordPanel.tsx:224` (renders the label) | ✅ pass-through, no logic |
+
+**No existing code hardcodes any of this.** `interview_config.py` is already
+the single reader, so it is the natural and only home for category logic.
+
+### The rule for new code
+
+`interview_config.py` gains category accessors derived from the JSON at read
+time — e.g. `get_categories(language)` returning ordered
+`{category, category_label, question_ids}`. Order comes from first appearance
+in the file, so **the JSON's own order is the chronology**. Every consumer
+(timeline API, the milestone join, the frontend) reads from that one function.
+No constants, no migration, no lookup table, no duplicated list.
+
+### 🚨 But `question_index` is NOT a stable key — and the fix has a deadline
+
+`raw_segments` stores `question_index` (positional) and `question_asked`
+(text). It does **not** store the question's stable `id`, which the JSON has
+had all along (`childhood_home`, `military_service`, …).
+
+So when the JSON gains questions or reorders, **every existing recording's
+`question_index` silently points at a different question.** Today's q3 is
+`military_service`; insert three childhood questions ahead of it and q3 becomes
+childhood. A timeline joining `question_index → category` would quietly
+reassign historical recordings to the wrong milestone — no error, wrong tree.
+
+This is exactly the silent breakage the no-hardcoding rule is meant to prevent,
+and it survives that rule, because it is a *data* problem rather than a code
+one.
+
+**Fix:** persist the stable `question_id` on `raw_segments` at ingest, and join
+category via `question_id`. See Phase 1b.
+
+**⏳ The backfill window closes when the JSON changes.** Verified 2026-08-02:
+all 12 distinct questions in the archive recover their `id` by exact
+`question_asked` text match, 12/12, with no index drift yet. That recovery
+works **only while the JSON still contains today's text**. Reword or remove a
+question and its historical recordings become unattributable.
+
+**Do Phase 1b BEFORE editing `interview_questions.json`.**
+
+---
+
 ## 3. Milestone → sub-bubble linkage (the §"design this" item)
 
 **Chosen mechanism: derive from the recordings, do not store a new relation.**
@@ -194,21 +272,25 @@ and no more correct.
 **Milestones** (ordered, with counts — drives the bubbles):
 
 ```sql
-SELECT s.question_index,
-       COUNT(DISTINCT s.id)      AS recordings,
-       MIN(s.created_at)         AS first_recorded
+SELECT s.question_id,
+       COUNT(DISTINCT s.id) AS recordings,
+       MIN(s.created_at)    AS first_recorded
 FROM raw_segments s
 JOIN interview_sessions i ON i.id = s.interview_session_id
 WHERE i.user_id = :producer_id
   AND s.status = 'ready'
-GROUP BY s.question_index
-ORDER BY s.question_index;
+GROUP BY s.question_id;
 ```
 
-Group the result by category in application code via
-`interview_questions.json` (`question_index → category`), so the taxonomy stays
-in one file. A category with zero recordings renders as an unfilled bubble —
-that is useful, it shows what is still un-recorded.
+Group by category in application code via `interview_config.get_categories()`
+(§2A) — **never by a category list held anywhere else**. Ordering comes from
+the JSON's own question order, so adding or reordering categories needs no code
+change. A category with zero recordings renders as an unfilled bubble; that is
+useful, it shows what is still un-recorded.
+
+Note both this and the sub-bubble query key on `question_id`, not
+`question_index` — see §2A for why the positional index cannot be trusted
+across a question-set edit. Until Phase 1b lands there is no such column.
 
 **Sub-bubbles for one milestone** (entities mentioned during it):
 
@@ -221,7 +303,7 @@ JOIN raw_segments   s ON s.id = m.raw_segment_id
 JOIN interview_sessions i ON i.id = s.interview_session_id
 WHERE i.user_id     = :producer_id
   AND s.status      = 'ready'
-  AND s.question_index = ANY(:question_indices)   -- the category's indices
+  AND s.question_id = ANY(:question_ids)          -- the category's STABLE ids
   AND NOT e.is_self                               -- the producer is every bubble
 GROUP BY e.id, e.name, e.type
 ORDER BY mention_count DESC, e.name;
@@ -277,13 +359,36 @@ own comment says new producers get theirs "at signup (application code)" —
 that code does not exist.
 
 - Create the `is_self` entity when a producer account is created, mirroring
-  migration 0012's logic exactly (including its `full_name → username`
-  fallback; one existing producer needed it).
+  migration 0012's logic exactly.
+- **Name = `User.full_name`, falling back to `username`** when it is null or
+  blank — the same `COALESCE(NULLIF(TRIM(full_name), ''), username)` the
+  migration used, and one existing producer needed it. A display label the
+  producer can correct later; what must exist now is the ROW.
 - Backfill anyone created between the migration and this landing.
-- Test: a fresh producer has exactly one `is_self` entity; the partial unique
-  index still holds; the orphan sweep still skips it.
+- Test: a fresh producer has exactly one `is_self` entity; the fallback fires
+  for a null/blank `full_name`; the partial unique index still holds; the
+  orphan sweep still skips it.
 
 **Small, and nothing else can start without it.**
+
+### Phase 1b — persist the stable `question_id` ⏳ deadline-bound
+
+**Do this before editing `interview_questions.json`** (§2A). Independent of
+everything else, and the only phase with an expiring window.
+
+- Migration `0013`: add `raw_segments.question_id` (nullable String, indexed).
+  Nullable because uploads outside the guided set have no question id.
+- Backfill by exact `question_asked` text match against every language in the
+  JSON — verified 12/12 recoverable on 2026-08-02. Report anything unmatched
+  rather than guessing; leave those NULL.
+- Populate at ingest: `SegmentIngestRequest` gains `question_id`, sent by the
+  frontend from the question it just displayed. Validate it against
+  `interview_config` so a client cannot invent one.
+- Timeline reads category via `question_id`; `question_index` keeps its
+  existing job (ordering the record flow, replacing a re-record) and is not
+  removed.
+- Test: a reordered question set leaves historical rows attributed to the same
+  category. That is the whole point of the column, so it needs a direct test.
 
 ### Phase 2 — relation capture
 
@@ -305,7 +410,15 @@ Direction and symmetry (the brief's question): **one directed row, never two.**
 - The prompt must therefore fix a convention and state it: **`from` is the
   subject of the sentence.** "Nir is my brother" → `(Nir, sibling, self)`.
   "Tzvi is my father" → `(Tzvi, parent, self)` — Tzvi is the parent OF self.
-  Getting this backwards inverts the whole tree, so it needs a direct test.
+
+  🚨 **Direction needs an explicit test, not a passing assertion.** Getting
+  `from`/`to` backwards inverts the entire tree and does so *silently* — every
+  node still renders, the generations are just upside down, and a reviewer
+  glancing at a tree with the right names in it will not notice. The test must
+  assert on a case where the two directions are distinguishable: feed "צבי is
+  my father" and assert the stored row is `(צבי, parent, self)` AND that the
+  rendered tree places צבי in the generation ABOVE the root — not merely that
+  a `parent` row exists.
 
 **2b. Confirmation screen shows relations.** Extend the `interrupt()` payload
 to `{identity_questions, type_questions, relation_questions}` and the modal to
