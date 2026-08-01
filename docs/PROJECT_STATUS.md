@@ -879,8 +879,23 @@ What was actually happening (found in the persisted `Message` rows):
   the archive-read call was upgraded. Note that upgrading entity extraction
   would *not* have helped the unnamed-spouse case (verified: flash-lite, flash
   and pro all return `[]` — there is no name to extract).
-- **STT is ~9s per spoken question** on CPU. Deliberate accuracy trade;
-  the archive-read call is no longer the bottleneck.
+- **`/health` is now honest about Redis, but nothing watches it.** A failed
+  connect used to report `"not configured"` with status `healthy` —
+  indistinguishable from deliberately running without a cache — so the whole
+  clip cache could silently no-op in production with only one `logger.error`
+  at boot to show for it. It now reports `"unreachable: <cause>"` and
+  `degraded`. **The signal exists; no alerting consumes it.** `/health` still
+  returns HTTP 200 when degraded (deliberately — `backend/fly.toml` checks it
+  every 30s and `docker-compose` uses `curl -fsS`, so a degraded body must not
+  take machines out of rotation), which means Fly's own check cannot act on
+  it. Catching a dead cache automatically needs a monitor that parses the
+  response body. Not built; decide when someone is actually on call.
+- **STT is ~2.1s per spoken question** (Deepgram, measured 2026-08-01 over 4s
+  of real audio). The ~9s figure recorded here previously was **local Whisper
+  `medium` on CPU**, which is now only the fallback — `LIVE_STT_PROVIDER` and
+  `INGESTION_STT_PROVIDER` are both `deepgram`. Sending audio-only rather than
+  the full video webm made no difference (2.17s vs 2.11s), so the cost is
+  Deepgram's processing, not upload size.
 - **Suggestions can be topically loose** — Montreal offered "what I discovered
   about myself after the army", linked only via "the period after the army".
   Defensible but worth watching before tightening.
