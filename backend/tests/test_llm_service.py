@@ -128,3 +128,54 @@ async def test_openai_call_pins_deterministic_seed(monkeypatch):
     )
     assert out == "[]"
     assert captured["seed"] == _DETERMINISTIC_SEED
+
+
+def test_gemini_usage_log_reports_cached_token_count(monkeypatch, caplog):
+    """The archive-read call's prompt is built for prompt caching (static
+    archive first, question last), but nothing was reporting whether a cache
+    was ever HIT — the log carried only in/out tokens, so a permanent 0 and a
+    working cache looked identical from outside. Pinned here because the value
+    of this field is entirely that someone notices when it CHANGES."""
+    import logging
+
+    service = LLMService.__new__(LLMService)  # no client needed for the logger
+
+    class _Usage:
+        prompt_token_count = 3604
+        candidates_token_count = 134
+        cached_content_token_count = 3594
+
+    with caplog.at_level(logging.INFO):
+        service._log_gemini_usage(_Usage())
+
+    record = next(r for r in caplog.records if r.msg == "llm_usage")
+    assert record.cache_read_tokens == 3594
+    assert record.in_tokens == 3604
+    assert record.out_tokens == 134
+    assert record.provider == "gemini"
+
+
+def test_gemini_usage_log_handles_absent_cache_field():
+    """Real responses omit cached_content_token_count entirely when nothing was
+    cached — which is every call today. That must log 0, not raise."""
+    import logging
+
+    service = LLMService.__new__(LLMService)
+
+    class _Usage:
+        prompt_token_count = 3604
+        candidates_token_count = 134
+        # no cached_content_token_count at all
+
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    logger = logging.getLogger("app.services.llm")
+    logger.addHandler(handler)
+    try:
+        service._log_gemini_usage(_Usage())
+    finally:
+        logger.removeHandler(handler)
+
+    record = next(r for r in records if r.msg == "llm_usage")
+    assert record.cache_read_tokens == 0

@@ -505,6 +505,24 @@ class LLMService:
             pass
 
     def _log_gemini_usage(self, usage_metadata) -> None:
+        """`cache_read_tokens` deliberately reuses the Anthropic path's field
+        name (see _log_usage) so one log query answers "is caching working"
+        across providers.
+
+        It is 0 on every call today: Gemini's IMPLICIT caching does not fire on
+        the archive-read call — measured 0/12 hits at ~3,610 prompt tokens on
+        gemini-3.6-flash (what `gemini-flash-latest` currently resolves to),
+        with the archive in the system instruction AND with it moved into the
+        contents prefix. Nothing in this codebase creates an EXPLICIT cache.
+
+        Logged anyway, and this is the point: a silent 0 is indistinguishable
+        from a silent hit unless the number is written down. If caching ever
+        starts working — a model change, an SDK change, an explicit cache being
+        introduced — this field is how anyone finds out, and equally how they
+        notice it stopping again. Measured value of a hit here is only
+        ~0.15s (prefill is not this call's cost; generated thinking tokens
+        are), so treat a change in this number as information about the
+        platform, not as a latency win."""
         if usage_metadata is None:
             return
         try:
@@ -513,6 +531,9 @@ class LLMService:
                 extra={
                     "in_tokens": getattr(usage_metadata, "prompt_token_count", 0) or 0,
                     "out_tokens": getattr(usage_metadata, "candidates_token_count", 0) or 0,
+                    "cache_read_tokens": getattr(
+                        usage_metadata, "cached_content_token_count", 0
+                    ) or 0,
                     "provider": "gemini",
                 },
             )
