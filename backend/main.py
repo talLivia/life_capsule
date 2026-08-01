@@ -274,14 +274,26 @@ async def health_check():
         services["database"] = "disconnected"
         health["status"] = "degraded"
 
-    # Check Redis
+    # Check Redis.
+    #
+    # A FAILED connect must not report as a deliberate absence. `redis` is None
+    # in both cases, and this probe used to call both "not configured" and
+    # leave the status "healthy" — so a production Redis that never connected
+    # was indistinguishable from success, while the clip cache silently no-oped
+    # and every answer paid full ffmpeg assembly. The only signal was one
+    # logger.error at boot. `disabled` is set solely by a blank REDIS_URL, so
+    # anything else without a connection is a real failure and says so.
     try:
         if cache_service.redis:
             await cache_service.redis.ping()
             services["redis"] = "connected"
-        else:
+        elif cache_service.disabled:
             services["redis"] = "not configured"
+        else:
+            services["redis"] = f"unreachable: {cache_service.init_error or 'unknown error'}"
+            health["status"] = "degraded"
     except Exception:
+        # Connected at startup, unreachable now.
         services["redis"] = "disconnected"
         health["status"] = "degraded"
 

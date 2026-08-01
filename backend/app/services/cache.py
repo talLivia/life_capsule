@@ -16,9 +16,31 @@ class CacheService:
     def __init__(self):
         self.redis: Optional[aioredis.Redis] = None
         self.default_ttl = 300  # 5 minutes
+        # WHY `redis` is None — every method below degrades to a silent no-op
+        # when it is, which is correct for a cache but means a connection that
+        # FAILED and a cache deliberately turned OFF are the same value. They
+        # are not the same event, and /health could not tell them apart: it
+        # reported both as "not configured" and left the app "healthy", so a
+        # Redis that never connected in production looked exactly like success
+        # while the clip cache silently did nothing.
+        self.init_error: Optional[str] = None
+        self.disabled: bool = False
 
     async def initialize(self):
-        """Initialize Redis connection."""
+        """Initialize Redis connection.
+
+        A blank REDIS_URL is the ONE benign way to have no cache — an explicit
+        "run without Redis". Every other path out of here without a connection
+        is a failure and is recorded as one, so the health probe can say so."""
+        self.init_error = None
+        self.disabled = False
+
+        if not (settings.REDIS_URL or "").strip():
+            self.redis = None
+            self.disabled = True
+            logger.warning("REDIS_URL is blank — cache disabled deliberately, no-op mode")
+            return
+
         try:
             self.redis = aioredis.from_url(
                 settings.REDIS_URL,
@@ -28,8 +50,12 @@ class CacheService:
             await self.redis.ping()
             logger.info("Redis cache connected successfully")
         except Exception as e:
+            # Kept non-fatal on purpose: the cache is an optimisation and the
+            # app is fully functional without it. The cost of that choice is
+            # that nothing downstream notices, which is what init_error fixes.
             logger.error(f"Failed to connect to Redis: {e}")
             self.redis = None
+            self.init_error = f"{type(e).__name__}: {e}"
 
     async def get(self, key: str) -> Optional[Any]:
         """Get value from cache."""
