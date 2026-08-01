@@ -1086,18 +1086,36 @@ class UnitSelection:
 async def select_units(
     question: str, group_id: str, recording_language: str, session_id: str
 ) -> UnitSelection:
-    archive, entity_map, units = await _archive_bundle(group_id)
+    # These three reads are INDEPENDENT — the archive bundle keys off the
+    # producer, the other two off the session — and none of them feeds any of
+    # the others. Run sequentially they cost the SUM of three round trips to
+    # Neon; concurrently they cost the slowest one.
+    #
+    # This is round-trip latency, not query work: a trivial `SELECT 1` against
+    # the same instance measures ~0.17s, and each of these was ~0.36s of a
+    # 7.6s turn. Nothing here is CPU- or IO-bound locally, so gathering is
+    # pure win — the queries were already isolated in their own sessions.
+    #
+    # The empty-archive early return now happens AFTER the other two reads
+    # rather than before, so a producer with no ready recordings pays two
+    # pointless queries. That path returns the no-story fallback regardless
+    # and is not on any hot path worth branching for.
+    archive_bundle, shown, turns = await asyncio.gather(
+        _archive_bundle(group_id),
+        _load_shown_units(session_id),
+        retrieval_service._recent_turns(
+            session_id, retrieval_service.COREFERENCE_HISTORY_TURNS
+        ),
+    )
+    archive, entity_map, units = archive_bundle
     if not archive or not units:
         return UnitSelection([], [], False)
 
-    shown_keys, per_turn_units = await _load_shown_units(session_id)
+    shown_keys, per_turn_units = shown
 
     transcript_block = _format_annotated_transcript(archive, units, shown_keys)
     # Same ordinals the transcript block just printed — see _recording_ordinals.
     entity_map_block = _format_entity_map(entity_map, _recording_ordinals(archive, units))
-    turns = await retrieval_service._recent_turns(
-        session_id, retrieval_service.COREFERENCE_HISTORY_TURNS
-    )
     history_block = _format_history_block(turns, per_turn_units) if turns else ""
 
     unit_ids, raw_follow_up = await _read_archive_for_ranges(
