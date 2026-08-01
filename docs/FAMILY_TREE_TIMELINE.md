@@ -1,0 +1,424 @@
+# Family tree + timeline — build plan
+
+**Written:** 2026-08-01 · **Status:** PLAN ONLY, nothing built · **Branch:** `main`
+
+Two read-only producer-facing pages: a **family tree** built from person
+entities and family relations, and a **timeline** of life milestones that
+expands into the people, places and moments from each period.
+
+This document is written to be picked up cold. Everything in "What exists
+today" was measured against the live database on 2026-08-01, not assumed —
+re-measure before trusting it if much time has passed. Standing architecture
+rules live in [CLAUDE.md](../CLAUDE.md); the entity schema's reasoning lives in
+[PROJECT_STATUS.md](PROJECT_STATUS.md)'s "NEXT UP" section and should be read
+before touching anything entity-shaped.
+
+**🛑 Section 3 is an open decision that changes the shape of half this plan.
+Get an answer before starting Phase 3 or later.**
+
+---
+
+## 1. What exists today (measured 2026-08-01)
+
+### Schema — all present, migration `0012` applied
+
+| Table | State |
+| --- | --- |
+| `entities` | 19 rows. `type` ∈ person/place/organisation/event/other, `year_start`/`year_end`, `is_self`, unique on `(producer_id, normalized_name)` |
+| `entity_mentions` | one row per (entity, recording), carries the per-recording `summary`, cascades from `raw_segments` |
+| `relation_types` | 20 seeded. **6 tree-bearing** (parent, child, sibling, spouse, grandparent, grandchild). Holds `is_symmetric`, `inverse_type`, `category`, `label_en`, `label_he` |
+| `entity_relations` | **0 rows.** `from_entity_id`, `to_entity_id`, `relation_type` (FK), `source_segment_id` (FK, cascades), unique on all four |
+
+### The actual data
+
+```
+entities by type:  person 13   place 4   organisation 2   event 0
+                   is_self 5   with year_start 0
+entity_relations:  0 rows
+producers 5,  self-entities 5   (migration 0012 backfilled every existing one)
+```
+
+Three facts that matter more than they look:
+
+1. **Zero `event` entities exist, and that is not an accident.** The extractor
+   is a *named*-entity extractor whose prompt says outright that an unnamed
+   school is omitted. "My army service" has no name, so it is correctly not an
+   entity. The archive's nearest things are `חיל האוויר` and `הכפר הירוק`,
+   both typed `organisation`. **The timeline as specified has no data source.**
+   See §3.
+2. **Zero relations, zero years.** Nothing writes either. Expected — both were
+   explicitly out of scope for the entity migration.
+3. **Every existing producer has a self-entity, but signup creates none.**
+   Migration 0012 backfilled the 5 that existed. A producer who signs up now
+   gets no root, and relations cannot be expressed without one. Phase 1.
+
+### Confirmation flow — the thing both capture paths extend
+
+- `check_entities_node` runs **one** extraction, used twice (disambiguation +
+  the write). Do not add a second extraction call; the names the producer
+  confirms must be the names that get stored.
+- `human_confirm_node` raises **ONE** `interrupt()` per recording carrying
+  `{identity_questions, type_questions}`. One screen, one submit.
+- `POST /segments/{id}/confirm-entities` resumes it. **A partial submit is a
+  400**, deliberately — both plausible defaults are wrong in opposite
+  directions.
+- Frontend: `components/record/EntityConfirmModal.tsx`, payload typed in
+  `lib/types.ts` as `PendingConfirmation`.
+
+### Frontend shell
+
+`app/page.tsx` holds a `View` union and a `navItems` array; each panel is a
+lazy `dynamic()` import. There are only three routes (`/`, `/record`,
+`/talk`) — **the tree and timeline are new panels in this shell, not new
+routes.** Design system: `btn-primary`, `btn-secondary`, `glass-card`,
+`card-glow` for the dark app; the warm `calm-*` theme is **`/talk` only**
+(see the note in `globals.css` before reusing it).
+
+Recording playback already exists: `RecordingList.tsx` renders
+`<video src={segment.video_url}>`. That is the clip-serving path to reuse.
+
+### The interview question set — load-bearing for §3
+
+`backend/app/interview_questions.json`, bilingual he/en, 12 questions in
+**5 categories, already in chronological life order**:
+
+| category | label (en / he) | questions |
+| --- | --- | --- |
+| `childhood` | Childhood / ילדות | q0–q2 |
+| `military_service` | Military Service / שירות צבאי | q3–q4 |
+| `post_military` | After the Military / אחרי הצבא | q5–q6 |
+| `relationships` | Relationships & Family / זוגיות ומשפחה | q7–q9 |
+| `career` | Career / קריירה | q10–q11 |
+
+Every recording carries `question_index`, so **every recording already belongs
+to exactly one life period, with zero new capture.**
+
+---
+
+## 2. Open decisions — I want your input before building
+
+### 🛑 2.1 What is a timeline milestone? (blocks Phase 3+)
+
+The brief says milestones are `event` entities with `year_start`. That data
+does not exist and is awkward to create: the extractor deliberately refuses
+unnamed periods, and "school → high school → army" are periods, not names.
+
+**Option A — question categories as milestones (recommended).** The five
+categories above become the five bubbles. Already exists, already ordered,
+already bilingual, attached to every recording, needs no capture and no
+producer effort. Years become optional decoration rather than the backbone.
+- *Against:* the milestone set is fixed at five and cannot express anything
+  the interview does not ask about. A producer with a distinctive life chapter
+  outside the script cannot add one.
+
+**Option B — `event` entities as specified.** Requires teaching extraction to
+emit unnamed life periods (a real change to what the extractor is for), plus
+year capture to order them. Fully general; the producer's own chapters appear.
+- *Against:* a lot of new capture burden on a producer who just wants to
+  record, and it fights the "named entity" rule the extractor is built on.
+
+**Option C — A now, B later.** Ship the timeline on categories; add
+`event`-entity milestones as an additive second source once relations and
+years have proven themselves in Phase 2. The page merges both sources by year.
+
+**My recommendation: C.** It gets a working timeline with no new capture,
+and does not close the door on producer-defined chapters. But this is a
+product-shape call about how prescriptive the interview should be, so it is
+yours.
+
+**Everything from Phase 3 onward assumes A/C. If you pick B, Phase 3 grows a
+whole extraction-and-year-capture stage first and the estimates change.**
+
+### 2.2 How aggressive should relation proposal be?
+
+An LLM reading "I have four brothers: Nir, Chen, Adi, Raz" should clearly
+propose four `sibling` relations to the self-entity. Less clear: "my commander
+Roni" (a `commander` relation? or just a mention?), "I met my wife on an app"
+(`spouse` — but she is never named, so there is no entity to relate to).
+
+**Recommendation:** propose only when BOTH endpoints are already extracted
+entities and the text states the relation explicitly. No inference across
+recordings, no guessing an unnamed endpoint. A missed relation is recoverable;
+a wrong one in a family tree is visible and damaging.
+
+**Your call:** should non-family relations (`friend`, `commander`, `colleague`)
+be proposed at all in Phase 2, or is Phase 2 family-only with the rest later?
+They are stored fine either way — the question is confirmation-screen noise.
+
+### 2.3 Skippability — what does "skip" mean for a relation?
+
+The constraint is that a producer must never be blocked. But
+`confirm-entities` currently **rejects a partial submit with a 400**, on the
+reasoning that both silent defaults are wrong.
+
+Those two rules collide. The resolution I propose: relation and year questions
+are **explicitly skippable, and skipping is a real answer** — a "Skip" control
+that records "not answered" rather than an absent key. Identity and type
+questions keep their current all-or-nothing rule, because their defaults are
+genuinely dangerous; an unanswered relation just is not stored, which is the
+status quo and harmless.
+
+**Confirm this is the shape you want** — it means the modal has two classes of
+question with different submit rules, which needs to be obvious in the UI.
+
+### 2.4 Do we need a "no relations yet" tree, or no tree at all?
+
+With 0 relations today, the tree page renders one node: the producer. Is that
+the right empty state (a single node plus an explanation), or should the nav
+item be hidden until at least one relation exists? I lean toward showing it
+with a clear empty state — a hidden feature is undiscoverable, and the empty
+state is where you explain that relations come from recording.
+
+---
+
+## 3. Milestone → sub-bubble linkage (the §"design this" item)
+
+**Chosen mechanism: derive from the recordings, do not store a new relation.**
+
+A milestone is a question category. A category is a set of `question_index`
+values. The people, places and organisations "during" that milestone are
+exactly the entities mentioned in the recordings answering those questions.
+This is a plain join over data that already exists.
+
+Rejected: a new `occurred_during` relation type. It would need a migration
+(the `relation_types.category` CHECK allows only family/social/professional/
+other), a new extraction concept, and producer confirmation — to store a fact
+already derivable from `question_index`. It is the "same fact in two places
+and they drift" failure the entity migration exists to undo.
+
+Rejected: inferring from co-mention across recordings. Vaguer, more expensive,
+and no more correct.
+
+### The exact queries
+
+**Milestones** (ordered, with counts — drives the bubbles):
+
+```sql
+SELECT s.question_index,
+       COUNT(DISTINCT s.id)      AS recordings,
+       MIN(s.created_at)         AS first_recorded
+FROM raw_segments s
+JOIN interview_sessions i ON i.id = s.interview_session_id
+WHERE i.user_id = :producer_id
+  AND s.status = 'ready'
+GROUP BY s.question_index
+ORDER BY s.question_index;
+```
+
+Group the result by category in application code via
+`interview_questions.json` (`question_index → category`), so the taxonomy stays
+in one file. A category with zero recordings renders as an unfilled bubble —
+that is useful, it shows what is still un-recorded.
+
+**Sub-bubbles for one milestone** (entities mentioned during it):
+
+```sql
+SELECT e.id, e.name, e.type,
+       COUNT(DISTINCT m.raw_segment_id) AS mention_count
+FROM entities e
+JOIN entity_mentions m ON m.entity_id = e.id
+JOIN raw_segments   s ON s.id = m.raw_segment_id
+JOIN interview_sessions i ON i.id = s.interview_session_id
+WHERE i.user_id     = :producer_id
+  AND s.status      = 'ready'
+  AND s.question_index = ANY(:question_indices)   -- the category's indices
+  AND NOT e.is_self                               -- the producer is every bubble
+GROUP BY e.id, e.name, e.type
+ORDER BY mention_count DESC, e.name;
+```
+
+**Moments behind a sub-bubble** (and the same query powers the family tree's
+person panel — one endpoint, two callers):
+
+```sql
+SELECT s.id, s.question_asked, s.question_index, s.video_url,
+       s.transcript, m.summary
+FROM entity_mentions m
+JOIN raw_segments s ON s.id = m.raw_segment_id
+WHERE m.entity_id = :entity_id
+ORDER BY s.created_at;
+```
+
+`video_url` + `transcript` + `question_asked` give the player, the transcript
+and the title with no new serving path. **Do not trim clips for this** —
+player-side seeking was measured and rejected (see PROJECT_STATUS "Turn
+latency"), and per-moment ffmpeg would be far worse. Play the recording.
+
+### These queries were run, not just written
+
+All five (the three above plus the two in Phase 4) executed against the live
+database on 2026-08-01 and returned sensible rows. Actual output for the
+`military_service` milestone:
+
+```
+sub-bubbles (q3,q4):   person איציק כהן  mentions=1
+                       organisation חיל האוויר  mentions=1
+moments for איציק כהן: q4  video=yes  "מהו הרגע הכי בלתי נשכח..."
+                       q5  video=yes  "מה עשית מיד אחרי השחרור מהצבא?"
+tree nodes:            9 person nodes, self = Tal Nahum
+tree edges:            0  (as expected — nothing writes relations yet)
+```
+
+Note what the moments row shows: **איציק כהן spans two milestones** (q4 in
+`military_service`, q5 in `post_military`). That is correct and the design
+handles it without special-casing — a person is not owned by one period.
+
+---
+
+## 4. Build order
+
+Each phase is independently shippable and leaves the app working.
+
+### Phase 1 — self-entity at signup ⚠️ blocks everything
+
+**Why first:** relations cannot be expressed without a root, and a producer
+who signs up today has none. Migration 0012 backfilled the existing 5 and its
+own comment says new producers get theirs "at signup (application code)" —
+that code does not exist.
+
+- Create the `is_self` entity when a producer account is created, mirroring
+  migration 0012's logic exactly (including its `full_name → username`
+  fallback; one existing producer needed it).
+- Backfill anyone created between the migration and this landing.
+- Test: a fresh producer has exactly one `is_self` entity; the partial unique
+  index still holds; the orphan sweep still skips it.
+
+**Small, and nothing else can start without it.**
+
+### Phase 2 — relation capture
+
+**2a. Extraction proposes relations.** Extend `entity_extraction` to return,
+alongside entities, a `relations` list of
+`{from, to, relation_type, evidence}` where `from`/`to` are names already in
+the entity list (or the literal self-marker) and `relation_type` is drawn from
+the **seeded vocabulary only** — the FK will reject anything invented, which
+is the point. `evidence` is the phrase that supports it, for the confirm UI.
+
+Direction and symmetry (the brief's question): **one directed row, never two.**
+- Symmetric types (`sibling`, `spouse`, `cousin`, `friend`) — store one row in
+  whichever direction the sentence gave. The reader treats it as undirected;
+  `relation_types.is_symmetric` says so.
+- Directional types (`parent`/`child`, `grandparent`/`grandchild`) — store one
+  row and derive the inverse at read time from `inverse_type`. Never write the
+  mirror. Two rows means every edit and delete must keep a pair in sync and
+  they will eventually disagree.
+- The prompt must therefore fix a convention and state it: **`from` is the
+  subject of the sentence.** "Nir is my brother" → `(Nir, sibling, self)`.
+  "Tzvi is my father" → `(Tzvi, parent, self)` — Tzvi is the parent OF self.
+  Getting this backwards inverts the whole tree, so it needs a direct test.
+
+**2b. Confirmation screen shows relations.** Extend the `interrupt()` payload
+to `{identity_questions, type_questions, relation_questions}` and the modal to
+render a third group, in the same one-screen-one-submit flow. Per §2.3,
+relation questions are skippable while identity/type stay mandatory.
+
+⚠️ **The payload shape changed once before and was safe only because zero
+segments were mid-flight.** Check `SELECT count(*) FROM raw_segments WHERE
+pending_confirmation IS NOT NULL` before landing; drain or shim if non-zero.
+
+**2c. Write confirmed relations.** In `finalize_ingest_node`, alongside the
+entity write, insert `entity_relations` rows with `source_segment_id` set. Only
+confirmed ones. Re-ingest must replace, not duplicate — the unique constraint
+covers `(from, to, type, source_segment)`.
+
+### Phase 3 — year capture
+
+Depends on §2.1. Under Option A/C this is **optional decoration**, so it can
+slip without blocking the timeline.
+
+- When an entity that would carry a year has none, add a year question to the
+  same batch. Skippable, always.
+- Free-text-to-year parsing must be forgiving ("1973", "בערך 73", "early 70s")
+  and must **refuse rather than guess** — a wrong year silently reorders a life.
+- Writes `year_start`/`year_end` on `entities`.
+
+### Phase 4 — family tree page
+
+Read-only. New `View` + nav item + lazy panel, dark design system.
+
+**Backend:** one endpoint returning nodes + edges.
+
+```sql
+-- nodes
+SELECT e.id, e.name, e.year_start, e.year_end, e.is_self
+FROM entities e
+WHERE e.producer_id = :producer_id AND e.type = 'person';
+
+-- edges (entity_relations has no producer_id — scope via the entity join)
+SELECT r.from_entity_id, r.to_entity_id, r.relation_type, r.source_segment_id,
+       rt.is_symmetric, rt.inverse_type, rt.label_en, rt.label_he
+FROM entity_relations r
+JOIN relation_types rt ON rt.relation_type = r.relation_type
+JOIN entities f        ON f.id = r.from_entity_id
+WHERE rt.is_tree_edge AND f.producer_id = :producer_id;
+```
+
+**Layout:** standard genealogy, generations as rows, rooted at `is_self`.
+Assign generation by walking `parent`/`child` edges from the root; `sibling`
+and `spouse` stay on the same row.
+
+**The honest cases the brief asks about:**
+- **No relations yet** → render the single self node with an explanation of
+  where relations come from. Not a spinner, not an error, not a blank page.
+- **Unreachable people** — an `aunt_uncle` whose own parent link was never
+  captured has no generation. `is_tree_edge` is false for those types precisely
+  so the tree does not have to place them, but a `sibling`-only person with no
+  path to the root can still occur. Render them in a clearly separated
+  "related, not yet placed" area rather than guessing a generation or dropping
+  them silently. **The tree never guesses.**
+- **Cycles / contradictions** (A parent of B and B parent of A, from two
+  recordings) — detect, drop the later edge from the layout, and surface it
+  rather than looping forever.
+
+**Click a person** → the moments panel, from the third query in §3. Video,
+transcript, question-as-title. Every edge carries `source_segment_id`, so
+"brother" can link to the producer *saying* it — that is the property worth
+designing around, and it falls out of the schema for free.
+
+### Phase 5 — timeline page
+
+Read-only. Same shell treatment.
+
+- Bubbles = categories, ordered by first `question_index` (chronological by
+  construction). Under Option C, `event` entities with `year_start` merge in
+  as additional bubbles sorted by year.
+- Click → expand to sub-bubbles (§3 query 2), capped at a handful with a
+  "more" affordance; `mention_count DESC` puts the most-present people first.
+- Click a sub-bubble → the same moments panel Phase 4 built. **One component,
+  two entry points.**
+- Empty states: a category with no recordings renders unfilled and invites
+  recording it.
+
+---
+
+## 5. Constraints that hold across every phase
+
+- **Read-only.** No editing the tree or timeline. If producers want that
+  later it is a separate feature with its own confirmation semantics.
+- **Never blocked.** A producer who just wants to record must be able to skip
+  every relation and year question, on every recording, forever.
+- **Reuse the design system.** `btn-primary` / `glass-card` / `card-glow`; the
+  `calm-*` theme is `/talk`-only. No new visual patterns.
+- **Nothing is auto-applied.** Relations follow the identity-merge rule: a
+  silent wrong relation is worse than an unanswered one.
+- **One directed row per relation.** Inverses are derived at read time.
+- **Relations cascade with their recording.** `source_segment_id` is
+  `ON DELETE CASCADE` — deleting a recording removes what it taught us, which
+  is deliberate.
+- **Bilingual.** `relation_types` carries `label_en`/`label_he` and the
+  question set is bilingual; neither page should hardcode a language.
+
+## 6. Explicitly out of scope
+
+- Editing, adding or deleting relations from the tree UI.
+- Importing a tree from GEDCOM or any external genealogy source.
+- Inferring relations across recordings (only what one recording states).
+- Photos or avatars on tree nodes — the archive stores video, not portraits.
+- Anything about the `avatar` chat mode.
+
+## 7. Before the first commit of any phase
+
+- `python -m pytest -q -m 'not integration'` — currently 549 passing.
+- Frontend `tsc`, `eslint`, `next build` clean.
+- Check the mid-flight `pending_confirmation` count before changing that
+  payload (Phase 2b).
