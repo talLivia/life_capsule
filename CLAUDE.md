@@ -80,9 +80,14 @@ per question (seed and `temperature=0` fixed):
 - Thinking-token counts vary run to run at **every** setting (e.g. 1475 vs
   1917), and where a unit choice is marginal the answer varies with them.
 - `ARCHIVE_READ_THINKING_BUDGET` does **not** fix this. Gemini treats it as a
-  soft hint: at `budget=128` the call actually spent 656-806 thinking tokens,
-  and 128 vs 512 produced identical thinking. `budget=0` is rejected (400).
-  **It is pinned for LATENCY (~2x faster), not for reproducibility.**
+  soft hint, and **the call is already at the model's thinking FLOOR** —
+  `budget=1`, `budget=128` and `thinking_level='low'` each spent exactly 586
+  thinking tokens, while `budget=-1` and `thinking_level='high'` each spent
+  1918 and `budget=0` is rejected (400). One call per setting, so read that as
+  **two levels, not two exact numbers** — the run-to-run variance above still
+  applies within each. The point stands either way: `low` is what we already
+  get, so **turning the budget down buys nothing** (re-measured 2026-08-01 on
+  gemini-3.6-flash). It is pinned for LATENCY, not for reproducibility.
 
 **What varies:** ±1-2 *peripheral* units on broad questions — e.g. `family`
 gains/loses `u4`/`u16`, `army-broad` gains/loses `u10`.
@@ -94,11 +99,36 @@ Independently corroborated by the comparison harness (3 runs × 12 questions):
 v2 was **10/12 stable**, and the two that varied were exactly `family` and
 `army-broad` — both broad questions, and only those. v1 was 12/12.
 
-This is accepted deliberately. The reproducible alternative
-(`gemini-flash-lite-latest`, 0 thinking tokens, 6/6 identical everywhere)
-**loses the follow-up pronoun resolution** — "משהו מעניין נוסף שקשור אליה"
-finding the "moment I knew she was the one" recording — and regresses Montreal
-by dropping a unit. Determinism is not worth that.
+This is accepted deliberately — but the REASON has changed, and the old one
+here was measurably false by 2026-08-01. Corrected rather than deleted,
+because the way it went stale is the lesson:
+
+**⚠️ `gemini-flash-latest` and `gemini-flash-lite-latest` are moving aliases.**
+They resolve to `gemini-3.6-flash` and `gemini-3.5-flash-lite` *today*
+(`response.model_version` reports it — check there, don't assume). Anything
+measured about "the model" expires silently when the alias moves. Everything
+below is dated for that reason.
+
+This section previously claimed flash-lite had **0 thinking tokens**, was
+**6/6 identical everywhere**, **lost the wife-pronoun follow-up**, and
+**regressed Montreal**. Re-measured 2026-08-01, 3 runs per arm: it spends
+**300-800** thinking tokens, it **resolves the pronoun follow-up correctly**
+(finds `u38`/`u39`), and Montreal is **byte-identical** to flash. All four
+claims were wrong, and a decision made from them would have been wrong.
+
+**The real trade, and why we still keep flash** (declined 2026-08-01): the
+model swap is worth ~1.4s of a ~9s spoken turn, and it costs the
+**narrow-vs-broad discrimination** that this whole design exists to produce.
+Asked `באיזה תפקיד שירתת בצבא?` — a NARROW role question — flash returns
+`u10-u13` (6.1s) while flash-lite returns `u10-u17` (13.7s), i.e. the broad
+army answer. It also drops `u37` from `family`, the closing line about wanting
+the grandchildren to know. See "breadth falls out of the question" above:
+losing that is losing the mechanism, not a tuning detail.
+
+Note honestly that flash-lite was **more stable** (3/3 where flash varied on
+`army-narrow` and `family`) and faster. Stability and speed were still judged
+not worth the breadth trade — the same call this section has always made,
+now for a reason that is actually true.
 
 **Do not re-tune prompt wording to chase breadth changes.** Three apparent
 "narrowings" were investigated; the dominant cause was this run-to-run

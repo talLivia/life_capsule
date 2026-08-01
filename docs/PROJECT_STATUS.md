@@ -785,6 +785,86 @@ lighter load; the harness average is the one to trust.
 
 ---
 
+## Turn latency: where it stands (profiled 2026-08-01)
+
+**~6.9s typed / ~9.0s spoken**, warm archive cache. Cold cache (first question
+after a restart or re-ingest) adds ~1.4s.
+
+Full end-to-end profile of one `video_clips_v2` turn, warm, against the live
+database and the real Gemini call:
+
+| stage | time | share |
+| --- | --- | --- |
+| **archive-read LLM call** | **~4.0-4.6s** | **~63%** |
+| DB round trips | ~0.9s | ~14% |
+| ffmpeg trim + concat | ~1.35s | ~20% |
+| storage / redis / glue | ~0.02s | ~0% |
+| STT (spoken turns only, Deepgram) | ~2.1s | — |
+
+**Two caveats on those numbers.** Storage is LOCAL here (`USE_LOCAL_STORAGE`),
+so the download/upload rows read ~0.02s; in production `_assemble_and_upload_clip`
+moves ~2.8MB down and ~1MB up over R2 per turn and will look materially worse.
+And Redis is not running locally, so the clip-cache rows read 0.000s — with
+Redis live an exact repeat question skips ffmpeg and the upload entirely,
+though it never touches the LLM call, which is the actual bottleneck.
+
+### Landed
+
+- **The three independent pre-LLM reads now run concurrently** (`select_units`).
+  The archive bundle, the shown-unit history and the recent turns share no
+  data and were sequential only by writing order. Measured on the live DB:
+  **1.083s → 0.358s at steady state, ~0.70s per turn.** This is round-trip
+  latency, not query work — a trivial `SELECT 1` to Neon costs ~0.17s.
+- `pool_pre_ping=True` costs **+0.156s per session checkout**, still paid on
+  every one. Worth less now that three of the four overlap (~0.15-0.3s left).
+  Not taken: it exists so a connection Neon dropped while idle fails fast.
+
+### 🛑 DECLINED — the thinking-token lever. Do not re-open without reading this
+
+The archive-read call is ~63% of the turn and its latency tracks **generated**
+tokens at ~7ms each, of which thinking is 320-1,525 (mean ~600) against ~100
+tokens of actual output. That makes "spend less thinking" the obvious lever.
+It was investigated in full on 2026-08-01 and **declined by the producer.**
+
+**There is no budget lever at all.** On `gemini-3.6-flash` the call already
+sits at the model's floor: `budget=1`, `budget=128` and `thinking_level='low'`
+all spend an identical **586** thinking tokens, `budget=0` is rejected (400),
+and only `budget=-1`/`'high'` goes UP (1918). Turning the budget down does
+nothing. The only lever is a different model.
+
+**The model swap is worth ~1.4s and costs the narrow-vs-broad distinction.**
+Side-by-side, 3 runs per arm, real questions and real answers:
+
+| question | `gemini-3.6-flash` (kept) | `gemini-3.5-flash-lite` |
+| --- | --- | --- |
+| `army-narrow` (which ROLE?) | `u10-u13`, **6.1s** | `u10-u17`, **13.7s** — the broad answer |
+| `family` | `u1-u5,u37`, 15.6s | `u1-u5`, 11.0s — drops the grandchildren line |
+| `school` | no story | `u6,u7` — answers *where*, not *what* |
+| montreal, brothers, ilana, army-broad, wife-pronoun, no-answer | — | **identical** |
+
+`army-narrow` is the disqualifying one: a narrow role question getting the
+whole army recording is the "breadth falls out of the question" mechanism
+failing, which is the core of the design, not a tuning detail.
+
+Recorded honestly: flash-lite was **faster** and **more stable** (3/3 where
+flash varied on `army-narrow` and `family`). Declined anyway.
+
+**Prompt caching is not a lever either.** Gemini implicit caching does not
+fire on this call at all (0/12 hits). Explicit caching works — 99.7% of the
+prompt served from cache — and buys **~0.15s**, because prefill is not this
+call's cost. On matched pairs with identical generated-token counts the
+cached/uncached delta was +0.05s, −0.31s, +0.19s: mean ≈ 0, sign flips.
+`cache_read_tokens` is now on the `llm_usage` log line so this stays visible.
+
+**What is actually left**, in rough order of size: the unprofiled R2
+download/upload in production, ~1.35s of ffmpeg (already `-preset veryfast`;
+player-side seeking was measured and rejected, ceiling ~1.3s), ~2.1s of
+Deepgram STT, and the remaining `pool_pre_ping` overhead. None of them is the
+LLM call, and the LLM call has no lever left that does not cost answer
+quality.
+
+---
+
 ## Not done / in progress
 
 - **Retest after the mic fixes.** The clip-echo and gate-stranding fixes below
