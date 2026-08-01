@@ -13,6 +13,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import User
 from app.schemas import Token, UserCreate, UserResponse, UserUpdate
+from app.services import entity_store
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,19 @@ async def register_user(user_data: UserCreate, db: AsyncSession = Depends(get_db
         )
 
         db.add(user)
+        await db.flush()  # assigns user.id, needed by the self-entity below
+
+        # The producer's own node — the root every family relation hangs off.
+        # In the SAME transaction as the user: a producer with no root cannot
+        # express relations at all, so the two must not be able to diverge.
+        # Non-producers get nothing; the helper checks the role itself.
+        try:
+            await entity_store.ensure_self_entity(db, user)
+        except Exception as e:
+            # Registration must not fail over an entity row. The backfill in
+            # scripts/backfill_self_entities.py exists to repair exactly this.
+            logger.error(f"Failed to create self-entity for {user.id}: {e}", exc_info=True)
+
         await db.commit()
         await db.refresh(user)
 

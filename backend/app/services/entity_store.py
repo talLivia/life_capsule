@@ -445,6 +445,92 @@ async def _get_or_create_entity(
     return entity, True
 
 
+async def ensure_self_entity(db: AsyncSession, user) -> Tuple[Optional[Entity], bool]:
+    """The producer's own node — the root every family relation hangs off.
+
+    Migration 0012 created one per producer EXISTING at the time and its own
+    comment said new producers get theirs "at signup (application code)". This
+    is that code. Without it a producer who signed up after the migration has
+    no root, and relations cannot be expressed at all: every extracted summary
+    is phrased relative to הדובר (the speaker), so "I have four brothers" needs
+    a node for them to be brothers OF.
+
+    Created eagerly rather than lazily on first use, so the tree's root is an
+    invariant instead of something every caller has to remember. Idempotent —
+    safe to call on every registration and to re-run as a backfill.
+
+    Name is `full_name`, falling back to `username` when it is null or blank,
+    matching the migration (one existing producer needed the fallback). It is a
+    display label the producer can correct later; what must exist is the ROW.
+
+    `normalized_name` uses the application normaliser, NOT the plain
+    LOWER(TRIM(...)) the migration used — the migration ran in SQL where the
+    Hebrew normaliser was unavailable and documented that as a deliberate
+    limitation. Here it is available, and using it is what makes the merge key
+    correct: if a transcript ever names the producer, `_get_or_create_entity`
+    looks up by the normalised key and lands on THIS row instead of creating a
+    duplicate person. Verified 2026-08-02 that all 5 existing self-entities
+    normalise identically under both, so this introduces no split today; a
+    Hebrew `full_name` is where the two would have diverged.
+
+    Returns (entity, created). `(None, False)` only in the collision case
+    described below, which is logged loudly rather than raised — a producer
+    should never fail to register because of an entity row.
+    """
+    if getattr(user, "role", None) != "producer":
+        return None, False
+
+    raw_name = (user.full_name or "").strip() or (user.username or "").strip()
+    if not raw_name:
+        logger.error(
+            f"Cannot create self-entity for {user.id}: both full_name and username are blank"
+        )
+        return None, False
+
+    normalized = normalize_entity_name(raw_name)
+
+    existing = await _find_entity(db, user.id, normalized)
+    if existing is not None:
+        if existing.is_self:
+            return existing, False
+        if existing.type == "person":
+            # A transcript already named the producer before this ran. It IS
+            # them, and the merge key says so — promote rather than colliding.
+            existing.is_self = True
+            logger.info(f"Promoted existing entity {existing.id} to self for producer {user.id}")
+            return existing, False
+        # Same key, but typed place/organisation — promoting would violate
+        # ck_entities_self_is_person, and retyping someone's archive because a
+        # place shares their name would be worse than having no root. Loud,
+        # not silent: the tree renders its empty state and this line says why.
+        logger.error(
+            f"Cannot create self-entity for producer {user.id}: an entity named "
+            f"{existing.name!r} of type {existing.type!r} already holds that key"
+        )
+        return None, False
+
+    entity = Entity(
+        producer_id=user.id,
+        name=raw_name,
+        normalized_name=normalized,
+        type="person",
+        is_self=True,
+    )
+    try:
+        # Same savepoint pattern as _get_or_create_entity: two concurrent
+        # callers (a registration racing a backfill) must cost one INSERT,
+        # not the enclosing transaction.
+        async with db.begin_nested():
+            db.add(entity)
+            await db.flush()
+    except IntegrityError:
+        existing = await _find_entity(db, user.id, normalized)
+        if existing is None:
+            raise
+        return existing, False
+    return entity, True
+
+
 async def _find_entity(
     db: AsyncSession, producer_id: str, normalized: str
 ) -> Optional[Entity]:
