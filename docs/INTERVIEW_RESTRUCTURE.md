@@ -509,9 +509,40 @@ producer re-navigate? Check the live count before deciding.
      labels). They are flagged `needs_wording_confirmation` in the file and
      surface as warnings on every validation run, so they cannot ship
      unnoticed. **Send the wording and I will swap it in — JSON only.**
-2. **`interview_config` extension.** Step-tree walking, gate lookup, retired
-   fallback. Pure backend, fully unit-testable, no UI yet. Must keep the
-   existing "nothing hardcodes a category" property.
+2. ✅ **`interview_config` extension — DONE 2026-08-03.** Step-tree walking,
+   gate lookup, retired fallback. Invisible to the running app: it still loads
+   v1 and serves the same 5 categories, 12 questions and English set as before.
+
+   **One internal shape, not two code paths.** A v1 file is *adapted* into the
+   v2 shape at load time (each question becomes a `question` step, categories
+   from the `category` field), so every function below works on one
+   representation and the step-6 cutover is a file swap with no code change
+   and no second path left to delete.
+
+   New primitives, all category-agnostic:
+   - `resolve_steps(steps, answers)` — the flow primitive. A gate is always
+     included (it must be asked) but its branch unfolds only once answered, so
+     an unanswered gate **terminates** the list: nothing behind it is knowable.
+   - `resolve_questions` — just what gets recorded.
+   - `category_is_settled` — no reachable gate is still open. Distinct from
+     "complete": a settled category may still have questions to record, but
+     its SHAPE is known, which is what the progress denominator (§8.4) needs.
+   - `get_gate` / `is_valid_gate_id` / `gate_option_values` — so the API can
+     validate an answer without naming an option anywhere in code.
+   - `cache_clear()` — one helper for every memoised view, so a test swapping
+     the catalog cannot silently keep testing the previous question set.
+
+   **A real bug the tests caught:** `resolve_steps` treated an answer naming a
+   no-longer-existent option as unanswered, but `category_is_settled` only
+   checked the key was present — so a stale answer resolved to zero questions
+   while still reporting the category finished, silently marking a category
+   done that had never been asked. Both now share `_chosen_option`, which is
+   the fix that keeps them from drifting again.
+
+   23 new tests, run against the REAL v2 file rather than a toy, enumerating
+   every gating combination: all four aliyah cases, `together`'s empty branch
+   settling the category, an unanswered nested gate, stale answers, and gate
+   ids being rejected as question ids.
 3. **Gate-answer persistence + the free-navigation flag.** Migration `0014`:
    the table in §6 and `User.free_navigation` (§7A) together, since both are
    prerequisites of the accordion. No re-answer or invalidation logic (§8.3).

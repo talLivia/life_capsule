@@ -32,18 +32,16 @@ def reordered_catalog(monkeypatch):
         ],
         "en": original["en"],
     }
-    def _clear_derived():
-        # _by_id/_by_text memoise over _load_all, so swapping the catalog
-        # without clearing them would test the OLD question set.
-        interview_config._by_id.cache_clear()
-        interview_config._by_text.cache_clear()
-
+    # Several views memoise over _load_all, so swapping the catalog without
+    # clearing them all would test the OLD question set. interview_config
+    # exposes one helper for exactly this, so a new cache cannot be forgotten
+    # here.
     monkeypatch.setattr(interview_config, "_load_all", lambda: catalog)
-    _clear_derived()
+    interview_config.cache_clear()
     yield catalog
     # monkeypatch restores _load_all after this, but the derived caches are
     # ours to reset or every later test sees the reordered set.
-    _clear_derived()
+    interview_config.cache_clear()
 
 
 def test_category_survives_a_reordered_question_set(reordered_catalog):
