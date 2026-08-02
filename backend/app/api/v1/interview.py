@@ -14,6 +14,8 @@ from app.interview_config import get_questions
 from app.models import InterviewSession, RawSegment, User
 from app.schemas import (
     EntityBatchConfirmRequest,
+    GateAnswerRequest,
+    InterviewFlow,
     InterviewQuestion,
     InterviewSessionResponse,
     InterviewSessionState,
@@ -25,6 +27,8 @@ from app.schemas import (
     SegmentPresignRequest,
     SegmentPresignResponse,
 )
+from app.services import gate_answers, interview_flow
+from app.services.gate_answers import InvalidGateAnswer
 from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
@@ -350,6 +354,73 @@ async def ingest_segment(
 
     logger.info(f"Segment ingested: {segment.id} (session={session.id}, q={payload.question_index})")
     return segment
+
+
+# ── Flow (docs/INTERVIEW_RESTRUCTURE.md step 4) ──────────────────────────
+#
+# These replace the client-driven cursor for the accordion. `/session`'s
+# current_question_index is untouched and still serves the pre-accordion
+# screen; nothing here reads or writes it.
+
+
+@router.get("/flow", response_model=InterviewFlow)
+async def get_interview_flow(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """Where the producer is, what is done, and what they can open.
+
+    Everything is derived — there is no stored position to fall out of sync
+    with the recordings and gate answers that actually determine it.
+    """
+    session = await _get_or_create_session(db, user)
+    return await interview_flow.get_flow(db, user, session)
+
+
+@router.post("/flow/gate", response_model=InterviewFlow)
+async def answer_gate(
+    payload: GateAnswerRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """Record an answer to a screening/branching question.
+
+    Returns the WHOLE updated flow rather than an acknowledgement: answering a
+    gate can reveal a branch, complete a category and move the current
+    position, so a client that had to re-fetch would render a stale frame in
+    between.
+    """
+    session = await _get_or_create_session(db, user)
+
+    # Authorise the same way recording is: a gate in a category the producer
+    # cannot reach must not be answerable, or free navigation could be
+    # bypassed by posting directly.
+    category_id = interview_flow.find_gate_category(user.recording_language, payload.gate_id)
+    if category_id is None:
+        raise HTTPException(status_code=400, detail="Unknown gate")
+
+    flow = await interview_flow.get_flow(db, user, session)
+    category = next((c for c in flow["categories"] if c["id"] == category_id), None)
+    if category is None or not category["reachable"]:
+        raise HTTPException(
+            status_code=409, detail="That part of the interview is not open yet"
+        )
+    # The gate must actually be reachable right now — not sitting behind
+    # another gate that has not been answered.
+    if not any(s["id"] == payload.gate_id for s in category["steps"]):
+        raise HTTPException(
+            status_code=409, detail="That question is not reachable yet"
+        )
+
+    try:
+        await gate_answers.set_answer(db, session.id, payload.gate_id, payload.value)
+    except InvalidGateAnswer as e:
+        # A rejected answer is a client bug, not a server failure, and the
+        # message names the options the gate actually offers.
+        raise HTTPException(status_code=400, detail=str(e))
+
+    await db.commit()
+    return await interview_flow.get_flow(db, user, session)
 
 
 @router.get("/segments/session/{session_id}", response_model=List[RawSegmentResponse])

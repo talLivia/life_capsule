@@ -151,6 +151,72 @@ class InterviewQuestion(BaseModel):
     index: int
 
 
+# ── Flow (docs/INTERVIEW_RESTRUCTURE.md step 4) ──────────────────────────
+# The accordion renders this and recomputes none of it. Position, reachability
+# and completeness are all DERIVED server-side from the question set, the gate
+# answers and the recordings — there is no stored cursor to drift.
+
+
+class GateOption(BaseModel):
+    value: str
+    label: str
+
+
+class FlowStep(BaseModel):
+    kind: str  # "question" | "gate"
+    id: str
+    text: str
+    done: bool
+    # question steps only — a question can hold several takes
+    takes: Optional[int] = None
+    # gate steps only. `options` is data-driven: the client renders one control
+    # per option and must never assume a yes/no pair.
+    options: Optional[List[GateOption]] = None
+    answer: Optional[str] = None
+
+
+class FlowCategory(BaseModel):
+    id: str
+    label: str
+    # Only the REACHABLE steps: an unanswered gate ends the list, because
+    # nothing behind it is knowable yet.
+    steps: List[FlowStep]
+    # True when no reachable gate is still unanswered, i.e. the category's
+    # shape is known. Distinct from `complete` — a settled category can still
+    # have questions left to record.
+    settled: bool
+    # 1-based position of the step being worked on; None when complete.
+    position: Optional[int] = None
+    # Total steps in the category, INCLUDING gate steps. None until `settled`,
+    # because the count genuinely depends on an answer not yet given — the UI
+    # must not substitute a guess (§8.4).
+    total: Optional[int] = None
+    done_count: int
+    current_step_id: Optional[str] = None
+    complete: bool
+    current: bool
+    # Whether the accordion may open it. Completed categories reopen for
+    # review; everything past the current one is inert unless free navigation
+    # is on. Decided here, not by hiding a click handler.
+    reachable: bool
+
+
+class InterviewFlow(BaseModel):
+    interview_session_id: str
+    free_navigation: bool
+    current_category_id: Optional[str] = None
+    complete: bool
+    categories: List[FlowCategory]
+
+
+class GateAnswerRequest(BaseModel):
+    gate_id: str = Field(..., min_length=1, max_length=200)
+    # Validated against the gate's own options in services/gate_answers.py —
+    # not a Literal here, because the vocabulary lives in the question file and
+    # a new option must never require a code change.
+    value: str = Field(..., min_length=1, max_length=200)
+
+
 class InterviewSessionResponse(BaseModel):
     id: str
     user_id: str

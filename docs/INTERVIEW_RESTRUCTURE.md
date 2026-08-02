@@ -567,8 +567,30 @@ producer re-navigate? Check the live count before deciding.
 
    12 new tests (617 total). Still invisible to the producer: nothing reads
    these yet.
-4. **Flow API.** Replace `current_question_index` with the path cursor;
-   endpoints for resolving the current position and recording a gate answer.
+4. ✅ **Flow API — DONE 2026-08-03.** `app/services/interview_flow.py` plus
+   `GET /interview/flow` and `POST /interview/flow/gate`.
+
+   **The position is DERIVED, not stored — there is no path cursor.** §7.2
+   assumed `current_question_index` would be replaced by a stored
+   `(category_id, step_id)`. It does not need to be: the current step is the
+   first reachable step that is not yet done, which follows from the question
+   set, the gate answers and the recordings — all of which are already true.
+   Nothing can drift, resume-after-refresh is correct by construction, and a
+   question-set edit relocates the producer honestly rather than stranding
+   them on a pointer. `current_question_index` is left untouched for the
+   pre-accordion screen; nothing in the new flow reads or writes it.
+
+   `POST /flow/gate` returns the WHOLE updated flow, because answering a gate
+   can reveal a branch, complete a category and move the current position at
+   once — a client that had to re-fetch would render a stale frame between.
+
+   **Reachability is enforced server-side.** `can_record` and the gate
+   endpoint both check it, so a stale tab or replayed request cannot write
+   into a category the producer has not arrived at. Free navigation opens
+   categories; it does **not** skip gates — a question behind an unanswered
+   gate stays unrecordable either way, and there is a test for exactly that.
+
+   18 new tests (635 total).
 5. **The accordion panel + the Settings checkbox.** §7 and §7A, on top of a
    backend that already answers "where am I, what is complete, what is
    reachable". The checkbox ships WITH the accordion, not after it — §8.2 and
