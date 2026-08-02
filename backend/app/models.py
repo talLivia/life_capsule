@@ -14,7 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
+from sqlalchemy.sql import expression, func
 
 from app.database import Base
 
@@ -64,6 +64,14 @@ class User(Base):
     # TalkAvailabilityResponse) — all modes keep working independently,
     # this just picks which one a given producer's viewers see.
     chat_mode = Column(String, nullable=False, default="avatar", server_default="avatar")
+    # /record's accordion is locked and sequential by default. Turning this on
+    # makes every category openable regardless of progress, so the producer can
+    # record or upload out of order — the escape hatch for rehoming footage and
+    # for adding content to a category that was previously screened out.
+    # See docs/INTERVIEW_RESTRUCTURE.md §7A.
+    free_navigation = Column(
+        Boolean, nullable=False, default=False, server_default=expression.false()
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -209,8 +217,58 @@ class InterviewSession(Base):
     segments = relationship(
         "RawSegment", back_populates="interview_session", cascade="all, delete-orphan"
     )
+    gate_answers = relationship(
+        "InterviewGateAnswer",
+        back_populates="interview_session",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (Index("ix_interview_sessions_user_created", "user_id", "created_at"),)
+
+
+class InterviewGateAnswer(Base):
+    """One answer to one screening/branching question, for one interview pass.
+
+    A gate answer is not a recording and cannot be inferred: "skipped because
+    the producer said no" and "not reached yet" both leave raw_segments empty,
+    so without this row the flow cannot tell a finished category from an
+    untouched one.
+
+    `value` has no FK or CHECK on purpose. A gate's options live in
+    interview_questions.json, which is the single source for anything the
+    question set defines; a database constraint would be a second copy needing
+    a migration every time a screening question gains an option. Validated at
+    the application edge against interview_config.gate_option_values() instead.
+    (EntityRelation.relation_type DOES carry a FK — there the vocabulary is a
+    table, so the constraint and the source are the same thing. Here they
+    would not be.)
+    """
+
+    __tablename__ = "interview_gate_answers"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    interview_session_id = Column(
+        String,
+        ForeignKey("interview_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # The gate's STABLE id — same identity rule as RawSegment.question_id.
+    gate_id = Column(String, nullable=False)
+    value = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    interview_session = relationship("InterviewSession", back_populates="gate_answers")
+
+    __table_args__ = (
+        # Re-answering is an upsert on this key. No separate index on
+        # interview_session_id — this one is already prefixed by it, which
+        # serves the only read the accordion makes ("every answer for this
+        # session").
+        UniqueConstraint(
+            "interview_session_id", "gate_id", name="uq_gate_answer_per_session"
+        ),
+    )
 
 
 class RawSegment(Base):

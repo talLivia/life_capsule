@@ -543,9 +543,30 @@ producer re-navigate? Check the live count before deciding.
    every gating combination: all four aliyah cases, `together`'s empty branch
    settling the category, an unanswered nested gate, stale answers, and gate
    ids being rejected as question ids.
-3. **Gate-answer persistence + the free-navigation flag.** Migration `0014`:
-   the table in §6 and `User.free_navigation` (§7A) together, since both are
-   prerequisites of the accordion. No re-answer or invalidation logic (§8.3).
+3. ✅ **Gate-answer persistence + the free-navigation flag — DONE 2026-08-03.**
+   Migration `0014` applied to live Neon (`0013 → 0014`), verified: FK cascade
+   to `interview_sessions`, `uq_gate_answer_per_session`, and
+   `users.free_navigation` defaulting false for all 5 producers.
+
+   `app/services/gate_answers.py` is the only writer. Because `value`
+   deliberately carries no FK or CHECK — a gate's options live in the JSON,
+   and duplicating that vocabulary into the database would need a migration
+   every time a screening question gains an option — this module *is* the
+   constraint, and its validation is tested harder than a column check would
+   need to be. It rejects unknown gates, question ids used as gates, and
+   values the gate does not offer, naming the real options in the error so a
+   client bug is diagnosable.
+
+   Re-answering is an upsert and touches nothing else: a test asserts footage
+   under the previous branch survives, per §8.3.
+
+   `unresolvable_answers()` reports answers the question set no longer
+   recognises. Reporting, not repair — `resolve_steps` already treats them as
+   unanswered, and nothing should be deleted on the strength of a file having
+   changed.
+
+   12 new tests (617 total). Still invisible to the producer: nothing reads
+   these yet.
 4. **Flow API.** Replace `current_question_index` with the path cursor;
    endpoints for resolving the current position and recording a gate answer.
 5. **The accordion panel + the Settings checkbox.** §7 and §7A, on top of a
