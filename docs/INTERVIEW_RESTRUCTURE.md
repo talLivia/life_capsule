@@ -351,7 +351,41 @@ the hook, not only by hiding a button.
 
 ---
 
-## 8. Open questions — I need answers before building
+## 7A. Free navigation — a Settings toggle (CONFIRMED IN SCOPE 2026-08-02)
+
+The accordion is **locked and sequential by default** (§7.3). A new checkbox
+in the Settings screen lets the producer turn that lock off.
+
+With it **on** (the default), unreached categories are inert. With it **off**,
+**every category becomes clickable and openable regardless of progress**, so
+the producer can jump straight to any category and record or upload into it
+out of order.
+
+This is not a convenience toggle bolted on the side — it is the escape hatch
+two other decisions depend on. It is how the 4 `post_military` recordings get
+rehomed (§8.2) and how a producer adds content to a category they previously
+screened out (§8.3). Both of those decisions are "no code, use free
+navigation", so this must ship with the accordion, not after it.
+
+**Shape**, mirroring the existing `chat_mode` producer setting:
+
+- `User.free_navigation` — boolean, `default=False`, `server_default=false`,
+  in migration `0014` alongside the gate-answers table. Off by default keeps
+  the guided experience intact for a new producer.
+- Updated through the existing `api.updateProfile({...})` path in
+  `SettingsPanel.tsx` — same pattern as the chat-mode control, no new
+  endpoint.
+- The accordion reads it and drops the reachability restriction. **Enforced in
+  `useInterviewFlow`, not by hiding a click handler** — the same rule as
+  forward navigation in §7.3, for the same reason.
+
+Note what it does NOT change: auto-advance, auto-collapse and per-category
+progress all behave the same. It only decides whether a category can be
+opened out of order.
+
+---
+
+## 8. Decisions — settled 2026-08-02
 
 **8.1 English.** The source is Hebrew-only. Options: (a) Hebrew-only for now
 and block/hide English recording; (b) ship `en` as a copy of the Hebrew and
@@ -360,14 +394,34 @@ translate later; (c) translate all 129 before launch. This decides whether the
 English producer silently receiving Hebrew questions is the worst outcome, and
 the schema already supports adding `en` later with no code change.*
 
-**8.2 `post_military`.** Four existing recordings sit in a category with no
-equivalent in the new set. Keep it as a retired-only label, or remap them
-(`career`? `about_myself`?) — remapping rewrites history, keeping it means the
-timeline shows a category no new producer can reach.
+**8.2 `post_military` — RESOLVED: no mapping code at all.** The 4 orphaned
+recordings will be rehomed **manually by the producer** using free navigation
+(§7A) — opening whichever new category they choose and recording or uploading
+into it. Do not build an automatic `post_military → career` remap, and do not
+prompt for one.
 
-**8.3 Re-answering a gate that already has recordings below it.** Proposal in
-§6: keep the footage, mark the category skipped, show the orphans in review.
-Confirm, or say what should happen instead.
+What this still requires: `post_military` stays in the `retired` block as a
+category label so those 4 recordings keep resolving to *something* until the
+producer moves them. A recording whose category cannot resolve would vanish
+from the timeline silently, which is the one outcome to avoid. The retired
+label is a holding position, not a destination.
+
+**8.3 Re-answering a screening "no" — RESOLVED: no gate-invalidation logic.**
+Answering "no" leaves the category greyed out and collapsed. Nothing is
+deleted, nothing is permanently blocked. To add content there later the
+producer enables free navigation (§7A), opens the category and records or
+uploads into it like any other.
+
+The orphan problem §6 worried about **does not exist for this path**: a "no"
+means nothing was ever recorded behind it, so there is nothing to strand. Do
+not build re-answer handling, branch invalidation, or an orphan-review UI.
+
+One case this scoping leaves open, recorded so nobody assumes it was handled:
+answering "yes", recording several answers, then navigating Back and switching
+to "no" *would* leave recordings under an untaken branch. The governing rule
+covers it adequately — **recordings are never deleted** — so those stay on
+disk and in the archive. If that path should be prevented outright in the UI
+rather than merely tolerated, say so; it is not built either way.
 
 **8.4 Progress denominator under branching.** Options: (a) count the resolved
 path so far, so the total grows when a gate opens a branch; (b) show the
@@ -375,12 +429,48 @@ maximum possible; (c) drop the "of N" and show a bar. *Recommend (a) —
 honest, and the growth happens right at the moment the producer answered the
 question that caused it.*
 
-**8.5 The `aliyah` screening question is not a clean yes/no.** *"האם עלית
-לארץ, או נולדת בישראל?"* ("Did you immigrate, or were you born in Israel?")
-is an either/or, so a Yes/No control is ambiguous. The `options` list in §3.2
-handles it natively — give it two labelled options ("עליתי" / "נולדתי
-בישראל"). Confirm the labels, since the content is yours and I will not
-reword it.
+**8.5 `aliyah` — RESOLVED: two independent yes/no questions.** The single
+either/or is replaced by:
+
+1. "Did you make aliyah to Israel?" — yes/no
+2. "Were you born in Israel?" — yes/no
+
+They are **not** complements; both "no" is a valid, expected state (born
+elsewhere, never made aliyah).
+
+**Only the aliyah question gates.** Working through all four combinations
+shows the birthplace answer never changes whether the 9 aliyah questions
+apply:
+
+| made aliyah | born in Israel | category |
+| --- | --- | --- |
+| yes | no | **runs** — the ordinary case |
+| no | yes | skipped — native-born, nothing to tell about immigrating |
+| no | no | **skipped** — as you expected; never immigrated, so the questions do not apply |
+| yes | yes | **runs** — see below |
+
+So the rule is simply **the category runs iff "made aliyah" is yes**, and
+both-no skipping falls straight out of it rather than needing its own case.
+
+Structurally that makes birthplace a **fact-capture gate**: a gate whose
+options both carry `steps: []`. The answer is stored, nothing branches. It
+needs no new step kind — one mechanism still holds (§3.1) — and the linter's
+"≥2 options" rule is satisfied. Ordering in the JSON puts birthplace first,
+outside the aliyah gate, so both are always asked exactly once; nesting it
+inside would force it to be duplicated in both branches.
+
+**On yes/yes, which you asked me to flag:** it does not block, because it
+resolves to "runs" under the rule above without needing a special case. It is
+also a real if uncommon situation — someone born in Israel whose family
+emigrated and who later formally made aliyah back. Asking is the recoverable
+direction: a producer with nothing to say about immigrating can move past the
+questions, whereas skipping would hide a chapter they may actually have. **If
+you want yes/yes to skip instead, it is a one-line change to the JSON gate and
+no code change at all — say so and I will flip it.**
+
+Still needed from you: the exact Hebrew wording for both questions and their
+option labels. I have used placeholders in the converter and marked them, and
+I will not reword your content myself.
 
 **8.6 Existing in-flight interview sessions.** Any session with a
 `current_question_index` pointing into the old 12-question set becomes
@@ -397,12 +487,16 @@ producer re-navigate? Check the live count before deciding.
 2. **`interview_config` extension.** Step-tree walking, gate lookup, retired
    fallback. Pure backend, fully unit-testable, no UI yet. Must keep the
    existing "nothing hardcodes a category" property.
-3. **Gate-answer persistence.** Migration `0014` + the table in §6, with the
-   re-answer semantics from §8.3.
+3. **Gate-answer persistence + the free-navigation flag.** Migration `0014`:
+   the table in §6 and `User.free_navigation` (§7A) together, since both are
+   prerequisites of the accordion. No re-answer or invalidation logic (§8.3).
 4. **Flow API.** Replace `current_question_index` with the path cursor;
    endpoints for resolving the current position and recording a gate answer.
-5. **The accordion panel.** §7, on top of a backend that already answers
-   "where am I, what is complete, what is reachable".
+5. **The accordion panel + the Settings checkbox.** §7 and §7A, on top of a
+   backend that already answers "where am I, what is complete, what is
+   reachable". The checkbox ships WITH the accordion, not after it — §8.2 and
+   §8.3 both resolve to "the producer uses free navigation", so the accordion
+   is incomplete without it.
 6. **Cutover + verification.** Replace `interview_questions.json`, confirm all
    16 existing recordings still resolve to a category and the timeline
    grouping is unchanged.
