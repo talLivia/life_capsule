@@ -481,9 +481,34 @@ producer re-navigate? Check the live count before deciding.
 
 ## 9. Build order
 
-1. **Schema + content conversion.** Convert the source into the final JSON
-   (§3), assign stable ids, add `retired` (§4). Ship the linter (§6.1) in the
-   same commit — the file is too big to eyeball.
+1. ✅ **Schema + content conversion — DONE 2026-08-02.**
+   `scripts/convert_interview_content.py` → `app/interview_questions_v2.json`
+   (16 categories, **129 questions** matching the source exactly, 9 gates, 12
+   retired). `app/interview_schema.py` validates it; 15 tests, most of which
+   feed it broken documents and assert it complains.
+
+   The live `interview_questions.json` is untouched — cutover is step 6, so
+   the app keeps working throughout.
+
+   **Ids are frozen.** Numbering is positional at conversion (`childhood_q01`)
+   but written literally into the file and never recomputed, so reordering
+   later cannot re-point history. Re-running is id-preserving: verified 129
+   reused, 0 renumbered.
+
+   Two things the linter caught that are worth knowing:
+   - The predicted collision is real — the outgoing question id
+     `military_service` is also an incoming *category* id. Downgraded to a
+     warning after reasoning it through: questions and categories live in
+     different indexes and never compete, so nothing resolves wrongly. A
+     retired id shadowing a live QUESTION or GATE stays an error, because
+     `category_for_question_id` searches live-then-retired and would return
+     whichever it hit first.
+   - **Three prompts carry wording I wrote, not yours** — both aliyah
+     questions and the relationships status question (the source gives its
+     options as `together`/`widowed`/`separated_divorced` with no Hebrew
+     labels). They are flagged `needs_wording_confirmation` in the file and
+     surface as warnings on every validation run, so they cannot ship
+     unnoticed. **Send the wording and I will swap it in — JSON only.**
 2. **`interview_config` extension.** Step-tree walking, gate lookup, retired
    fallback. Pure backend, fully unit-testable, no UI yet. Must keep the
    existing "nothing hardcodes a category" property.
