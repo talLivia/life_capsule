@@ -96,12 +96,26 @@ def test_aliyah_asks_two_independent_questions_and_only_one_gates(doc):
     # so "both no" skips, and "both yes" runs, with no special case for either
 
 
-def test_converter_written_wording_is_flagged_not_hidden(doc):
-    """Three prompts are worded by the converter, not the producer. They must
-    stay visible as warnings until confirmed."""
+def test_no_wording_is_still_awaiting_confirmation(doc):
+    """Three prompts were originally worded by the converter — both aliyah
+    questions and the relationships status labels, which the source gives as
+    bare English keys. All confirmed by the producer 2026-08-02, so nothing
+    should remain flagged."""
     _, warnings = validate(doc)
     pending = [w for w in warnings if "awaiting producer confirmation" in w]
-    assert len(pending) == 3
+    assert pending == [], f"unconfirmed wording is shipping: {pending}"
+
+
+def test_the_wording_confirmation_flag_still_works(doc):
+    """The mechanism outlives the three prompts that needed it — the next
+    converter-written string must be just as visible."""
+    broken = copy.deepcopy(doc)
+    broken["languages"]["he"]["categories"][0]["steps"][0][
+        "needs_wording_confirmation"
+    ] = True
+    errors, warnings = validate(broken)
+    assert errors == []
+    assert any("awaiting producer confirmation" in w for w in warnings)
 
 
 # ── the validator itself ──────────────────────────────────────────────────

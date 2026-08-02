@@ -39,15 +39,17 @@ LEGACY = ROOT / "app" / "interview_questions.json"
 
 YES, NO = "כן", "לא"
 
-# Wording that is MINE, not the producer's, and must be confirmed before
-# cutover. Every one of these is emitted with needs_wording_confirmation=true
-# so the validator can refuse to let them ship unnoticed.
+# CONFIRMED BY THE PRODUCER 2026-08-02. These three prompts are not in the
+# source file — the aliyah either/or was split into two questions, and the
+# source gives the status options as bare English keys with no Hebrew labels.
+# They were shipped flagged needs_wording_confirmation until confirmed; the
+# flag and the validator check remain for whatever needs it next.
 ALIYAH_MADE_TEXT = "האם עלית לארץ?"
 ALIYAH_BORN_TEXT = "האם נולדת בישראל?"
 STATUS_LABELS = {
     "together": "יחד",
-    "widowed": "אלמן/ה",
-    "separated_divorced": "פרוד/ה או גרוש/ה",
+    "widowed": "התאלמנתי",
+    "separated_divorced": "נפרדנו/התגרשנו",
 }
 
 
@@ -140,7 +142,7 @@ def _build_relationships(cat, assigner):
 
     yes_steps = [_q(assigner, cid, t) for t in y["shared_questions"]]
     yes_steps.append(
-        _gate(f"gate_{cid}_status", y["status_question"], status_opts, needs_wording=True)
+        _gate(f"gate_{cid}_status", y["status_question"], status_opts)
     )
 
     steps.append(_yes_no(f"gate_{cid}_significant", b["screening_question"], yes_steps))
@@ -160,12 +162,11 @@ def _build_aliyah(cat, assigner):
     """
     cid = cat["id"]
     return [
-        _yes_no(f"gate_{cid}_born_in_israel", ALIYAH_BORN_TEXT, [], [], needs_wording=True),
+        _yes_no(f"gate_{cid}_born_in_israel", ALIYAH_BORN_TEXT, [], []),
         _yes_no(
             f"gate_{cid}_made_aliyah",
             ALIYAH_MADE_TEXT,
             [_q(assigner, cid, t) for t in cat["questions"]],
-            needs_wording=True,
         ),
     ]
 
