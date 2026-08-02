@@ -1,6 +1,17 @@
 # Family tree + timeline — build plan
 
-**Written:** 2026-08-01 · **Status:** PLAN ONLY, nothing built · **Branch:** `main`
+**Written:** 2026-08-01 · **Status:** Phases 1 and 1b DONE; **rest PAUSED**
+· **Branch:** `main`
+
+> ⏸ **Paused 2026-08-02 for the interview restructure**
+> ([INTERVIEW_RESTRUCTURE.md](INTERVIEW_RESTRUCTURE.md)), which is now the
+> priority. That work replaces `interview_questions.json` with 16 categories
+> and 129 questions and adds data-driven gating — so **§2A and §3 of this
+> document (the category source and the milestone→people join) will need
+> re-checking against the new schema before Phase 5 is built.** Phases 1 and
+> 1b are unaffected and stay done. Note also that the restructure retires
+> every current question id; the plan there carries the migration that keeps
+> these 16 recordings resolvable to a category.
 
 Two read-only producer-facing pages: a **family tree** built from person
 entities and family relations, and a **timeline** of life milestones that
