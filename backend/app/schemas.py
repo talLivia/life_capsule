@@ -281,6 +281,11 @@ class SegmentIngestRequest(BaseModel):
     question_index: int = Field(..., ge=0)
     question_asked: str = Field(..., min_length=1, max_length=2000)
     video_key: str = Field(..., min_length=1)
+    # The stable question id (see RawSegment.question_id). Optional so an
+    # older client, or an upload answering something outside the guided set,
+    # still ingests — the endpoint recovers it from question_asked when it
+    # can and stores NULL when it genuinely cannot.
+    question_id: Optional[str] = Field(default=None, max_length=200)
 
 
 # Family access Schemas (Prompt 9)

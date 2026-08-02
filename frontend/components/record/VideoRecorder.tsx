@@ -23,6 +23,8 @@ type Phase =
 interface VideoRecorderProps {
   sessionId: string
   questionIndex: number
+  /** Stable question id — see api.ingestSegment. */
+  questionId: string
   questionText: string
   onAccepted: () => void
   onCancel?: () => void
@@ -56,6 +58,7 @@ function pickMimeType(): string {
 export function VideoRecorder({
   sessionId,
   questionIndex,
+  questionId,
   questionText,
   onAccepted,
   onCancel,
@@ -339,6 +342,7 @@ export function VideoRecorder({
       await api.ingestSegment({
         interview_session_id: sessionId,
         question_index: questionIndex,
+        question_id: questionId,
         question_asked: questionText,
         video_key: presign.video_key,
       })

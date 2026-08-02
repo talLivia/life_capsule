@@ -245,7 +245,10 @@ all 12 distinct questions in the archive recover their `id` by exact
 works **only while the JSON still contains today's text**. Reword or remove a
 question and its historical recordings become unattributable.
 
-**Do Phase 1b BEFORE editing `interview_questions.json`.**
+**✅ RESOLVED 2026-08-02 — Phase 1b landed and all 16 recordings were
+backfilled with 0 unmatched. `interview_questions.json` is now safe to edit.**
+Recordings made from here carry their `question_id` at ingest, so the window
+never reopens.
 
 ---
 
@@ -371,7 +374,33 @@ that code does not exist.
 
 **Small, and nothing else can start without it.**
 
-### Phase 1b — persist the stable `question_id` ⏳ deadline-bound
+### ✅ Phase 1b — persist the stable `question_id` — DONE 2026-08-02
+
+**Landed, and the deadline is met — `interview_questions.json` is now safe to
+edit.** Migration `0013` applied to live Neon (`alembic current` = `0013
+(head)`), and all **16 recordings backfilled, 0 left NULL**.
+
+`interview_config` gained the single-source accessors: `get_categories()`
+(ordered by first appearance in the file), `category_for_question_id()`,
+`question_id_for_text()`, `is_valid_question_id()`. Nothing else holds a
+category list.
+
+Verified end to end against live data — the timeline's own grouping, derived
+entirely from the JSON at read time:
+
+```
+ילדות           3 recording(s)  ->  אילנה, הכפר הירוק, חן, טבריה
+שירות צבאי      4 recording(s)  ->  איציק כהן, חיל האוויר, רוני כהן
+אחרי הצבא       4 recording(s)  ->  איציק כהן, בוליביה, דרום אמריקה, מונטריאול
+זוגיות ומשפחה   3 recording(s)  ->  (none)
+קריירה          2 recording(s)  ->  מונטריאול
+```
+
+`זוגיות ומשפחה` having recordings but no people is correct, not a bug: the
+spouse is never named, and the extractor is a *named*-entity extractor. It is
+the documented unnamed-spouse case, and the timeline shows it honestly.
+
+**What the original plan said**, kept for the reasoning:
 
 **Do this before editing `interview_questions.json`** (§2A). Independent of
 everything else, and the only phase with an expiring window.

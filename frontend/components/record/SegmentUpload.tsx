@@ -22,6 +22,8 @@ import type { ApiError } from '@/lib/types'
 interface SegmentUploadProps {
   sessionId: string
   questionIndex: number
+  /** Stable question id — see api.ingestSegment. */
+  questionId: string
   questionText: string
   onAccepted: () => void | Promise<void>
 }
@@ -35,6 +37,7 @@ const MAX_BYTES = 500 * 1024 * 1024
 export function SegmentUpload({
   sessionId,
   questionIndex,
+  questionId,
   questionText,
   onAccepted,
 }: SegmentUploadProps) {
@@ -75,6 +78,7 @@ export function SegmentUpload({
       await api.ingestSegment({
         interview_session_id: sessionId,
         question_index: questionIndex,
+        question_id: questionId,
         question_asked: questionText,
         video_key: presign.video_key,
       })

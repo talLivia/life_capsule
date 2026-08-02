@@ -237,6 +237,7 @@ export function RecordPanel() {
             key={`${question.id}-${recordings.length}`}
             sessionId={state.session.id}
             questionIndex={currentIndex}
+            questionId={question.id}
             questionText={question.text}
             onAccepted={handleAccepted}
             onCancel={recordings.length > 0 ? () => setAddingTake(false) : undefined}
@@ -259,6 +260,7 @@ export function RecordPanel() {
           <SegmentUpload
             sessionId={state.session.id}
             questionIndex={currentIndex}
+            questionId={question.id}
             questionText={question.text}
             onAccepted={handleAccepted}
           />

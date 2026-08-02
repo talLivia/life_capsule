@@ -233,7 +233,19 @@ class RawSegment(Base):
     question_asked = Column(Text, nullable=False)
     # Position in the fixed question sequence (config.json in Prompt 4) —
     # lets a re-record replace the right segment instead of appending.
+    #
+    # POSITIONAL, and therefore NOT a stable identifier: editing the question
+    # set moves it. Use question_id below for anything that must still mean the
+    # same thing after the set changes.
     question_index = Column(Integer, nullable=False)
+    # The STABLE id from interview_questions.json ("childhood_home", ...) —
+    # what a life period must be derived from, since question_index silently
+    # points elsewhere once questions are added or reordered. See migration
+    # 0013 and docs/FAMILY_TREE_TIMELINE.md §2A.
+    #
+    # Nullable: an uploaded video answering something outside the guided set
+    # genuinely has no question id, and inventing one would be worse.
+    question_id = Column(String, nullable=True, index=True)
     video_url = Column(String, nullable=True)  # set once the R2 upload completes
     # Raw storage key (e.g. "segments/{user_id}/{session_id}/{q_index}/{uuid}.webm"),
     # kept alongside video_url so the transcription task can fetch the object

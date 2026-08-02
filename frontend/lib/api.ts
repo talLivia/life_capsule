@@ -308,6 +308,11 @@ export const api = {
   ingestSegment: async (params: {
     interview_session_id: string
     question_index: number
+    /** Stable id from interview_questions.json. question_index is positional
+     *  and moves when the question set is edited; this is what the timeline
+     *  groups life periods by. Optional so an upload outside the guided set
+     *  still ingests. */
+    question_id?: string
     question_asked: string
     video_key: string
   }) => {

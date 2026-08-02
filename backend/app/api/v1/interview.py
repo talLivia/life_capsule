@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.users import require_current_user
 from app.config import settings
 from app.database import get_db
+from app import interview_config
 from app.interview_config import get_questions
 from app.models import InterviewSession, RawSegment, User
 from app.schemas import (
@@ -286,6 +287,25 @@ async def ingest_segment(
 
     video_url = storage_service.get_url(payload.video_key)
 
+    # Resolve the STABLE question id, which is what a life period is derived
+    # from — question_index moves when the question set is edited (see
+    # RawSegment.question_id). Three cases, in order:
+    #   * the client sent a valid id — take it;
+    #   * it sent one we do not recognise — DROP it rather than store a value
+    #     nothing can resolve, and say so in the log;
+    #   * it sent none (older client) — recover it from the question text,
+    #     the same exact match the backfill uses.
+    # NULL is a legitimate outcome: an upload answering something outside the
+    # guided set has no id, and inventing one would be worse than admitting it.
+    question_id = payload.question_id
+    if question_id and not interview_config.is_valid_question_id(question_id):
+        logger.warning(
+            f"Ingest sent unknown question_id {question_id!r}; storing NULL instead"
+        )
+        question_id = None
+    if not question_id:
+        question_id = interview_config.question_id_for_text(payload.question_asked)
+
     # No lookup of an "existing" segment: several are legitimate now. The old
     # code used scalar_one_or_none() here, which RAISES on a second row — so
     # this had to change in the same commit that allows siblings, not after.
@@ -293,6 +313,7 @@ async def ingest_segment(
         interview_session_id=session.id,
         question_asked=payload.question_asked,
         question_index=payload.question_index,
+        question_id=question_id,
         video_url=video_url,
         video_key=payload.video_key,
         status="pending_transcription",
