@@ -1457,3 +1457,104 @@ The escape stays, narrowly. On `failed`, or after 90s with no stage change, the
 lock releases and says why. The timer restarts on every stage change, so a slow
 but moving run never unlocks — only one that has actually stalled. A modal that
 can trap someone forever is worse than one they can leave.
+
+## 9. Phase 7 — which side an aunt or uncle is on (PLAN, not built)
+
+`אמנון -aunt_uncle-> Tal` says they are the producer's uncle. It does not say
+**whose sibling** they are, so there is no edge to draw between them and צבי,
+and the parents' row stays four boxes with nothing distinguishing the two who
+are parents. §8.14 removed the misleading descent; this supplies the missing
+positive signal.
+
+### 9.1 The shape: a sixth question class
+
+Same pattern as parentage, and now genuinely cheap because of §8.7 and §8.10:
+a new key in `build_confirmation_payload` **automatically** gates the router and
+**automatically** counts on the client. Neither has to be edited. That is what
+those two structural fixes bought.
+
+```
+Which side of the family are אמנון and קובי on?
+  אמנון   [ צבי ]  [ אילנה ]  [ Not sure ]
+  קובי    [ צבי ]  [ אילנה ]  [ Not sure ]
+```
+
+One grouped question, per-person rows — the §8.12 lesson, applied from the
+start rather than after four repetitions.
+
+### 9.2 Trigger, and the ask-once stamp
+
+```
+ask about X when ALL hold:
+  · an aunt_uncle relation exists between X and the producer,
+    OR this recording proposes one;
+  · the producer has >= 1 recorded parent (nothing to offer otherwise);
+  · X has no sibling relation to any of those parents;
+  · X.side_asked_at IS NULL
+```
+
+`entities.side_asked_at`, migration `0019` — a fourth column in the same family
+as `year_asked_at` and `parentage_asked_at`, for the same reason each time: "no
+sibling edge" cannot distinguish never-asked from asked-and-skipped, and only
+the second is an answer. Entity-level rather than relation-level because the
+thing not to repeat is asking about a PERSON.
+
+Name-keyed and merged with this recording's proposals, exactly as §8.12 — so a
+first recording saying "my uncles are אמנון and קובי" is asked immediately
+rather than on some later one.
+
+### 9.3 What the answer writes
+
+`X -sibling-> <chosen parent>`, `origin="confirmation"`.
+
+**The existing `aunt_uncle` row is KEPT, not replaced.** It is a true recorded
+fact — they *are* the producer's uncle — and the two agree rather than compete:
+`aunt_uncle` is delta −1 from the producer and `sibling` is delta 0 from a
+parent already at −1, so both place the person in the same row and the tree
+reports no contradiction. Deleting a true statement to store a more specific one
+would lose the recording it came from.
+
+So "migrating the existing rows" is additive: every existing `aunt_uncle`
+becomes answerable, and answering ADDS the sibling edge. No destructive
+migration, and nothing to undo if a producer skips.
+
+### 9.4 What it looks like once answered
+
+The §8.14 connector then has a pair to join: `אמנון` and `צבי` are a sibling
+pair inside an ancestor row, so a dashed line is drawn between them when they
+are adjacent. Row ordering already places connected nodes near each other
+(barycenter, §4a), so adjacency is the normal outcome rather than luck — but
+where it is not, the honest result is no line rather than one passing behind
+somebody, which is the rule that has held since 4a.
+
+### 9.5 Why not infer it from the transcript
+
+"אח של אבא שלי" states the side outright, and an extractor could emit
+`sibling -> צבי` directly. Not doing that, for a reason CLAUDE.md is explicit
+about: changing the relation prompt requires a measured before/after across
+multiple runs, and the archive-read behaviour is sensitive to wording in ways
+that have already produced three false "narrowings". A question costs one click
+and no measurement. If the prompt is ever revisited for other reasons, this is
+worth folding in then.
+
+### 9.6 Build order
+
+| step | change |
+| --- | --- |
+| 1 | migration `0019` — `entities.side_asked_at` |
+| 2 | `entity_store.aunt_uncle_candidates` (DB ∪ this recording's proposals) |
+| 3 | `side_questions()` + the new payload key — router and client follow for free |
+| 4 | `entity_store.write_sides`, keeping the `aunt_uncle` row |
+| 5 | the grouped section in the confirmation screen |
+| 6 | tests — ask-once, skip, first-recording path, both rows coexisting without a contradiction, and that the connector appears |
+
+### 9.7 ⚠️ Do not edit `backend/` while a recording is being processed
+
+`/segments/ingest` starts the pipeline with `asyncio.create_task(
+run_segment_analysis(...))`, **in the uvicorn process**. `--reload` restarts on
+any change under `backend/`, which kills an in-flight run outright: the task
+dies, no node completes, and the segment is left at `processing` with nothing
+to finish it. Several stuck segments earlier in the day are best explained this
+way.
+
+Editing `docs/` or `frontend/` is safe — neither is under the watcher.
