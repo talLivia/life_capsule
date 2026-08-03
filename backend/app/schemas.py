@@ -263,9 +263,22 @@ class AppliedTypeChange(BaseModel):
     now: str
 
 
+class RejectedYear(BaseModel):
+    """A year the producer typed that could not be resolved to one number.
+
+    Returned rather than swallowed: silently dropping it would repeat the
+    type-answer bug, and silently GUESSING at it would put a wrong date on a
+    life story where nothing would look broken."""
+
+    name: str
+    given: str
+    reason: str
+
+
 class ConfirmEntitiesResponse(BaseModel):
     segment: RawSegmentResponse
     applied_type_changes: List[AppliedTypeChange] = Field(default_factory=list)
+    rejected_years: List[RejectedYear] = Field(default_factory=list)
 
 
 class ExtractedEntityResponse(BaseModel):
@@ -336,6 +349,12 @@ class EntityBatchConfirmRequest(BaseModel):
     # speaker — "ניר ורז הם אחים שלי" is two sibling proposals — so a name
     # would not identify one.
     relations: Dict[str, bool] = Field(default_factory=dict)
+    # Entity name -> whatever the producer typed for its year. Free text, not
+    # an int: "בערך 1973" is a perfectly good answer and the client should not
+    # have to parse it. Skippable — omit the key to say nothing. Text the
+    # server cannot resolve to ONE year is refused with a reason rather than
+    # rounded into a number.
+    years: Dict[str, str] = Field(default_factory=dict)
     # entity name -> the chosen type. Must be one of exactly the two the
     # question offered (its `type` or its `alternative_type`); anything else
     # is a 400, since a third value could only come from a client inventing

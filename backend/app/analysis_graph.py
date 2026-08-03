@@ -632,6 +632,36 @@ def type_questions(extracted: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
+# Which entities are worth asking a year for. Deliberately narrow: asking
+# about every name would train the producer to click through without reading,
+# which is the failure `alternative_type` exists to avoid on the type side.
+#
+# `event` only today, per the brief. NOTE this makes year capture DORMANT on
+# the current archive — it holds zero event entities, because the extractor is
+# a NAMED-entity extractor and a life period has no name (see
+# FAMILY_TREE_TIMELINE §2.1). Widening to `person` for tree lifespans is a
+# one-line change here and nowhere else.
+YEAR_QUESTION_TYPES = ("event",)
+
+
+def year_questions(extracted: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The year questions this recording raises.
+
+    Asked ONLY where there is no year yet: a question whose answer would be
+    discarded is worse than no question, which is the lesson from the type
+    answers that were silently dropped.
+    """
+    return [
+        {
+            "name": e["name"],
+            "type": e["type"],
+            "question": f'Roughly what year was "{e["name"]}"? (optional)',
+        }
+        for e in extracted
+        if e.get("type") in YEAR_QUESTION_TYPES and not e.get("year_start")
+    ]
+
+
 def relation_questions(proposed: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The relation questions this recording raises — one per proposal.
 
@@ -674,7 +704,8 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     identity_questions = list(state.get("names_to_check") or [])
     pending_types = type_questions(state.get("extracted_entities") or [])
     pending_relations = relation_questions(state.get("proposed_relations") or [])
-    if not identity_questions and not pending_types and not pending_relations:
+    pending_years = year_questions(state.get("extracted_entities") or [])
+    if not (identity_questions or pending_types or pending_relations or pending_years):
         return {}
 
     answer = interrupt(
@@ -686,6 +717,10 @@ async def human_confirm_node(state: AnalysisState) -> dict:
             # while relations are skippable. An unanswered relation is simply
             # not stored, which is the status quo and harmless.
             "relation_questions": pending_relations,
+            # Skippable, like relations and for the same reason: an unanswered
+            # year has a real empty outcome — no year stored, timeline
+            # unaffected — so nothing is lost by leaving it blank.
+            "year_questions": pending_years,
         }
     )
 
@@ -719,6 +754,10 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     # clear alternative_type either way — the question has been asked, so it
     # must not be raised again by the writer's needs_confirmation report.
     type_answers = answer.get("types") or {}
+    # Years arrive already parsed — the API turned the producer's free text
+    # into an int, or refused it and told them. Nothing unparsed reaches here,
+    # so there is no guessing left to do at this point.
+    year_answers = answer.get("years") or {}
     entities = []
     for entity in state.get("extracted_entities") or []:
         entity = dict(entity)
@@ -732,6 +771,8 @@ async def human_confirm_node(state: AnalysisState) -> dict:
                 # indistinguishable and the answer is silently discarded.
                 entity["type_confirmed"] = True
             entity["alternative_type"] = None
+        if entity["name"] in year_answers:
+            entity["year_start"] = year_answers[entity["name"]]
         entities.append(entity)
 
     # Relations: keep only what was explicitly ACCEPTED. Anything else —

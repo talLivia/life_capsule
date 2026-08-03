@@ -31,6 +31,7 @@ from app.schemas import (
 from app.services import gate_answers, interview_flow
 from app.services.gate_answers import InvalidGateAnswer
 from app.services.storage import storage_service
+from app.services.year_parsing import parse_year
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -590,6 +591,7 @@ async def confirm_entities(
     relation_questions = {
         str(q["index"]): q for q in pending.get("relation_questions") or []
     }
+    year_questions = {q["name"]: q for q in pending.get("year_questions") or []}
 
     # Staleness, both directions. An answer to a name this screen never asked
     # about means the client is answering a payload the pipeline has moved
@@ -601,6 +603,7 @@ async def confirm_entities(
         # skippable: skipping means sending nothing, not sending an answer to
         # a question this recording never raised.
         | (set(payload.relations) - set(relation_questions))
+        | (set(payload.years) - set(year_questions))
     )
     if unknown:
         raise HTTPException(
@@ -650,6 +653,23 @@ async def confirm_entities(
                 detail=f'type for "{name}" must be one of {sorted(allowed)}',
             )
 
+    # Parse the free-text years here, at the edge, so the graph only ever sees
+    # resolved integers. Anything unresolvable is REPORTED, never guessed and
+    # never silently dropped — a wrong year reorders a life on the timeline
+    # and nothing about the page would look wrong.
+    parsed_years: dict = {}
+    rejected_years: list = []
+    for name, given in payload.years.items():
+        outcome = parse_year(given)
+        if outcome.ok:
+            parsed_years[name] = outcome.year
+        elif (given or "").strip():
+            # A blank is a skip, not a failure — only real text that could not
+            # be understood is worth telling them about.
+            rejected_years.append(
+                {"name": name, "given": given, "reason": outcome.reason or "not understood"}
+            )
+
     from app.analysis_graph import resume_segment_analysis
 
     resume_result = await resume_segment_analysis(
@@ -661,6 +681,7 @@ async def confirm_entities(
             # proposal only where this says True, so a declined or skipped
             # relation and an absent key are the same thing.
             "relations": dict(payload.relations),
+            "years": parsed_years,
         },
     )
 
@@ -668,4 +689,5 @@ async def confirm_entities(
     return ConfirmEntitiesResponse(
         segment=segment,
         applied_type_changes=(resume_result or {}).get("applied_type_changes") or [],
+        rejected_years=rejected_years,
     )

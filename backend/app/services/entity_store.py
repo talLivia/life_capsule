@@ -533,9 +533,11 @@ async def _get_or_create_entity(
                 existing, extracted.type, confirmed=extracted.type_confirmed
             )
         )
+        _maybe_set_year(existing, extracted.year_start)
         return existing, False
 
     entity = Entity(
+        year_start=extracted.year_start,
         producer_id=producer_id,
         # Verbatim, not normalised: `name` is what gets shown back to the
         # producer, and it should be what they actually said. The normalised
@@ -672,6 +674,20 @@ async def _find_entity(
             .where(Entity.normalized_name == normalized)
         )
     ).scalar_one_or_none()
+
+
+def _maybe_set_year(entity: Entity, year: Optional[int]) -> None:
+    """Fill in a year we did not have; never overwrite one we did.
+
+    Only reachable when the producer typed one — the extractor never supplies
+    years. The screen asks ONLY about entities with no year (see
+    analysis_graph.year_questions), so an existing value means a second
+    recording answered the same question and the first answer stands rather
+    than being re-decided by ingest order. Correcting a wrong year is a
+    separate, deliberate action, not a side effect of recording again.
+    """
+    if year is not None and entity.year_start is None:
+        entity.year_start = year
 
 
 def _maybe_upgrade_type(

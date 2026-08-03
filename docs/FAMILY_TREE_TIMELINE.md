@@ -570,7 +570,41 @@ entity write, insert `entity_relations` rows with `source_segment_id` set. Only
 confirmed ones. Re-ingest must replace, not duplicate — the unique constraint
 covers `(from, to, type, source_segment)`.
 
-### Phase 3 — year capture
+### ✅ Phase 3 — year capture — DONE 2026-08-03
+
+`app/services/year_parsing.py` + a fourth, skippable class on the confirmation
+screen. Free text in ("1973", "בערך 1973", "in 1973"); one integer out, or a
+refusal with a reason.
+
+**"Refuse rather than guess" is the whole design.** A wrong year silently
+reorders a life and nothing on the page looks broken, so anything needing a
+judgement call comes back to the producer:
+
+| input | outcome |
+| --- | --- |
+| `1973`, `בערך 1973`, `73` | accepted |
+| `early 70s`, `שנות ה-70` | refused — a span, not a year |
+| **`mid 1970s`** | refused — contains a real 4-digit year, still a span |
+| `1973-1975` | refused — two years, neither of them chosen |
+| `20` | refused — 1920 or 2020, both real answers |
+
+Refusals are **reported to the producer**, never dropped and never rounded —
+the same lesson as the discarded type answers.
+
+**⚠️ This is dormant on the current archive.** `YEAR_QUESTION_TYPES` is
+`("event",)` per the brief, and the archive holds **zero event entities**
+because the extractor is a *named*-entity extractor and a life period has no
+name (§2.1). Nothing will ask for a year until event entities exist. Widening
+to `person` for tree lifespans is a one-line change in that constant and
+nowhere else.
+
+Years fill in but never overwrite: the screen only asks where there is no year
+yet, so ingest order cannot re-decide one the producer already gave.
+
+28 new tests (684 total), most of them feeding the parser things it must
+refuse.
+
+### Phase 3 — year capture (original plan)
 
 Depends on §2.1. Under Option A/C this is **optional decoration**, so it can
 slip without blocking the timeline.

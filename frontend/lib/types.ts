@@ -247,6 +247,13 @@ export interface RelationQuestion {
   evidence?: string | null
 }
 
+/** An event with no year yet. Skippable — free text, parsed server-side. */
+export interface YearQuestion {
+  name: string
+  type: string
+  question: string
+}
+
 export interface PendingConfirmation {
   segment_id: string
   interview_session_id: string
@@ -257,6 +264,7 @@ export interface PendingConfirmation {
     identity_questions: IdentityQuestion[]
     type_questions: TypeQuestion[]
     relation_questions?: RelationQuestion[]
+    year_questions?: YearQuestion[]
   }
 }
 
@@ -268,6 +276,10 @@ export interface EntityBatchAnswer {
    *  others are wrong in opposite directions. Omitting a key and sending
    *  false mean the same thing. */
   relations?: Record<string, boolean>
+  /** Entity name -> whatever the producer typed. Free text on purpose:
+   *  "בערך 1973" is a fine answer and the client should not parse it. The
+   *  server resolves it to one year or refuses with a reason. */
+  years?: Record<string, string>
   // Keyed by entity name, matching the pending payload. Every question must
   // be answered — the server rejects a partial submit rather than defaulting,
   // because both plausible defaults are wrong in opposite directions.
@@ -284,9 +296,18 @@ export interface AppliedTypeChange {
   now: string
 }
 
+/** A year that could not be resolved to one number. Reported rather than
+ *  guessed — a wrong year reorders a life and nothing would look broken. */
+export interface RejectedYear {
+  name: string
+  given: string
+  reason: string
+}
+
 export interface ConfirmEntitiesResult {
   segment: RawSegment
   applied_type_changes: AppliedTypeChange[]
+  rejected_years: RejectedYear[]
 }
 
 export interface ApiError {

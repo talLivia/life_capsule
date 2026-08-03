@@ -39,6 +39,9 @@ export function EntityConfirmModal() {
   // Keyed by proposal INDEX, not name: two people can hold the same relation
   // to the speaker, so a name would not identify one.
   const [relations, setRelations] = useState<Record<number, boolean>>({})
+  // Free text, sent as typed — the server parses it and refuses what it
+  // cannot resolve, rather than the client guessing.
+  const [years, setYears] = useState<Record<string, string>>({})
   const answeringRef = useRef(false)
   const [answering, setAnswering] = useState(false)
 
@@ -69,6 +72,7 @@ export function EntityConfirmModal() {
     setIdentity({})
     setTypes({})
     setRelations({})
+    setYears({})
   }, [pending?.segment_id])
 
   const identityQuestions = useMemo(
@@ -81,6 +85,10 @@ export function EntityConfirmModal() {
   )
   const relationQuestions = useMemo(
     () => pending?.pending_confirmation.relation_questions ?? [],
+    [pending],
+  )
+  const yearQuestions = useMemo(
+    () => pending?.pending_confirmation.year_questions ?? [],
     [pending],
   )
 
@@ -119,6 +127,9 @@ export function EntityConfirmModal() {
         relations: Object.fromEntries(
           Object.entries(relations).filter(([, accepted]) => accepted),
         ),
+        years: Object.fromEntries(
+          Object.entries(years).filter(([, v]) => v.trim()),
+        ),
       })
       // Say what the answer DID. A type answer used to be accepted and then
       // discarded by the "existing value wins" rule with no feedback at all;
@@ -126,6 +137,11 @@ export function EntityConfirmModal() {
       // to go and check.
       for (const change of outcome?.applied_type_changes ?? []) {
         toast.success(`${change.name}: ${change.was} → ${change.now}`)
+      }
+      // A year the server could not resolve is NOT stored, and saying so is
+      // the whole point — guessing at it would put a wrong date on a life.
+      for (const bad of outcome?.rejected_years ?? []) {
+        toast.error(`Couldn't read "${bad.given}" as a year — ${bad.reason}. Not saved.`)
       }
       setPending(null)
       // Another RECORDING may also be waiting — this screen covers one.
@@ -277,6 +293,31 @@ export function EntityConfirmModal() {
                   )}
                 </span>
               </button>
+            ))}
+          </fieldset>
+        )}
+
+        {yearQuestions.length > 0 && (
+          <fieldset className="flex flex-col gap-2 pt-1 border-t border-white/10">
+            <legend className="text-sm text-white leading-relaxed mb-1">
+              Roughly when? — optional
+            </legend>
+            <p className="text-xs text-gray-400 -mt-1 mb-1">
+              A year helps place these on the timeline. Leave blank to skip.
+            </p>
+            {yearQuestions.map((q) => (
+              <label key={`year-${q.name}`} className="flex items-center gap-3">
+                <span dir="auto" className="text-sm text-white flex-1">{q.name}</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={years[q.name] ?? ''}
+                  onChange={(e) => setYears((s) => ({ ...s, [q.name]: e.target.value }))}
+                  disabled={answering}
+                  placeholder="e.g. 1973"
+                  className="w-32 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
+                />
+              </label>
             ))}
           </fieldset>
         )}

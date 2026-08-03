@@ -169,6 +169,10 @@ class ExtractedEntity:
     # place" — the first must not overwrite an existing type, the second must.
     # Never set by the extractor itself; only by human_confirm_node.
     type_confirmed: bool = False
+    # Set only by human_confirm_node from the producer's answer, never by the
+    # extractor — the transcript rarely dates anything, and a year guessed
+    # from context would silently reorder a life on the timeline.
+    year_start: Optional[int] = None
 
     @property
     def needs_type_confirmation(self) -> bool:
@@ -189,6 +193,7 @@ class ExtractedEntity:
             "alternative_type": self.alternative_type,
             "summary": self.summary,
             "type_confirmed": self.type_confirmed,
+            "year_start": self.year_start,
         }
 
     @classmethod
@@ -199,6 +204,7 @@ class ExtractedEntity:
             alternative_type=data.get("alternative_type"),
             summary=data.get("summary"),
             type_confirmed=bool(data.get("type_confirmed")),
+            year_start=data.get("year_start"),
         )
 
 
