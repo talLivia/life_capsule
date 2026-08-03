@@ -926,62 +926,74 @@
     {
       "id": "childhood_home",
       "category": "childhood",
-      "text": "ספר לי על הבית שבו גדלת. איך הוא נראה, ומי היה שם איתך?"
+      "text": "ספר לי על הבית שבו גדלת. איך הוא נראה, ומי היה שם איתך?",
+      "category_label": "תקופת הילדות כולל בית ספר יסודי"
     },
     {
       "id": "childhood_memory",
       "category": "childhood",
-      "text": "מהו הזיכרון הכי מוקדם שיש לך מהילדות שלך?"
+      "text": "מהו הזיכרון הכי מוקדם שיש לך מהילדות שלך?",
+      "category_label": "תקופת הילדות כולל בית ספר יסודי"
     },
     {
       "id": "childhood_influence",
       "category": "childhood",
-      "text": "מי היה הדמות שהכי השפיעה עליך כשהיית ילד או ילדה?"
+      "text": "מי היה הדמות שהכי השפיעה עליך כשהיית ילד או ילדה?",
+      "category_label": "תקופת הילדות כולל בית ספר יסודי"
     },
     {
       "id": "military_service",
       "category": "military_service",
-      "text": "ספר לי על השירות הצבאי שלך. איפה שירתת, ובאיזה תפקיד?"
+      "text": "ספר לי על השירות הצבאי שלך. איפה שירתת, ובאיזה תפקיד?",
+      "category_label": "צבא / מחתרות"
     },
     {
       "id": "military_moment",
       "category": "military_service",
-      "text": "מהו הרגע הכי בלתי נשכח שהיה לך בתקופת השירות?"
+      "text": "מהו הרגע הכי בלתי נשכח שהיה לך בתקופת השירות?",
+      "category_label": "צבא / מחתרות"
     },
     {
       "id": "post_military_next",
       "category": "post_military",
-      "text": "מה עשית מיד אחרי השחרור מהצבא?"
+      "text": "מה עשית מיד אחרי השחרור מהצבא?",
+      "category_label": "אחרי הצבא"
     },
     {
       "id": "post_military_discovery",
       "category": "post_military",
-      "text": "היה משהו שגילית על עצמך בתקופה שאחרי הצבא?"
+      "text": "היה משהו שגילית על עצמך בתקופה שאחרי הצבא?",
+      "category_label": "אחרי הצבא"
     },
     {
       "id": "relationships_meeting",
       "category": "relationships",
-      "text": "איך הכרת את בן/בת הזוג שלך?"
+      "text": "איך הכרת את בן/בת הזוג שלך?",
+      "category_label": "זוגיות"
     },
     {
       "id": "relationships_knew",
       "category": "relationships",
-      "text": "ספר לי על הרגע שבו ידעת שמצאת את האדם הנכון."
+      "text": "ספר לי על הרגע שבו ידעת שמצאת את האדם הנכון.",
+      "category_label": "זוגיות"
     },
     {
       "id": "relationships_family_wish",
       "category": "relationships",
-      "text": "מה היית רוצה שהילדים והנכדים שלך ידעו על המשפחה שהקמת?"
+      "text": "מה היית רוצה שהילדים והנכדים שלך ידעו על המשפחה שהקמת?",
+      "category_label": "זוגיות"
     },
     {
       "id": "career_start",
       "category": "career",
-      "text": "איך התחלת את הדרך המקצועית שלך?"
+      "text": "איך התחלת את הדרך המקצועית שלך?",
+      "category_label": "קריירה"
     },
     {
       "id": "career_proud",
       "category": "career",
-      "text": "מה ההישג המקצועי שהכי גאה בו?"
+      "text": "מה ההישג המקצועי שהכי גאה בו?",
+      "category_label": "קריירה"
     }
   ]
 }
