@@ -37,6 +37,31 @@ import type { FamilyTree, TreePerson } from '@/lib/types'
  * not visible as such — they are simply both in the row. Called out in the
  * caption under the chart rather than left for someone to notice.
  *
+ * ## Descents are one trunk per parent group, not one line per child
+ *
+ * Children sharing the same set of parents hang off a single bus: a stem down
+ * from each parent, a joining bar if there are two, one trunk down to the bus,
+ * and a drop to each child.
+ *
+ * This does NOT reintroduce the occlusion bug that the sibling connectors had.
+ * That bug existed because a same-row line runs at the row's VERTICAL CENTRE —
+ * the exact band the node boxes occupy — so anyone between the endpoints sat
+ * behind it. Every segment here lives in the ROW GAP, which contains no nodes
+ * by construction. Different band, so the failure cannot happen.
+ *
+ * The same *class* of error does have a new form, and it is handled: several
+ * parent groups descending into one gap put their buses at the same height,
+ * and two buses that overlap horizontally would merge into what looks like one
+ * family. Groups whose spans overlap are therefore given different bus depths.
+ *
+ * A joining bar between two parents says "both are parents of these children",
+ * which is recorded. It is not a marriage line and does not claim one.
+ *
+ * KNOWN LIMIT: an edge spanning more than one generation (grandparent with no
+ * intervening parent recorded) drops straight through the row in between. No
+ * such relation exists in the archive today, and check_layout.py reports any
+ * line that crosses a node rather than letting it pass unnoticed.
+ *
  * Positions are computed here and nowhere else. The server owns WHO is in
  * which generation; this owns where they sit on screen.
  */
@@ -52,11 +77,40 @@ const LABEL_W = 150
 
 const MIN_SCALE = 0.15
 const MAX_SCALE = 2.5
+/** Never open smaller than this, even if the whole tree would not fit. A
+ *  fitted view of a wide tree is unreadable, and a readable view you have to
+ *  pan is better than a complete one you cannot read. */
+const READABLE_SCALE = 0.6
+/**
+ * Wheel and button zoom are both LINEAR steps, via `smooth={false}`.
+ *
+ * With the library's default `smooth`, the wheel step is multiplied by
+ * `Math.abs(event.deltaY)` — and a Windows mouse wheel click reports
+ * deltaY = 100, so any sane-looking step lands on maxScale in one click.
+ * Constant steps are the only way to get intermediate levels from a wheel.
+ */
+const WHEEL_STEP = 0.1
+const BUTTON_STEP = 0.15
+
+/** Descent geometry, all of it inside the row gap. */
+const STEM_DROP = 24 // parent bottom -> joining bar
+const BUS_LIFT = 34 // child top -> bus
+const BUS_LEVEL_GAP = 13 // separation between overlapping groups' buses
 
 interface Placed {
   person: TreePerson
   x: number // left edge
   y: number // top edge
+}
+
+/** One parent-set and every child hanging off it. */
+interface Descent {
+  key: string
+  parents: Placed[]
+  children: Placed[]
+  stemY: number
+  busY: number
+  junctionX: number
 }
 
 /** Up to two initials. Works the same for Hebrew and Latin names. */
@@ -152,7 +206,7 @@ export function FamilyTreeGraph({
   const zoomRef = useRef<ReactZoomPanPinchRef>(null)
   const pressRef = useRef<{ x: number; y: number } | null>(null)
 
-  const { placed, rowLabels, width, height } = useMemo(() => {
+  const { placed, rowLabels, descents, width, height } = useMemo(() => {
     const rows = orderRows(tree.generations, tree.edges)
     const rowWidths = rows.map((r) => r.length * NODE_W + Math.max(0, r.length - 1) * COL_GAP)
     const widest = Math.max(0, ...rowWidths)
@@ -170,9 +224,88 @@ export function FamilyTreeGraph({
       })
     })
 
+    // ── descents: group children by the exact set of parents they hang from ──
+    const parentsOf = new Map<string, Placed[]>()
+    for (const edge of tree.edges) {
+      const a = out.get(edge.from_id)
+      const b = out.get(edge.to_id)
+      if (!a || !b || a.y === b.y) continue // same generation: no line
+      const upper = a.y < b.y ? a : b
+      const lower = a.y < b.y ? b : a
+      const list = parentsOf.get(lower.person.id) ?? []
+      if (!list.some((p) => p.person.id === upper.person.id)) list.push(upper)
+      parentsOf.set(lower.person.id, list)
+    }
+
+    // Keyed by child row as well as parent set: the same parents having both a
+    // child and a grandchild recorded are two different descents, not one.
+    const grouped = new Map<string, { parents: Placed[]; children: Placed[] }>()
+    parentsOf.forEach((parents, childId) => {
+      const child = out.get(childId)!
+      const key = `${child.y}::${parents.map((p) => p.person.id).sort().join('|')}`
+      const group = grouped.get(key) ?? { parents, children: [] }
+      group.children.push(child)
+      grouped.set(key, group)
+    })
+
+    const centreOf = (p: Placed) => p.x + NODE_W / 2
+
+    // Bus depth per gap. Two groups whose buses overlap horizontally at the
+    // same height would read as one family; give them different depths.
+    const byGap = new Map<number, { key: string; g: { parents: Placed[]; children: Placed[] } }[]>()
+    grouped.forEach((g, key) => {
+      const childY = g.children[0].y
+      byGap.set(childY, [...(byGap.get(childY) ?? []), { key, g }])
+    })
+
+    const level = new Map<string, number>()
+    byGap.forEach((groups) => {
+      const span = (g: { parents: Placed[]; children: Placed[] }) => {
+        const xs = [...g.children.map(centreOf), ...g.parents.map(centreOf)]
+        return [Math.min(...xs), Math.max(...xs)] as const
+      }
+      const rightEdgeAt: number[] = []
+      groups
+        .sort((a, b) => span(a.g)[0] - span(b.g)[0])
+        .forEach(({ key, g }) => {
+          const [left, right] = span(g)
+          let lvl = rightEdgeAt.findIndex((edge) => edge < left - COL_GAP)
+          if (lvl === -1) {
+            lvl = rightEdgeAt.length
+            rightEdgeAt.push(right)
+          } else {
+            rightEdgeAt[lvl] = right
+          }
+          // The gap is finite; past this the bus would land on the row below.
+          level.set(key, Math.min(lvl, Math.floor((ROW_GAP - BUS_LIFT - STEM_DROP - 8) / BUS_LEVEL_GAP)))
+        })
+    })
+
+    const descentList: Descent[] = []
+    grouped.forEach((g, key) => {
+      const stemY = Math.max(...g.parents.map((p) => p.y)) + NODE_H + STEM_DROP
+      const childY = g.children[0].y
+      const busY = Math.max(
+        stemY + 8,
+        childY - BUS_LIFT - (level.get(key) ?? 0) * BUS_LEVEL_GAP
+      )
+      const parentXs = g.parents.map(centreOf)
+      descentList.push({
+        key,
+        parents: g.parents,
+        children: g.children,
+        stemY,
+        busY,
+        // Between the parents, so one trunk descends from the couple rather
+        // than from whichever of them happens to be first.
+        junctionX: (Math.min(...parentXs) + Math.max(...parentXs)) / 2,
+      })
+    })
+
     return {
       placed: out,
       rowLabels: labels,
+      descents: descentList,
       width: LABEL_W + widest + PAD * 2,
       height: rows.length * NODE_H + Math.max(0, rows.length - 1) * ROW_GAP + PAD * 2,
     }
@@ -189,12 +322,12 @@ export function FamilyTreeGraph({
     )
   }, [width, height])
 
-  // A tree wider than the viewport opens fitted rather than scrolled off the
-  // right edge, where the producer would have to discover panning to find out
-  // anything is missing.
+  // Opening view: fitted, but never below what can be read. A small family
+  // opens whole; a large one opens legible and centred, and panning finds the
+  // rest — the fit button is right there when the shape is what you want.
   useEffect(() => {
     const id = window.requestAnimationFrame(() => {
-      zoomRef.current?.centerView(fitScale(), 0)
+      zoomRef.current?.centerView(Math.max(fitScale(), READABLE_SCALE), 0)
     })
     return () => window.cancelAnimationFrame(id)
   }, [fitScale])
@@ -217,14 +350,17 @@ export function FamilyTreeGraph({
         limitToBounds={false}
         centerOnInit
         doubleClick={{ disabled: true }}
-        wheel={{ step: 0.08 }}
+        // See WHEEL_STEP: without smooth={false} the wheel step is scaled by
+        // deltaY, and one mouse click saturates the zoom range.
+        smooth={false}
+        wheel={{ step: WHEEL_STEP }}
         panning={{ velocityDisabled: true }}
       >
         <>
           <div className="absolute top-3 right-3 z-10 flex flex-col gap-1.5">
             <button
               type="button"
-              onClick={() => zoomRef.current?.zoomIn()}
+              onClick={() => zoomRef.current?.zoomIn(BUTTON_STEP)}
               className={control}
               aria-label="Zoom in"
             >
@@ -232,7 +368,7 @@ export function FamilyTreeGraph({
             </button>
             <button
               type="button"
-              onClick={() => zoomRef.current?.zoomOut()}
+              onClick={() => zoomRef.current?.zoomOut(BUTTON_STEP)}
               className={control}
               aria-label="Zoom out"
             >
@@ -274,31 +410,46 @@ export function FamilyTreeGraph({
                 ))}
               </g>
 
-              {/* Edges first so nodes paint over their endpoints. */}
-              <g>
-                {tree.edges.map((edge, i) => {
-                  const a = placed.get(edge.from_id)
-                  const b = placed.get(edge.to_id)
-                  if (!a || !b) return null // an unplaced endpoint has no position
-                  // Same generation: siblings and partners are shown by the
-                  // shared row, never by a line. See the header.
-                  if (a.y === b.y) return null
+              {/* Descents first so nodes paint over their endpoints. */}
+              <g fill="none" stroke="rgb(148 163 184 / 0.45)" strokeWidth={1.5}>
+                {descents.map((d) => {
+                  const cx = (p: Placed) => p.x + NODE_W / 2
+                  const parentXs = d.parents.map(cx)
+                  const childXs = d.children.map(cx)
+                  // The bus has to reach the trunk even when every child sits
+                  // to one side of the parents.
+                  const busLeft = Math.min(d.junctionX, ...childXs)
+                  const busRight = Math.max(d.junctionX, ...childXs)
 
-                  // An orthogonal descent, the shape a genealogy chart uses:
-                  // down, across, down.
-                  const upper = a.y < b.y ? a : b
-                  const lower = a.y < b.y ? b : a
-                  const midY = upper.y + NODE_H + (lower.y - (upper.y + NODE_H)) / 2
-                  const ux = upper.x + NODE_W / 2
-                  const lx = lower.x + NODE_W / 2
                   return (
-                    <path
-                      key={`${edge.from_id}-${edge.to_id}-${edge.relation_type}-${i}`}
-                      d={`M ${ux} ${upper.y + NODE_H} V ${midY} H ${lx} V ${lower.y}`}
-                      fill="none"
-                      stroke="rgb(148 163 184 / 0.45)"
-                      strokeWidth={1.5}
-                    />
+                    <g key={d.key}>
+                      {/* a stem down from each parent */}
+                      {d.parents.map((p) => (
+                        <path
+                          key={p.person.id}
+                          d={`M ${cx(p)} ${p.y + NODE_H} V ${d.stemY}`}
+                        />
+                      ))}
+                      {/* joining bar — "both are parents of these children",
+                          which is recorded; not a marriage line */}
+                      {d.parents.length > 1 && (
+                        <path
+                          d={`M ${Math.min(...parentXs)} ${d.stemY} H ${Math.max(...parentXs)}`}
+                        />
+                      )}
+                      {/* one trunk down to the bus, then the bus itself */}
+                      <path d={`M ${d.junctionX} ${d.stemY} V ${d.busY}`} />
+                      {busRight - busLeft > 0.5 && (
+                        <path d={`M ${busLeft} ${d.busY} H ${busRight}`} />
+                      )}
+                      {/* a drop to each child */}
+                      {d.children.map((c) => (
+                        <path
+                          key={c.person.id}
+                          d={`M ${cx(c)} ${d.busY} V ${c.y}`}
+                        />
+                      ))}
+                    </g>
                   )
                 })}
               </g>

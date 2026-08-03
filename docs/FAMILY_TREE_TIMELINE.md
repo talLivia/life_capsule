@@ -764,6 +764,53 @@ Two things did NOT hold, both pre-existing and exposed by the width:
    sibling-of-parent is a same-generation relation and those are no longer
    drawn. They read as disconnected rather than as aunts and uncles.
 
+#### Phase 4c — trunk descents, zoom steps, portrait page — 2026-08-03
+
+**Descents are one trunk per parent group.** Children sharing a parent set hang
+off one bus: stem from each parent, joining bar, one trunk down, branch to each
+child. Sibling connectors stay removed.
+
+This does not reintroduce the 4a occlusion bug, and the reason is a property
+rather than a hope: that bug existed because a same-row line runs at the row's
+**vertical centre**, the band the node boxes occupy. Every trunk segment lives
+in the **row gap**, which holds no nodes by construction. Verified by
+segment-vs-node-box intersection over every drawn segment, not by eye.
+
+The same class of error does have a new form: several groups descending into
+one gap put their buses at the same height, and two overlapping buses would
+merge into what reads as a single family. Groups are given different bus depths
+when their spans overlap. **This fired on the stress data** — three sibling fans
+in one gap, one pushed from busY 310 to 297.
+
+A joining bar between two parents states "both are parents of these children",
+which is recorded. It is not a marriage line.
+
+*Known limit:* an edge spanning more than one generation drops through the row
+between. No such relation exists today; the check reports it if one appears.
+
+**Zoom.** `smooth={false}`. The library computes
+`zoomStep = smooth ? step * Math.abs(event.deltaY) : step`, and a Windows wheel
+click reports `deltaY: 100` — so the previous `step: 0.08` became 8 and one
+click saturated `maxScale`. Constant steps (0.1 wheel, 0.15 button) are the
+only way to get intermediate levels from a wheel. Opening scale also has a
+**readable floor** of 0.6: a fitted view of a wide tree is unreadable, and a
+legible view you pan beats a complete one you cannot read.
+
+**Portrait page.** `max-w-4xl` and `h-[calc(100vh-13rem)]`, min 620px. Height is
+what shows several generations at once; width is what panning is for.
+
+**The moments dialog rendered transparent** because of NESTED backdrop-filter.
+`glass-card` carries `backdrop-blur-xl` and the overlay had `backdrop-blur-md`;
+a backdrop-filtered element inside another filters against the outer backdrop
+ROOT, sampling the page as it was *before* the overlay darkened it. The card
+therefore showed the undimmed page through itself. Fixed by making the card
+opaque — one backdrop-filter per stack — and portalling the overlay to
+`document.body`, since `position: fixed` resolves against any ancestor with a
+transform, filter or backdrop-filter rather than the viewport.
+
+`AuthModal` has the same `glass-card`-inside-blurred-overlay structure and is
+likely to show the same effect. Not touched here.
+
 ### Phase 4 — family tree page (original plan)
 
 Read-only. New `View` + nav item + lazy panel, dark design system.

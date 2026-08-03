@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { AlertTriangle, Loader2, Network, User as UserIcon, X } from 'lucide-react'
 import { FamilyTreeGraph } from '@/components/FamilyTreeGraph'
 import { api } from '@/lib/api'
@@ -23,8 +24,9 @@ import type { ApiError, EntityMoment, FamilyTree, TreePerson } from '@/lib/types
  *     than rendering a blank canvas that looks broken.
  *
  * The chart gets the page and the moments open over it, rather than the two
- * splitting the width. A tree is a shape you read across — giving it 60% of
- * the screen so that an empty aside can hold the other 40% had it backwards.
+ * splitting the width. It is deliberately PORTRAIT — a narrow column like the
+ * rest of the site, tall enough to show several generations at once. Height is
+ * what a tree needs; width is what panning is for.
  */
 
 function lifespan(person: TreePerson): string | null {
@@ -62,7 +64,23 @@ function PersonChip({
   )
 }
 
-/** One person's recordings, over the chart rather than beside it. */
+/**
+ * One person's recordings, over the chart rather than beside it.
+ *
+ * Two things here are load-bearing and look like styling choices:
+ *
+ * The card is OPAQUE and does not use `glass-card`. That class carries
+ * `backdrop-blur-xl`, and a backdrop-filtered element nested inside another
+ * one (the overlay's own blur) filters against the outer backdrop ROOT — it
+ * samples the page as it was *before* the overlay darkened it. The card then
+ * shows the undimmed page straight through itself and the whole dialog reads
+ * as transparent. One backdrop-filter per stack.
+ *
+ * It renders through a PORTAL to document.body. `position: fixed` is relative
+ * to the nearest ancestor with a transform, filter or backdrop-filter rather
+ * than to the viewport, and this page has all three above it. Portalling puts
+ * the overlay out of reach of anything a future ancestor might do to it.
+ */
 function MomentsModal({
   person,
   moments,
@@ -75,6 +93,9 @@ function MomentsModal({
   onClose: () => void
 }) {
   const closeRef = useRef<HTMLButtonElement>(null)
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => setMounted(true), [])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -82,14 +103,21 @@ function MomentsModal({
     }
     window.addEventListener('keydown', onKey)
     closeRef.current?.focus()
-    return () => window.removeEventListener('keydown', onKey)
+    // The page behind must not scroll while a dialog is over it.
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = previous
+    }
   }, [onClose])
 
   const years = lifespan(person)
+  if (!mounted) return null
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-surface-950/90 backdrop-blur-md p-4"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-surface-950/95 backdrop-blur-md p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="moments-title"
@@ -97,7 +125,7 @@ function MomentsModal({
     >
       {/* Clicks inside the card must not reach the backdrop's close handler. */}
       <div
-        className="w-full max-w-2xl max-h-[85vh] overflow-y-auto glass-card rounded-2xl p-5 animate-scale-in flex flex-col gap-3"
+        className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl p-5 animate-scale-in flex flex-col gap-3 bg-surface-800 border border-white/10 shadow-glass"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3 sticky top-0">
@@ -156,7 +184,8 @@ function MomentsModal({
           </article>
         ))}
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 
@@ -220,7 +249,7 @@ export function FamilyTreePanel() {
   const hasFamily = tree.generations.some((g) => g.people.some((p) => !p.is_self))
 
   return (
-    <div className="animate-fade-in px-6 pt-6 pb-16">
+    <div className="animate-fade-in max-w-4xl mx-auto px-6 pt-6 pb-16">
       <header className="flex items-center gap-2 text-primary-400 mb-4">
         <Network size={16} />
         <span className="text-sm font-medium">Family tree</span>
@@ -241,9 +270,11 @@ export function FamilyTreePanel() {
         </div>
       ) : (
         <>
-          {/* Tall enough to be the page without pinning the sections below it
-              off-screen. Panning covers anything the height cannot. */}
-          <div className="h-[calc(100vh-15rem)] min-h-[420px]">
+          {/* Portrait rather than letterbox: a tree is read down the
+              generations, and the page it sits on is a narrow column like the
+              rest of the site. Height is what lets several rows show at once;
+              panning covers the width. */}
+          <div className="h-[calc(100vh-13rem)] min-h-[620px]">
             <FamilyTreeGraph
               tree={tree}
               selectedId={selected?.id ?? null}
