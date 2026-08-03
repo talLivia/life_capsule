@@ -1338,3 +1338,34 @@ compulsory and a zero-of-zero counter reads as an error.
 Verified against the live payload: old guard 0 → renders nothing; new guard
 20 questions → renders, with the 10 editable names correctly NOT counted as
 questions.
+
+### 8.11 The "someone else" branch, made sayable — 2026-08-03
+
+The parentage answer was checkboxes plus an unlabelled free-text box. The
+backend branch was complete — `new_parent_name` validated, forwarded, and
+written as an ordinary entity plus `parent` relation, with a test for
+"shares one parent, plus a name" — but the UI never expressed it:
+
+- **there was no negative answer.** "These are not their parents" and "I did
+  not answer" were the same submission, so a half-sibling could be recorded as
+  sharing, or as nothing;
+- the text box read as an addition to the chips rather than the answer to a
+  declined one, so the branch was invisible unless you typed into it;
+- a typed name resolves by normalised match, so one different character made a
+  **second person** instead of linking to the first.
+
+Now, per sibling: the parent chips, a **"Someone else"** chip that reveals
+*"Then whose child are they?"*, and a `datalist` of everyone already in the
+archive so an existing person is picked rather than spelled. Closing the branch
+discards the typed name, so a stale one is never submitted for a path the
+producer backed out of. A sibling with nothing chosen now says so —
+*"Skipped — nothing recorded, and we won't ask about them again"* — rather than
+looking like an open question.
+
+`known_people` is carried **inside each question**, not as a payload key. The
+client counts every array in the payload to decide whether to render, so a
+top-level list of people would be counted as questions — the exact miscounting
+behind §8.7 and §8.10. Nested, it cannot be. Verified on live data: the payload
+counts **4**, the four siblings, not 4 + 11 people. The producer is excluded
+(nobody is their own sibling's parent) and each sibling is excluded from their
+own list.

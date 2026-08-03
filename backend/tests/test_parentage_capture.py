@@ -529,3 +529,55 @@ async def test_a_segment_actually_running_is_still_processing(db_session, family
     extraction = await get_segment_extraction(db_session, segment.id, family["user"].id)
     assert extraction.still_processing is True
     assert extraction.awaiting_confirmation is False
+
+
+# ── picking an existing person instead of typing one ──────────────────────
+
+
+async def test_the_question_carries_the_people_already_in_the_archive(
+    db_session, family
+):
+    """So "someone else" can be PICKED. write_parentage resolves a typed name
+    by normalised match, so one different character creates a second person
+    instead of linking to the first."""
+    found = await entity_store.parentage_candidates(db_session, family["user"].id)
+    known = {p["name"] for p in found["known_people"]}
+    assert {"Dad", "Mum", "Sib"} <= known
+    assert "Root Person" not in known, "the producer is not their sibling's parent"
+
+
+def test_a_sibling_is_not_offered_as_their_own_parent():
+    questions = parentage_questions(
+        {
+            "parents": [{"id": "p1", "name": "Dad"}],
+            "siblings": [{"id": "s1", "name": "Sib"}, {"id": "s2", "name": "Other"}],
+            "known_people": [
+                {"id": "s1", "name": "Sib"},
+                {"id": "s2", "name": "Other"},
+                {"id": "x", "name": "Rivka"},
+            ],
+        }
+    )
+    by_name = {q["name"]: q for q in questions}
+    assert [p["name"] for p in by_name["Sib"]["known_people"]] == ["Other", "Rivka"]
+    assert [p["name"] for p in by_name["Other"]["known_people"]] == ["Sib", "Rivka"]
+
+
+def test_known_people_is_nested_so_it_can_never_be_counted_as_questions():
+    """The client counts every array in the payload to decide whether to
+    render. A top-level list of people would be counted as questions — the
+    miscounting that hid two earlier bugs. Nested, it cannot be."""
+    from app.analysis_graph import build_confirmation_payload
+
+    payload = build_confirmation_payload(
+        {
+            "parentage": {
+                "parents": [{"id": "p", "name": "P"}],
+                "siblings": [{"id": "s", "name": "S"}],
+                "known_people": [{"id": "k", "name": "K"}],
+            }
+        }
+    )
+    assert "known_people" not in payload
+    assert len(payload["parentage_questions"]) == 1
+    assert payload["parentage_questions"][0]["known_people"] == [{"id": "k", "name": "K"}]

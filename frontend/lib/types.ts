@@ -293,6 +293,11 @@ export interface ParentageQuestion {
   /** The producer's own recorded parents, offered as options. A LIST, not a
    *  yes/no, because a half-sibling shares one parent. */
   parents: { id: string; name: string }[]
+  /** Everyone already in the archive, so "someone else" can be picked rather
+   *  than typed — a typed name resolves by normalised match, so one different
+   *  character creates a duplicate instead of linking. Nested inside the
+   *  question on purpose: a top-level array would be counted as questions. */
+  known_people: { id: string; name: string }[]
 }
 
 export interface EntityBatchAnswer {

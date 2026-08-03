@@ -85,6 +85,11 @@ export function EntityConfirmModal({
   // archive, not names just pulled out of this recording.
   const [parentage, setParentage] = useState<Record<string, string[]>>({})
   const [newParent, setNewParent] = useState<Record<string, string>>({})
+  // Whether the "someone else" branch is open for a sibling. A separate flag
+  // rather than "is there text": the branch has to be VISIBLE before it can be
+  // typed into, and it is the only way to say "not my parents" as opposed to
+  // saying nothing at all.
+  const [otherOpen, setOtherOpen] = useState<Record<string, boolean>>({})
   // Extracted name -> corrected name. Only entries the producer actually
   // changed are sent; the server ignores blanks and no-ops as well.
   const [nameEdits, setNameEdits] = useState<Record<string, string>>({})
@@ -123,6 +128,7 @@ export function EntityConfirmModal({
     setYears({})
     setParentage({})
     setNewParent({})
+    setOtherOpen({})
     setNameEdits({})
   }, [pending?.segment_id])
 
@@ -445,8 +451,9 @@ export function EntityConfirmModal({
             </legend>
             <p className="text-xs text-gray-400 -mt-1 mb-1">
               You&apos;ve mentioned these people as your siblings, but not whose
-              children they are — so they can&apos;t be joined to anyone in your
-              family tree. Skip and we won&apos;t ask again.
+              children they are — so nothing joins them to anyone in your family
+              tree. Pick the parents they share with you, or say it&apos;s someone
+              else. Asked once either way.
             </p>
             {parentageQuestions.map((q) => (
               <div key={`parentage-${q.entity_id}`} className="flex flex-col gap-1.5">
@@ -480,18 +487,74 @@ export function EntityConfirmModal({
                       </button>
                     )
                   })}
-                  <input
-                    type="text"
-                    dir="auto"
-                    value={newParent[q.entity_id] ?? ''}
-                    onChange={(e) =>
-                      setNewParent((s) => ({ ...s, [q.entity_id]: e.target.value }))
-                    }
+                  {/* The negative branch, made sayable. Without it, "these
+                      are not their parents" and "I did not answer" are the
+                      same submission — and a half-sibling could only ever be
+                      recorded as sharing, or as nothing. */}
+                  <button
+                    type="button"
                     disabled={answering}
-                    placeholder="someone else…"
-                    className="w-40 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
-                  />
+                    onClick={() =>
+                      setOtherOpen((s) => {
+                        const opening = !s[q.entity_id]
+                        if (!opening) {
+                          // Closing discards the name, so a stale one is never
+                          // submitted for a branch the producer backed out of.
+                          setNewParent((n) => ({ ...n, [q.entity_id]: '' }))
+                        }
+                        return { ...s, [q.entity_id]: opening }
+                      })
+                    }
+                    className={`px-3 py-1.5 rounded-lg border text-sm transition-colors ${
+                      otherOpen[q.entity_id]
+                        ? 'border-primary-400 bg-primary-500/15 text-white'
+                        : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
+                    }`}
+                  >
+                    Someone else
+                  </button>
                 </div>
+
+                {otherOpen[q.entity_id] && (
+                  <div className="flex flex-col gap-1 pl-1">
+                    <label
+                      htmlFor={`other-parent-${q.entity_id}`}
+                      className="text-xs text-gray-400"
+                    >
+                      Then whose child are they?
+                    </label>
+                    <input
+                      id={`other-parent-${q.entity_id}`}
+                      type="text"
+                      dir="auto"
+                      list={`people-${q.entity_id}`}
+                      value={newParent[q.entity_id] ?? ''}
+                      onChange={(e) =>
+                        setNewParent((s) => ({ ...s, [q.entity_id]: e.target.value }))
+                      }
+                      disabled={answering}
+                      placeholder="a name"
+                      className="w-56 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
+                    />
+                    {/* Picking beats typing: a typed name resolves by
+                        normalised match, so one different character makes a
+                        second person instead of linking to the first. */}
+                    <datalist id={`people-${q.entity_id}`}>
+                      {q.known_people.map((person) => (
+                        <option key={person.id} value={person.name} />
+                      ))}
+                    </datalist>
+                  </div>
+                )}
+
+                {/* Say what silence will do, rather than letting it look like
+                    the question is still open. */}
+                {(parentage[q.entity_id] ?? []).length === 0 &&
+                  !(newParent[q.entity_id] ?? '').trim() && (
+                    <span className="text-[11px] text-gray-500 pl-1">
+                      Skipped — nothing recorded, and we won&apos;t ask about them again.
+                    </span>
+                  )}
               </div>
             ))}
           </fieldset>

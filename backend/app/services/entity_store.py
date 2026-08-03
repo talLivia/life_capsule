@@ -806,9 +806,30 @@ async def parentage_candidates(db: AsyncSession, producer_id: str) -> Dict[str, 
     if not siblings:
         return {"parents": [], "siblings": []}
 
+    # Everyone already in the archive, so "someone else" can be PICKED rather
+    # than typed. write_parentage resolves a typed name by normalised match, so
+    # a spelling that differs by one character silently creates a second person
+    # instead of linking to the first — a datalist is what stops that being the
+    # producer's problem. Excludes the producer: nobody is their own sibling's
+    # parent. The sibling themselves is excluded per-question.
+    known_people = list(
+        (
+            await db.execute(
+                select(Entity)
+                .where(
+                    Entity.producer_id == producer_id,
+                    Entity.type == "person",
+                    Entity.is_self.is_(False),
+                )
+                .order_by(Entity.name)
+            )
+        ).scalars().all()
+    )
+
     return {
         "parents": [{"id": p.id, "name": p.name} for p in parents],
         "siblings": [{"id": s.id, "name": s.name} for s in siblings],
+        "known_people": [{"id": k.id, "name": k.name} for k in known_people],
     }
 
 

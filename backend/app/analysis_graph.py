@@ -796,6 +796,7 @@ def parentage_questions(parentage: Optional[Dict[str, Any]]) -> List[Dict[str, A
     parentage = parentage or {}
     parents = parentage.get("parents") or []
     siblings = parentage.get("siblings") or []
+    known_people = parentage.get("known_people") or []
     if not parents or not siblings:
         return []
     return [
@@ -804,6 +805,17 @@ def parentage_questions(parentage: Optional[Dict[str, Any]]) -> List[Dict[str, A
             "name": sibling["name"],
             "question": f'Whose child is "{sibling["name"]}"? (optional)',
             "parents": parents,
+            # Carried INSIDE the question rather than as a payload key of its
+            # own, deliberately. The client counts every array in the payload
+            # to decide whether to render, and a top-level list of people would
+            # be counted as questions — the exact miscounting that hid two
+            # earlier bugs. Nested, it cannot be.
+            #
+            # Nobody is their own parent, so the sibling is dropped from their
+            # own list.
+            "known_people": [
+                person for person in known_people if person["id"] != sibling["id"]
+            ],
         }
         for sibling in siblings
     ]
