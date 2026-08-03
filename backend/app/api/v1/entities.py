@@ -21,7 +21,7 @@ from app.api.v1.interview import require_producer
 from app.database import get_db
 from app.models import User
 from app.schemas import EntityMomentResponse, TreeResponse
-from app.services import family_tree
+from app.services import family_tree, timeline
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -67,3 +67,16 @@ async def get_entity_moments(
         raise HTTPException(status_code=404, detail="Entity not found")
 
     return await family_tree.get_entity_moments(db, user.id, entity_id)
+
+
+@router.get("/timeline")
+async def get_timeline(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """The producer's life periods, in the interview's own order.
+
+    Read-only. Empty periods are hidden and counted — a category with no
+    recording is a question not yet answered, not a fact about the life.
+    """
+    return await timeline.build_timeline(db, user.id, user.recording_language)
