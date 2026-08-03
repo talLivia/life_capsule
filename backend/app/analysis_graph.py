@@ -809,6 +809,44 @@ def parentage_questions(parentage: Optional[Dict[str, Any]]) -> List[Dict[str, A
     ]
 
 
+# Every question class, in ONE place.
+#
+# THE ROUTER AND THE NODE MUST NEVER DISAGREE, and for three phases they did.
+# `_has_confirmation_questions` checked identity and type only, while
+# human_confirm_node's interrupt carried relations (Phase 2), years (Phase 3)
+# and parentage (Phase 6) as well. A recording that raised no identity or type
+# question therefore routed straight past confirmation — and because the node
+# is what narrows `proposed_relations` to the ACCEPTED subset, finalize wrote
+# every proposed relation unasked. That is the exact "nothing is auto-applied"
+# rule this pipeline exists to keep, broken silently, and it looked like
+# success: a recording that ingests cleanly and shows no questions.
+#
+# Deriving both from this function is what makes it structural rather than
+# remembered. A sixth class added here is asked about AND gates the route; a
+# sixth class added anywhere else does not exist. Same fix, and same reason, as
+# sharing `_chosen_option` between resolve_steps and category_is_settled.
+def build_confirmation_payload(state: AnalysisState) -> Dict[str, List[Dict[str, Any]]]:
+    """Every question this recording raises. Empty lists where it raises none."""
+    return {
+        "identity_questions": list(state.get("names_to_check") or []),
+        "type_questions": type_questions(state.get("extracted_entities") or []),
+        # A THIRD class, and deliberately a different one: identity and type
+        # must be answered (both silent defaults are dangerous), while
+        # relations are skippable. An unanswered relation is simply not
+        # stored, which is the status quo and harmless.
+        "relation_questions": relation_questions(state.get("proposed_relations") or []),
+        # Skippable, like relations and for the same reason: an unanswered
+        # year has a real empty outcome — no year stored, timeline unaffected.
+        "year_questions": year_questions(
+            state.get("extracted_entities") or [], set(state.get("year_settled") or [])
+        ),
+        # Skippable too, and the ONLY class not raised by this recording:
+        # these are siblings from earlier recordings who still have no parent.
+        # Skipping is recorded (parentage_asked_at) so it is asked once.
+        "parentage_questions": parentage_questions(state.get("parentage")),
+    }
+
+
 async def human_confirm_node(state: AnalysisState) -> dict:
     """ONE interrupt per recording, carrying every question it raises.
 
@@ -824,40 +862,30 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     whole of what was unclear about one recording, which is also the only
     scale at which a producer can tell a small misreading from a big one.
     """
-    identity_questions = list(state.get("names_to_check") or [])
-    pending_types = type_questions(state.get("extracted_entities") or [])
-    pending_relations = relation_questions(state.get("proposed_relations") or [])
-    pending_years = year_questions(
-        state.get("extracted_entities") or [], set(state.get("year_settled") or [])
-    )
-    pending_parentage = parentage_questions(state.get("parentage"))
-    if not (
-        identity_questions
-        or pending_types
-        or pending_relations
-        or pending_years
-        or pending_parentage
-    ):
+    payload = build_confirmation_payload(state)
+    identity_questions = payload["identity_questions"]
+    pending_types = payload["type_questions"]
+    pending_relations = payload["relation_questions"]
+    pending_years = payload["year_questions"]
+    pending_parentage = payload["parentage_questions"]
+    if not any(payload.values()):
+        # Reached only when the router and this node disagree, which they
+        # cannot now that both read build_confirmation_payload. Kept so the
+        # node is still correct if called directly.
         return {}
 
     answer = interrupt(
         {
-            "identity_questions": identity_questions,
-            "type_questions": pending_types,
-            # A THIRD class, and deliberately a different one: identity and
-            # type must be answered (both silent defaults are dangerous),
-            # while relations are skippable. An unanswered relation is simply
-            # not stored, which is the status quo and harmless.
-            "relation_questions": pending_relations,
-            # Skippable, like relations and for the same reason: an unanswered
-            # year has a real empty outcome — no year stored, timeline
-            # unaffected — so nothing is lost by leaving it blank.
-            "year_questions": pending_years,
-            # Skippable too, and the ONLY class not raised by this recording:
-            # these are siblings from earlier recordings who still have no
-            # parent. Skipping is recorded (parentage_asked_at) so it is asked
-            # once and never again.
-            "parentage_questions": pending_parentage,
+            **payload,
+            # NOT a question, and deliberately not part of `payload`: every
+            # entity this recording named, so any of them can be corrected.
+            # Counting it as a question would pause on every recording that
+            # named anybody; leaving it out of the screen means a confidently
+            # misheard name has nowhere to be fixed.
+            "editable_entities": [
+                {"name": e["name"], "type": e.get("type")}
+                for e in state.get("extracted_entities") or []
+            ],
         }
     )
 
@@ -885,7 +913,27 @@ async def human_confirm_node(state: AnalysisState) -> dict:
             # up in the extraction panel as two similar names and can be
             # merged later. Defaulting to "same" would silently attribute one
             # person's story to another with nothing in the UI to reveal it.
-            resolutions[name] = {"same_as_uuid": None, "resolved_name": name}
+            resolutions[name] = {
+                "same_as_uuid": None,
+                "resolved_name": corrected_name(name),
+            }
+
+    # Names the producer corrected outright. Applied BEFORE anything else
+    # reads a name, because two other things are keyed by it.
+    #
+    # The gap this closes: the extractor can be confidently wrong. "אליאן" came
+    # back as "ליאן" — a brand-new name with nothing similar to disambiguate
+    # against, so it raised no identity question and there was no screen on
+    # which it could be fixed. Confidence and correctness are different things.
+    raw_edits = answer.get("name_edits") or {}
+    name_edits = {
+        original: corrected.strip()
+        for original, corrected in raw_edits.items()
+        if isinstance(corrected, str) and corrected.strip() and corrected.strip() != original
+    }
+
+    def corrected_name(name: str) -> str:
+        return name_edits.get(name, name)
 
     # Types: rewrite the extraction the confirmed answer disagrees with, and
     # clear alternative_type either way — the question has been asked, so it
@@ -900,6 +948,7 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     entities = []
     for entity in state.get("extracted_entities") or []:
         entity = dict(entity)
+        original_name = entity["name"]
         if entity.get("alternative_type"):
             chosen = type_answers.get(entity["name"])
             if chosen in (entity["type"], entity["alternative_type"]):
@@ -910,12 +959,18 @@ async def human_confirm_node(state: AnalysisState) -> dict:
                 # indistinguishable and the answer is silently discarded.
                 entity["type_confirmed"] = True
             entity["alternative_type"] = None
-        if entity["name"] in asked_year_names:
+        if original_name in asked_year_names:
             # Stamped whether or not they answered — the stamp is what stops
             # the question coming back on every later recording.
             entity["year_asked"] = True
-            if entity["name"] in year_answers:
-                entity["year_start"] = year_answers[entity["name"]]
+            if original_name in year_answers:
+                entity["year_start"] = year_answers[original_name]
+        # Renamed LAST, so every answer above still matches the name the
+        # screen asked about. Writing it under the corrected name merges onto
+        # an existing entity if one already has it, which is the right
+        # outcome — a correction that splits the person in two would be worse
+        # than the misspelling.
+        entity["name"] = corrected_name(original_name)
         entities.append(entity)
 
     # Relations: keep only what was explicitly ACCEPTED. Anything else —
@@ -929,7 +984,16 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     # is why relations could be made skippable and identity could not.
     raw_relation_answers = answer.get("relations") or {}
     accepted = [
-        r
+        # Endpoints carry NAMES, and write_segment_relations resolves them by
+        # looking the entity up. Renaming an entity without rewriting the
+        # relations that point at it would leave those endpoints unresolvable
+        # — the relation would be dropped with a log line nobody reads, which
+        # is precisely the silent-failure shape to avoid.
+        {
+            **r,
+            "from_name": corrected_name(r["from_name"]),
+            "to_name": corrected_name(r["to_name"]),
+        }
         for i, r in enumerate(state.get("proposed_relations") or [])
         if raw_relation_answers.get(str(i)) is True
         or raw_relation_answers.get(i) is True
@@ -1105,16 +1169,13 @@ def _route_on_error(state: AnalysisState) -> str:
 
 
 def _has_confirmation_questions(state: AnalysisState) -> str:
-    """Whether this recording raises ANY question — identity or type.
+    """Whether this recording raises ANY question, of ANY class.
 
-    Both kinds route to the same single node, which is what makes the
-    confirmation batched rather than a sequence.
+    Reads build_confirmation_payload — the same function the node interrupts
+    with — so the gate cannot fall behind the questions again. See the comment
+    there for what happened when it did.
     """
-    if state.get("names_to_check"):
-        return "confirm"
-    if type_questions(state.get("extracted_entities") or []):
-        return "confirm"
-    return "skip"
+    return "confirm" if any(build_confirmation_payload(state).values()) else "skip"
 
 
 def build_graph(checkpointer):

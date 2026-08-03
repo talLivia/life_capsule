@@ -59,6 +59,9 @@ export function EntityConfirmModal({
   // archive, not names just pulled out of this recording.
   const [parentage, setParentage] = useState<Record<string, string[]>>({})
   const [newParent, setNewParent] = useState<Record<string, string>>({})
+  // Extracted name -> corrected name. Only entries the producer actually
+  // changed are sent; the server ignores blanks and no-ops as well.
+  const [nameEdits, setNameEdits] = useState<Record<string, string>>({})
   const answeringRef = useRef(false)
   const [answering, setAnswering] = useState(false)
 
@@ -94,6 +97,7 @@ export function EntityConfirmModal({
     setYears({})
     setParentage({})
     setNewParent({})
+    setNameEdits({})
   }, [pending?.segment_id])
 
   const identityQuestions = useMemo(
@@ -114,6 +118,10 @@ export function EntityConfirmModal({
   )
   const parentageQuestions = useMemo(
     () => pending?.pending_confirmation.parentage_questions ?? [],
+    [pending],
+  )
+  const editableEntities = useMemo(
+    () => pending?.pending_confirmation.editable_entities ?? [],
     [pending],
   )
 
@@ -154,6 +162,11 @@ export function EntityConfirmModal({
         ),
         years: Object.fromEntries(
           Object.entries(years).filter(([, v]) => v.trim()),
+        ),
+        name_edits: Object.fromEntries(
+          Object.entries(nameEdits).filter(
+            ([original, corrected]) => corrected.trim() && corrected.trim() !== original,
+          ),
         ),
         // Only siblings the producer actually answered for. An untouched one
         // is absent, which the server reads as a skip — it still stamps them
@@ -338,6 +351,52 @@ export function EntityConfirmModal({
                 </span>
               </button>
             ))}
+          </fieldset>
+        )}
+
+        {/* Every name this recording produced, editable.
+            NOT a question and never the reason this screen appears — it sits
+            at the top because it is the one thing here that can be wrong
+            without anything having asked. The extractor said "ליאן" for
+            "אליאן" with complete confidence: a brand-new name has nothing
+            similar to disambiguate against, so no identity question was
+            raised and there was no way to say it was wrong. */}
+        {editableEntities.length > 0 && (
+          <fieldset className="flex flex-col gap-2 pt-1 border-t border-white/10">
+            <legend className="text-sm text-white leading-relaxed mb-1">
+              Did we get these names right?
+            </legend>
+            <p className="text-xs text-gray-400 -mt-1 mb-1">
+              Fix any that were misheard. Leave the rest alone.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {editableEntities.map((entity) => {
+                const value = nameEdits[entity.name] ?? entity.name
+                const changed = value.trim() !== entity.name
+                return (
+                  <div key={`edit-${entity.name}`} className="flex flex-col gap-0.5">
+                    <input
+                      type="text"
+                      dir="auto"
+                      value={value}
+                      onChange={(e) =>
+                        setNameEdits((s) => ({ ...s, [entity.name]: e.target.value }))
+                      }
+                      disabled={answering}
+                      aria-label={`Name: ${entity.name}`}
+                      className={`w-36 px-3 py-1.5 rounded-lg bg-surface-800 border text-sm text-white ${
+                        changed ? 'border-primary-400' : 'border-white/10'
+                      }`}
+                    />
+                    {changed && (
+                      <span className="text-[10px] text-primary-300">
+                        was &ldquo;{entity.name}&rdquo;
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
           </fieldset>
         )}
 

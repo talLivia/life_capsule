@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app import analysis_graph as ag
 from app.models import Entity, EntityMention, InterviewSession, RawSegment
 from app.services import entity_extraction
+from app.services.entity_names import normalize_entity_name
 from app.services.entity_extraction import ExtractedEntity
 
 pytestmark = pytest.mark.asyncio
@@ -720,7 +721,19 @@ async def test_finalize_ingest_node_marks_failed_on_error(db_session, segment, m
 # ── Full-graph tests (real LangGraph, InMemorySaver) ────────────────────────
 
 
-async def _mock_all_llm_calls(monkeypatch, *, entity_candidates, entity_name="Gila"):
+async def _mock_all_llm_calls(
+    monkeypatch, *, entity_candidates, entity_name="Gila", years_settled=True
+):
+    """Mock the LLM calls, and by default settle every year question.
+
+    `years_settled` exists because Phase 3 widened year capture to ANY entity
+    without a year — so a recording that names one person raises a year
+    question and the pipeline correctly pauses. The tests below are about
+    other things, and would otherwise all stop at that pause.
+
+    Settling by default keeps each test about its own subject. Pass False to
+    assert the pause itself.
+    """
     async def fake_generate(messages, system_prompt=None, thinking=False, temperature=None):
         if system_prompt == ag._EXTRACT_TOPICS_SYSTEM_PROMPT:
             return '["childhood"]'
@@ -735,6 +748,13 @@ async def _mock_all_llm_calls(monkeypatch, *, entity_candidates, entity_name="Gi
         ag.entity_store, "get_entity_candidates", AsyncMock(return_value=entity_candidates)
     )
     monkeypatch.setattr(ag.embeddings, "embed_text", AsyncMock(return_value=[0.1, 0.2, 0.3]))
+
+    async def settled(_db, _producer_id, names):
+        if not years_settled:
+            return set()
+        return {normalize_entity_name(n) for n in names}
+
+    monkeypatch.setattr(ag.entity_store, "names_with_year_settled", settled)
 
 
 async def test_full_pipeline_no_ambiguity_reaches_ready(
@@ -906,12 +926,18 @@ async def test_full_pipeline_asks_identity_and_type_in_ONE_interrupt(
     assert entities == {"Gila Cohen": "person", "הכפר הירוק": "organisation"}
 
 
-async def test_a_recording_with_no_ambiguity_never_pauses(
+async def test_a_recording_that_raises_nothing_at_all_never_pauses(
     db_session, segment, analysis_session_factory, fake_checkpointer, monkeypatch
 ):
     """Asking about everything trains the producer to click through without
-    reading, which is worse than not asking. A clear classification and a
-    brand-new name together must produce no screen at all."""
+    reading, which is worse than not asking.
+
+    RENAMED, and the rename is the point. This used to say "no ambiguity",
+    meaning no identity and no type question — and it passed for months while
+    relation, year and parentage questions were silently skipped, because the
+    router knew about those two classes only. "No ambiguity" was never enough
+    to justify not pausing; "nothing to ask, of any kind" is.
+    """
     await _mock_all_llm_calls(monkeypatch, entity_candidates=[])
 
     result = await ag.run_segment_analysis(segment.id)
@@ -920,6 +946,29 @@ async def test_a_recording_with_no_ambiguity_never_pauses(
     await db_session.refresh(segment)
     assert segment.status == "ready"
     assert segment.pending_confirmation is None
+
+
+async def test_a_year_question_alone_is_enough_to_pause(
+    db_session, segment, analysis_session_factory, fake_checkpointer, monkeypatch
+):
+    """The regression guard at pipeline level.
+
+    A recording naming one person with no year and no ambiguity must still
+    stop and ask. Before the router read every question class it did not, and
+    the live consequence was measurable: not one entity in the archive had
+    ever been asked for a year, months after year capture shipped.
+    """
+    await _mock_all_llm_calls(monkeypatch, entity_candidates=[], years_settled=False)
+
+    result = await ag.run_segment_analysis(segment.id)
+
+    assert "__interrupt__" in result
+    payload = result["__interrupt__"][0].value
+    assert payload["identity_questions"] == []
+    assert payload["type_questions"] == []
+    assert [q["name"] for q in payload["year_questions"]] == ["Gila"]
+    await db_session.refresh(segment)
+    assert segment.status == "pending_confirmation"
 
 
 async def test_full_pipeline_entity_write_failure_reaches_failed(

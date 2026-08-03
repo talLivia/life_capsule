@@ -464,6 +464,12 @@ class EntityBatchConfirmRequest(BaseModel):
     # names just extracted from this recording — the id is what identifies
     # them, and two siblings could share a first name.
     parentage: Dict[str, "ParentageAnswer"] = Field(default_factory=dict)
+    # Extracted name -> what it should actually say. Skippable, and unlike
+    # every other field here it answers no question: the extractor can be
+    # CONFIDENTLY wrong, and a name it never doubted raises nothing to
+    # disambiguate against. Validated against the names this recording
+    # actually produced, so a correction cannot invent an entity.
+    name_edits: Dict[str, str] = Field(default_factory=dict)
 
 
 class PendingConfirmationResponse(BaseModel):

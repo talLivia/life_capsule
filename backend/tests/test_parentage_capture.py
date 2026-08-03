@@ -15,6 +15,8 @@ Two rules carry most of these tests:
     siblings), so it is only ever written from a ticked box.
 """
 
+import asyncio
+
 import pytest
 from datetime import datetime, timezone
 
@@ -329,3 +331,157 @@ async def test_the_answer_makes_the_tree_draw_the_sibling(db_session, family):
     # and still exactly one row for them
     row0 = next(g for g in after["generations"] if g["generation"] == 0)
     assert sorted(p["name"] for p in row0["people"]) == ["Root Person", "Sib"]
+
+
+# ── the router must never fall behind the questions ───────────────────────
+#
+# The bug these exist for: _has_confirmation_questions checked identity and
+# type only, while the interrupt carried relations, years and parentage too.
+# A recording raising none of the first two skipped confirmation entirely —
+# and because the node is what narrows proposed_relations to the accepted
+# subset, finalize wrote every proposed relation unasked. It looked exactly
+# like success.
+
+
+def test_the_router_asks_about_every_class_the_payload_carries():
+    """The structural guard. If a sixth class is added to the payload and the
+    router cannot see it, this fails — which is the whole point."""
+    from app.analysis_graph import _has_confirmation_questions, build_confirmation_payload
+
+    for key, state in [
+        ("identity_questions", {"names_to_check": [{"name": "A", "candidates": []}]}),
+        (
+            "type_questions",
+            {"extracted_entities": [
+                {"name": "A", "type": "place", "alternative_type": "organisation"}
+            ]},
+        ),
+        (
+            "relation_questions",
+            {"proposed_relations": [
+                {"from_name": "A", "to_name": "B", "relation_type": "sibling"}
+            ]},
+        ),
+        ("year_questions", {"extracted_entities": [{"name": "A", "type": "event"}]}),
+        (
+            "parentage_questions",
+            {"parentage": {
+                "parents": [{"id": "p", "name": "P"}],
+                "siblings": [{"id": "s", "name": "S"}],
+            }},
+        ),
+    ]:
+        payload = build_confirmation_payload(state)
+        assert payload[key], f"{key} should be raised by this state"
+        assert _has_confirmation_questions(state) == "confirm", (
+            f"router skips confirmation despite {key} — relations would be "
+            f"written without consent"
+        )
+
+
+def test_a_recording_that_raises_nothing_still_skips():
+    """The router must not pause on every recording either — a screen with no
+    questions is a click the producer has to make for nothing.
+
+    Note what "nothing" takes: Phase 3 widened year capture to any entity
+    missing a year, so a bare person DOES raise a question the first time.
+    Silence means every name is already settled.
+    """
+    from app.analysis_graph import _has_confirmation_questions
+
+    assert _has_confirmation_questions(
+        {
+            "extracted_entities": [{"name": "A", "type": "person"}],
+            "year_settled": ["a"],
+        }
+    ) == "skip"
+    assert _has_confirmation_questions({}) == "skip"
+
+
+def test_relations_alone_are_enough_to_pause():
+    """The exact live case: ten proposed relations, no identity or type
+    ambiguity. Before the fix this skipped and wrote all ten unconfirmed."""
+    from app.analysis_graph import _has_confirmation_questions, build_confirmation_payload
+
+    state = {
+        "extracted_entities": [
+            {"name": n, "type": "person"} for n in ("צבי", "אילנה", "ניר", "חן")
+        ],
+        "proposed_relations": [
+            {"from_name": "צבי", "to_name": "__SELF__", "relation_type": "parent"},
+            {"from_name": "ניר", "to_name": "__SELF__", "relation_type": "sibling"},
+        ],
+    }
+    assert _has_confirmation_questions(state) == "confirm"
+    assert not build_confirmation_payload(state)["identity_questions"]
+    assert not build_confirmation_payload(state)["type_questions"]
+    assert len(build_confirmation_payload(state)["relation_questions"]) == 2
+
+
+# ── correcting a misheard name ────────────────────────────────────────────
+#
+# Real case: "אליאן" was transcribed "ליאן". A brand-new name has nothing
+# similar to disambiguate against, so it raised no identity question — the
+# extractor was confident and wrong, and there was nowhere to say so.
+
+
+def _confirm_state():
+    return {
+        "extracted_entities": [
+            {"name": "ליאן", "type": "person"},
+            {"name": "ניר", "type": "person"},
+        ],
+        "proposed_relations": [
+            {"from_name": "ליאן", "to_name": "ניר", "relation_type": "child"},
+        ],
+        "year_settled": ["ליאן", "ניר"],
+    }
+
+
+def test_a_corrected_name_rewrites_the_entity(monkeypatch):
+    from app import analysis_graph
+
+    captured = {}
+
+    def fake_interrupt(payload):
+        captured["payload"] = payload
+        return {"relations": {"0": True}, "name_edits": {"ליאן": "אליאן"}}
+
+    monkeypatch.setattr(analysis_graph, "interrupt", fake_interrupt)
+    out = asyncio.run(analysis_graph.human_confirm_node(_confirm_state()))
+    names = [e["name"] for e in out["extracted_entities"]]
+    assert "אליאן" in names and "ליאן" not in names
+    # every extracted name is offered for correction, not just ambiguous ones
+    assert {e["name"] for e in captured["payload"]["editable_entities"]} == {"ליאן", "ניר"}
+
+
+def test_a_corrected_name_follows_into_its_relations(monkeypatch):
+    """The failure this prevents: relation endpoints are NAMES, resolved by
+    lookup at write time. Renaming the entity without rewriting them leaves
+    the endpoint unresolvable and the relation silently dropped."""
+    from app import analysis_graph
+
+    monkeypatch.setattr(
+        analysis_graph,
+        "interrupt",
+        lambda payload: {"relations": {"0": True}, "name_edits": {"ליאן": "אליאן"}},
+    )
+    out = asyncio.run(analysis_graph.human_confirm_node(_confirm_state()))
+    assert out["proposed_relations"] == [
+        {"from_name": "אליאן", "to_name": "ניר", "relation_type": "child"}
+    ]
+
+
+def test_an_unchanged_or_blank_edit_is_not_a_correction(monkeypatch):
+    from app import analysis_graph
+
+    monkeypatch.setattr(
+        analysis_graph,
+        "interrupt",
+        lambda payload: {
+            "relations": {"0": True},
+            "name_edits": {"ליאן": "  ", "ניר": "ניר"},
+        },
+    )
+    out = asyncio.run(analysis_graph.human_confirm_node(_confirm_state()))
+    assert sorted(e["name"] for e in out["extracted_entities"]) == sorted(["ליאן", "ניר"])

@@ -271,6 +271,9 @@ export interface PendingConfirmation {
     relation_questions?: RelationQuestion[]
     year_questions?: YearQuestion[]
     parentage_questions?: ParentageQuestion[]
+    /** Not a question — every name this recording produced, so any of them
+     *  can be corrected. Never causes the screen to appear on its own. */
+    editable_entities?: { name: string; type?: string | null }[]
   }
 }
 
@@ -307,6 +310,9 @@ export interface EntityBatchAnswer {
    *  say nothing. Keyed by id rather than name because, unlike every other
    *  class, these are people already in the archive. */
   parentage?: Record<string, { parent_ids: string[]; new_parent_name?: string }>
+  /** Extracted name -> what it should say. The extractor can be CONFIDENTLY
+   *  wrong, and a name it never doubted raises no question to answer. */
+  name_edits?: Record<string, string>
   identity: Record<string, { same_as_existing: boolean; candidate_uuid?: string }>
   types: Record<string, string>
 }

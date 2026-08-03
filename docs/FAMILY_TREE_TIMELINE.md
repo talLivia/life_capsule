@@ -1226,3 +1226,73 @@ Steps 2/5 and 3/4/6 are independent; either can land first.
   written without the producer ticking the box.
 - No editing of parentage once answered; that is the read-only rule in 5.
 - No back-fill script. The backlog clears through the normal flow.
+
+### 8.7 🚨 The router that never learned about the questions — fixed 2026-08-03
+
+Found by a real recording that raised ten relations and asked about none of
+them. `_has_confirmation_questions`, the gate deciding whether the graph enters
+`human_confirm_node`, checked **identity and type only** — unchanged since
+"Chunk 4: batched entity confirmation", while relations (Phase 2), years
+(Phase 3) and parentage (Phase 6) were each added to the interrupt payload.
+
+A recording raising no identity or type ambiguity routed straight past
+confirmation. And because that node is what narrows `proposed_relations` to the
+**accepted** subset, `finalize_ingest` then wrote every proposed relation
+unasked. Measured on the live archive:
+
+- **10 relations written with no consent**, `pending_confirmation` NULL.
+- **0 entities had ever been asked for a year** — 19 entities, months after
+  year capture shipped. Phase 3 had never once fired in production.
+- Parentage could never have fired either.
+
+It looked exactly like success: a recording that ingests cleanly and shows no
+questions. Nothing to notice.
+
+**The fix is structural, not a longer list.** `build_confirmation_payload` is
+now the single source both the router and the node read, so a class that is
+asked about necessarily gates the route. A sixth class added anywhere else does
+not exist. Same shape, and same reason, as sharing `_chosen_option` between
+`resolve_steps` and `category_is_settled`.
+
+Guarded by `test_the_router_asks_about_every_class_the_payload_carries`, which
+walks every key in the payload and fails if the router disagrees about any one
+of them, plus a pipeline-level test that a year question **alone** pauses.
+
+Verified by replaying the exact recording: before, routed `skip` and wrote ten
+relations; after, paused with 10 relation, 10 year and 4 parentage questions
+and 10 editable names, without reaching finalize.
+
+**Two tests had been encoding the bug.** `test_a_recording_with_no_ambiguity_
+never_pauses` asserted precisely the broken behaviour and passed throughout.
+Renamed to `..._that_raises_nothing_at_all_...`: "no ambiguity" was never a
+reason not to pause, and naming it that way is what let three phases of
+questions go missing without a single red test.
+
+### 8.8 Correcting a misheard name — 2026-08-03
+
+`ליאן` for `אליאן`. A brand-new name has nothing similar to disambiguate
+against, so it raised no identity question — the extractor was confident and
+wrong, and there was nowhere to say so. Identity questions only ever offered
+"same as X / someone new", never free text.
+
+Every extracted name is now editable on the confirmation screen. It rides in
+the payload as `editable_entities` and is deliberately **not** part of
+`build_confirmation_payload`: counting it as a question would pause on every
+recording that named anybody.
+
+A rename rewrites the entity **and every relation endpoint pointing at it**.
+Endpoints are names resolved by lookup at write time, so renaming without that
+would leave them unresolvable and the relation dropped with a log line nobody
+reads — the same silent-failure shape as everything else in this file.
+
+*Known limit:* a recording that raises no questions shows no screen, so there
+is nowhere to correct a name on it. Rare now that any unsettled year pauses,
+but real.
+
+### 8.9 `aunt_uncle` is a tree edge — 2026-08-03
+
+"יש לי דודים אמנון ועדל" extracted correctly and both landed in "not yet
+placed", because the type had `is_tree_edge=False` and a NULL delta. An aunt
+or uncle is a sibling of a parent — the parents' row, one generation up.
+Migration `0018`. This is a GENERATION offset and not a claim about parentage:
+the row is shared, the edges are not.

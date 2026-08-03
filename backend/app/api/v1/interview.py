@@ -595,6 +595,9 @@ async def confirm_entities(
     parentage_questions = {
         q["entity_id"]: q for q in pending.get("parentage_questions") or []
     }
+    # Not a question — the full list of names this recording produced, any of
+    # which may be corrected.
+    editable_names = {e["name"] for e in pending.get("editable_entities") or []}
 
     # Staleness, both directions. An answer to a name this screen never asked
     # about means the client is answering a payload the pipeline has moved
@@ -608,6 +611,7 @@ async def confirm_entities(
         | (set(payload.relations) - set(relation_questions))
         | (set(payload.years) - set(year_questions))
         | (set(payload.parentage) - set(parentage_questions))
+        | (set(payload.name_edits) - editable_names)
     )
     if unknown:
         raise HTTPException(
@@ -708,6 +712,12 @@ async def confirm_entities(
             # entity id and attach a stranger as somebody's parent — the store
             # filters again, but a bad id should be refused, not dropped.
             "parentage": parentage_answers,
+            # Blank means "leave it" — only real, changed text is a correction.
+            "name_edits": {
+                original: corrected.strip()
+                for original, corrected in payload.name_edits.items()
+                if corrected.strip() and corrected.strip() != original
+            },
         },
     )
 

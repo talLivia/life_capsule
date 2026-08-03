@@ -147,7 +147,20 @@ export function ExtractionModal({
               {title}
             </h2>
           </div>
-          <button onClick={onClose} className="btn-icon shrink-0" aria-label="Close">
+          <button
+            onClick={onClose}
+            className="btn-icon shrink-0"
+            aria-label={
+              data?.still_processing
+                ? 'Close — we’ll bring back any questions when this finishes'
+                : 'Close'
+            }
+            title={
+              data?.still_processing
+                ? 'We’ll bring back any questions when this finishes'
+                : undefined
+            }
+          >
             <X size={16} />
           </button>
         </div>
@@ -170,15 +183,29 @@ export function ExtractionModal({
           {data && !loading && !error && (
             <>
               {data.still_processing && (
-                // "We haven't looked yet" and "we found nothing" look
-                // identical otherwise, and they mean opposite things. When the
-                // screen opened itself we can say which stage is running,
-                // which is the difference between working and stuck.
-                <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-sm">
-                  <Loader2 size={16} className="animate-spin shrink-0" />
-                  {data.progress_label
-                    ? `${data.progress_label}…`
-                    : 'Still being processed — what’s below may be incomplete.'}
+                // Three things at once, because the producer needs all three:
+                // WHAT is happening (the stage), that it is still happening
+                // (the spinner), and that questions may follow.
+                //
+                // The last one is the part that was missing. The screen is
+                // dismissible on purpose — a producer who only wants to record
+                // must never be trapped — but nothing distinguished "done, you
+                // may go" from "still working, questions are coming", so
+                // leaving looked like the expected move.
+                <div className="flex flex-col gap-2 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-sm">
+                  <div className="flex items-center gap-3">
+                    <Loader2 size={16} className="animate-spin shrink-0" />
+                    <span>
+                      {data.progress_label
+                        ? `${data.progress_label}…`
+                        : 'Reading your recording…'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-amber-300/80 leading-relaxed">
+                    Hang on a moment — if anything needs checking, we&apos;ll ask you
+                    as soon as this finishes. You can close this and keep recording;
+                    the questions will still find you.
+                  </p>
                 </div>
               )}
 
