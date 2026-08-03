@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, HelpCircle, Loader2, Network, User as UserIcon, X } from 'lucide-react'
+import { FamilyTreeGraph } from '@/components/FamilyTreeGraph'
 import { api } from '@/lib/api'
 import type { ApiError, EntityMoment, FamilyTree, TreePerson } from '@/lib/types'
 
@@ -21,6 +22,10 @@ import type { ApiError, EntityMoment, FamilyTree, TreePerson } from '@/lib/types
  *   * an empty tree says so and explains where relations come from, rather
  *     than rendering a blank canvas that looks broken.
  */
+
+// Must match NODE_H + ROW_GAP in FamilyTreeGraph, or the row labels drift out
+// of step with the rows they name.
+const GENERATION_ROW_HEIGHT = 58 + 104
 
 const GENERATION_LABELS: Record<number, string> = {
   [-2]: 'Grandparents',
@@ -157,23 +162,35 @@ export function FamilyTreePanel() {
               </p>
             </div>
           ) : (
-            tree.generations.map((row) => (
-              <section key={row.generation} className="glass-card p-4">
-                <h2 className="text-xs uppercase tracking-wide text-primary-400 font-semibold mb-2.5">
-                  {generationLabel(row.generation)}
-                </h2>
-                <div className="flex flex-wrap gap-2">
-                  {row.people.map((person) => (
-                    <PersonChip
-                      key={person.id}
-                      person={person}
-                      selected={selected?.id === person.id}
-                      onSelect={selectPerson}
-                    />
+            <section className="glass-card p-4">
+              {/* Row labels live beside the chart rather than as headings over
+                  card groups — the drawn lines are what carry the structure
+                  now, and repeating it as headers would say it twice. */}
+              <div className="flex items-start gap-3">
+                <ol className="flex flex-col shrink-0 pt-[20px]" aria-hidden>
+                  {tree.generations.map((row) => (
+                    <li
+                      key={row.generation}
+                      style={{ height: GENERATION_ROW_HEIGHT }}
+                      className="text-[10px] uppercase tracking-wide text-gray-500 whitespace-nowrap"
+                    >
+                      {generationLabel(row.generation)}
+                    </li>
                   ))}
-                </div>
-              </section>
-            ))
+                </ol>
+                <FamilyTreeGraph
+                  tree={tree}
+                  selectedId={selected?.id ?? null}
+                  onSelect={selectPerson}
+                />
+              </div>
+              <p className="text-[11px] text-gray-500 mt-3 leading-relaxed">
+                Solid lines are recorded parent–child relations; dashed lines are
+                siblings and partners. Only relations you&apos;ve confirmed are
+                drawn — siblings connect to you rather than up to your parents,
+                because that&apos;s what your recordings actually say.
+              </p>
+            </section>
           )}
 
           {/* Not an error and not hidden: these are real people the producer

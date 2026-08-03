@@ -671,6 +671,40 @@ sub-bubbles will use (§3), so the two pages cannot drift.
 
 14 new tests (707 total).
 
+#### Phase 4a — drawn as a node graph, not grouped cards — 2026-08-03
+
+`FamilyTreeGraph` replaced the per-generation card groups with hand-built SVG:
+nodes positioned by generation, connections drawn as lines. **Rendering layer
+only** — `family_tree.py` decides who sits where and was not touched.
+
+**No graph library, deliberately.** A family tree is a DAG (two parents, one
+child), so `d3-hierarchy` and `react-d3-tree` — which assume one parent per
+node — do not model it. The hard part, generation assignment, already happened
+server-side; what is left is arithmetic over rows. Scale is ~9 nodes. A library
+would flip this only for pan/zoom over hundreds of nodes with automatic overlap
+avoidance. No new dependency.
+
+**The never-guesses rule reappeared at the rendering layer**, which was not
+obvious until the geometry was checked against live data. The producer's four
+siblings are each recorded as a sibling *of the producer*, and the producer
+sits at column 0 with the siblings at 1-4. Drawn as straight horizontal lines,
+three of those connectors pass **behind** the nodes in between, and what a
+reader sees is a chain חן–ניר–עדי–רז — four relations nobody recorded.
+Occlusion is not neutral: a hidden line segment still reads as a connection
+between the two things it visibly touches. Same-row edges spanning more than
+one column now detour below the row, nesting at depths 14/23/32, all of which
+stay above the midline where descent lines run across.
+
+For the same reason siblings connect to the **producer**, not up to the
+parents. "ניר is my brother" and "צבי is my father" are separate facts, and
+nothing states that ניר is צבי's child. A conventional genealogy chart would
+draw those edges anyway.
+
+Verified by replicating the layout maths against the live tree rather than by
+eye: no overlapping nodes, no edge with an unplaced endpoint, no connector
+drawn through a node, and the panel's row-label pitch equal to the SVG's row
+pitch (162px — they are separate constants and would silently drift apart).
+
 ### Phase 4 — family tree page (original plan)
 
 Read-only. New `View` + nav item + lazy panel, dark design system.
