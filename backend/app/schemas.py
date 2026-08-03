@@ -281,6 +281,76 @@ class ConfirmEntitiesResponse(BaseModel):
     rejected_years: List[RejectedYear] = Field(default_factory=list)
 
 
+# ── Family tree (docs/FAMILY_TREE_TIMELINE.md Phase 4) ───────────────────
+
+
+class TreePerson(BaseModel):
+    id: str
+    name: str
+    is_self: bool
+    year_start: Optional[int] = None
+    year_end: Optional[int] = None
+    # None for anyone with no family path to the root — see TreeResponse.
+    generation: Optional[int] = None
+
+
+class TreeGeneration(BaseModel):
+    """One row. Negative is up the tree (ancestors), 0 is the producer."""
+
+    generation: int
+    people: List[TreePerson]
+
+
+class TreeEdge(BaseModel):
+    from_id: str
+    to_id: str
+    relation_type: str
+    label_en: str
+    label_he: str
+    # The recording that established this relation, so "brother" can play the
+    # producer saying so.
+    source_segment_id: str
+
+
+class TreeContradiction(BaseModel):
+    """Two recordings that disagree about where somebody sits.
+
+    Surfaced rather than resolved: the first (shortest-path) placement stands,
+    and this says which edge was not drawn and what it implied instead."""
+
+    from_id: str
+    to_id: str
+    relation_type: str
+    source_segment_id: str
+    kept_generation: int
+    implied_generation: int
+
+
+class TreeResponse(BaseModel):
+    root_id: Optional[str] = None
+    generations: List[TreeGeneration] = Field(default_factory=list)
+    # Real people with no family path to the root. Kept separate so nobody is
+    # dropped and nobody is placed in a row they were never shown to belong to.
+    unplaced: List[TreePerson] = Field(default_factory=list)
+    edges: List[TreeEdge] = Field(default_factory=list)
+    contradictions: List[TreeContradiction] = Field(default_factory=list)
+    # Tree-bearing relation types with no generation_delta. Their people end up
+    # unplaced rather than guessed into a row.
+    missing_generation_delta: List[str] = Field(default_factory=list)
+
+
+class EntityMomentResponse(BaseModel):
+    """A recording that mentions a person — video, transcript, and the
+    interview question as its title."""
+
+    segment_id: str
+    question_asked: str
+    question_id: Optional[str] = None
+    video_url: Optional[str] = None
+    transcript: Optional[str] = None
+    summary: Optional[str] = None
+
+
 class ExtractedEntityResponse(BaseModel):
     name: str
     summary: Optional[str] = None

@@ -626,7 +626,52 @@ slip without blocking the timeline.
   and must **refuse rather than guess** — a wrong year silently reorders a life.
 - Writes `year_start`/`year_end` on `entities`.
 
-### Phase 4 — family tree page
+### ✅ Phase 4 — family tree page — DONE 2026-08-03
+
+`app/services/family_tree.py`, `GET /api/v1/entities/tree`,
+`GET /api/v1/entities/{id}/moments`, and `FamilyTreePanel` as a new shell view.
+Read-only throughout.
+
+Renders from the live archive today:
+
+```
+row -1  (parents)         אילנה, צבי
+row  0  (you + siblings)  ▶ Tal Nahum, חן, ניר, עדי, רז
+not yet placed            איציק כהן, רוני כהן
+```
+
+**Generation offsets live in `relation_types.generation_delta`** (migration
+`0016`), not in a map in the layout code. `is_tree_edge` was already in that
+table, so how far a relation moves belongs there too — and adding a
+tree-bearing type must not require editing a layout module to make it draw.
+Not derivable from the existing columns: `is_symmetric` gets sibling and
+spouse to zero, but parent and grandparent are both directional and differ.
+
+**Every "never guess" case is real, not defensive:**
+
+| case | what happens |
+| --- | --- |
+| no family path to the root | own **"Mentioned, not yet placed"** section — hits the live archive today |
+| tree type with no `generation_delta` | person left unplaced, type reported; assuming 0 would put a step-parent in the producer's own row |
+| recordings that disagree | first (shortest-path) placement stands, conflicting edge **reported** |
+| a cycle | terminates |
+| no self-entity | empty tree, everyone unplaced — generation is meaningless without a root |
+| no relations at all | empty state explaining that family comes from recording |
+
+Edges are walked in **both** directions, since the schema stores one directed
+row and derives the inverse at read time — a from→to-only walk would never
+reach a parent from their child and every ancestor would come back unplaced.
+
+**§2.4 resolved:** the nav item shows even with an empty tree. Hiding it would
+hide the only place a producer learns that family comes from recording.
+
+Clicking a person plays their moments — video, transcript, and the interview
+question as the title. That endpoint is deliberately the one the timeline's
+sub-bubbles will use (§3), so the two pages cannot drift.
+
+14 new tests (707 total).
+
+### Phase 4 — family tree page (original plan)
 
 Read-only. New `View` + nav item + lazy panel, dark design system.
 

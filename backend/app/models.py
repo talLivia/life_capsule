@@ -593,6 +593,13 @@ class RelationType(Base):
     # NULL for symmetric types — 'sibling' inverted is still 'sibling'.
     inverse_type = Column(String, nullable=True)
     is_symmetric = Column(Boolean, nullable=False)
+    # How many generation rows this relation moves: -1 for parent, -2 for
+    # grandparent, 0 for sibling and spouse. Not derivable from the columns
+    # above — parent and grandparent are both directional and differ — so the
+    # tree reads it from here rather than a map in the layout code. NULL for
+    # non-tree types, and a tree type left NULL is reported as unplaceable
+    # rather than guessed. See migration 0016.
+    generation_delta = Column(Integer, nullable=True)
     label_en = Column(String, nullable=False)
     label_he = Column(String, nullable=False)
 

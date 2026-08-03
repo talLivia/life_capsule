@@ -42,6 +42,11 @@ const SettingsPanel = dynamic(
 )
 // Recording is now an in-shell view (like Settings) rather than a separate
 // /record route — see the `record` view below. The old route redirects here.
+const FamilyTreePanel = dynamic(
+  () => import('@/components/FamilyTreePanel').then(m => m.FamilyTreePanel),
+  { ssr: false, loading: () => <PanelLoader label="Building your family tree…" /> },
+)
+
 const RecordPanel = dynamic(
   () => import('@/components/RecordPanel').then(m => m.RecordPanel),
   { ssr: false, loading: () => <PanelLoader label="Loading your story…" /> },
@@ -71,6 +76,7 @@ import {
   History,
   Settings,
   Feather,
+  Network,
 } from 'lucide-react'
 
 const FEATURES = [
@@ -125,7 +131,7 @@ const STATS = [
   { value: '100%', label: 'Self-hostable' },
 ]
 
-type View = 'home' | 'avatars' | 'chat' | 'voice' | 'history' | 'settings' | 'record'
+type View = 'home' | 'avatars' | 'chat' | 'voice' | 'history' | 'settings' | 'record' | 'tree'
 
 export default function Home() {
   const { isAuthenticated, user, clearAuth } = useStore()
@@ -236,6 +242,10 @@ export default function Home() {
     { id: 'home', icon: Sparkles, label: 'Home' },
     // Recording lives inside the shell now (was the /record route). Producer-only.
     ...(isProducerUser ? [{ id: 'record' as View, icon: Feather, label: 'Record' }] : []),
+    // Shown even with no relations captured yet: the empty state is where a
+    // producer learns that family comes from recording, so hiding it would
+    // hide the only explanation of how to fill it.
+    ...(isProducerUser ? [{ id: 'tree' as View, icon: Network, label: 'Family' }] : []),
     ...(isVideoClipMode
       ? []
       : [
@@ -529,6 +539,8 @@ export default function Home() {
             <RecordPanel />
           </div>
         )}
+
+        {view === 'tree' && <FamilyTreePanel />}
       </main>
     </div>
   )

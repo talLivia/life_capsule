@@ -325,6 +325,18 @@ export const api = {
     return response.data
   },
 
+  getFamilyTree: async () => {
+    const response = await apiClient.get('/api/v1/entities/tree')
+    return response.data
+  },
+
+  /** The recordings that mention one person — clicking a name in the tree.
+   *  Shared with the timeline's sub-bubbles so the two cannot drift. */
+  getEntityMoments: async (entityId: string) => {
+    const response = await apiClient.get(`/api/v1/entities/${entityId}/moments`)
+    return response.data
+  },
+
   getInterviewFlow: async () => {
     const response = await apiClient.get('/api/v1/interview/flow')
     return response.data

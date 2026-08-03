@@ -310,6 +310,63 @@ export interface ConfirmEntitiesResult {
   rejected_years: RejectedYear[]
 }
 
+// ── Family tree (docs/FAMILY_TREE_TIMELINE.md Phase 4) ───────────────────
+
+export interface TreePerson {
+  id: string
+  name: string
+  is_self: boolean
+  year_start?: number | null
+  year_end?: number | null
+  /** null for anyone with no family path to the root — see `unplaced`. */
+  generation?: number | null
+}
+
+export interface TreeGeneration {
+  /** Negative is up the tree (ancestors), 0 is the producer. */
+  generation: number
+  people: TreePerson[]
+}
+
+export interface TreeEdge {
+  from_id: string
+  to_id: string
+  relation_type: string
+  label_en: string
+  label_he: string
+  /** The recording that established it — "brother" can play them saying so. */
+  source_segment_id: string
+}
+
+export interface TreeContradiction {
+  from_id: string
+  to_id: string
+  relation_type: string
+  source_segment_id: string
+  kept_generation: number
+  implied_generation: number
+}
+
+export interface FamilyTree {
+  root_id?: string | null
+  generations: TreeGeneration[]
+  /** Real people with no family path to the root. Shown separately so nobody
+   *  is dropped and nobody is placed in a row they don't belong to. */
+  unplaced: TreePerson[]
+  edges: TreeEdge[]
+  contradictions: TreeContradiction[]
+  missing_generation_delta: string[]
+}
+
+export interface EntityMoment {
+  segment_id: string
+  question_asked: string
+  question_id?: string | null
+  video_url?: string | null
+  transcript?: string | null
+  summary?: string | null
+}
+
 export interface ApiError {
   response?: {
     data?: {
