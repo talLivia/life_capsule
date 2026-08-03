@@ -627,9 +627,40 @@ producer re-navigate? Check the live count before deciding.
    rather than the positional index.
 
    635 tests pass; `tsc`, `eslint` and `next build` clean.
-6. **Cutover + verification.** Replace `interview_questions.json`, confirm all
-   16 existing recordings still resolve to a category and the timeline
-   grouping is unchanged.
+6. ✅ **Cutover — DONE 2026-08-03.** `interview_questions.json` IS the v2
+   content now (16 categories, 129 questions). The separate
+   `interview_questions_v2.json` is gone — one file, no duplicate to drift.
+
+   **Verification, before vs after, machine-diffed and identical:**
+
+   | | before | after |
+   | --- | --- | --- |
+   | schema_version | 1 | 2 |
+   | categories / questions | 5 / 12 | 16 / 129 |
+   | recordings resolving to a category | **16 / 16** | **16 / 16** |
+   | unresolved | 0 | 0 |
+   | timeline grouping | career 2, childhood 3, military_service 4, post_military 4, relationships 3 | **identical** |
+   | timeline sub-bubbles | (per category) | **identical** |
+
+   The `retired` block is what carries that: all 12 outgoing question ids still
+   resolve, including `post_military`, which has no equivalent category in the
+   new set and holds 4 recordings until they are rehomed manually (§8.2).
+
+   **⚠️ The producer's interview now reads as unstarted (0/23 in the first
+   category), and that is correct.** The 16 existing recordings answered
+   questions that no longer exist; the 129 new ones genuinely have not been
+   answered. The old footage is untouched, still in the archive, and still on
+   the timeline — it simply does not count as answering questions it was never
+   an answer to.
+
+   Four stale tests were updated rather than deleted, each keeping what it was
+   actually guarding: the reorder-safety fixture rebuilt in v2 shape, the v1
+   adapter test switched to an explicit v1 fixture (the live file is no longer
+   one), the retired-vs-live distinction asserted directly, and the endpoint's
+   hardcoded count of 12 replaced with a comparison against `interview_config`
+   — a literal there would only ever mean "the content was edited".
+
+   635 tests pass.
 
 Phases 1–4 are invisible to the producer; the flow keeps working on the old
 content until step 6.

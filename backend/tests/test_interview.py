@@ -86,9 +86,14 @@ async def test_list_questions_default_hebrew(client: AsyncClient, auth_headers):
     response = await client.get("/api/v1/interview/questions", headers=auth_headers)
     assert response.status_code == 200
     questions = response.json()
-    assert len(questions) == 12
+    # Compared against interview_config rather than a literal: the question set
+    # is content and changes, and a hardcoded count would only ever mean "the
+    # content was edited", which is not a failure worth reporting.
+    from app.interview_config import get_questions
+
+    assert len(questions) == len(get_questions("he"))
     assert questions[0]["index"] == 0
-    assert questions[0]["category"] == "childhood"
+    assert questions[0]["category"] == get_questions("he")[0]["category"]
     assert all("text" in q and q["text"] for q in questions)
 
 

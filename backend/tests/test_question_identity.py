@@ -11,26 +11,46 @@ These pin the two things that prevent that: category is derived from the stable
 anywhere in code.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 
 from app import interview_config
 
+V2_PATH = Path(__file__).resolve().parent.parent / "app" / "interview_questions.json"
+
 
 @pytest.fixture
 def reordered_catalog(monkeypatch):
-    """Simulate the question-set edit that is actually coming: new questions
-    inserted at the front, shifting every later index."""
+    """Simulate a question-set edit: a new category inserted at the FRONT,
+    shifting every later question's position.
+
+    Built as a v2 document, since that is now the live format. The property
+    under test is unchanged and is the whole reason question_id exists —
+    positions move, ids do not.
+    """
     original = interview_config._load_all()
-    he = original["he"]
+    existing = original["languages"]["he"]["categories"]
     catalog = {
-        "he": [
-            {"id": "new_birth", "category": "origins", "category_label": "מוצא",
-             "text": "איפה נולדת?"},
-            {"id": "new_parents", "category": "origins", "category_label": "מוצא",
-             "text": "מי היו ההורים שלך?"},
-            *he,
-        ],
-        "en": original["en"],
+        "schema_version": 2,
+        "languages": {
+            "he": {
+                "categories": [
+                    {
+                        "id": "origins",
+                        "name": "מוצא",
+                        "steps": [
+                            {"kind": "question", "id": "new_birth", "text": "איפה נולדת?"},
+                            {"kind": "question", "id": "new_parents",
+                             "text": "מי היו ההורים שלך?"},
+                        ],
+                    },
+                    *existing,
+                ]
+            }
+        },
+        "retired": original.get("retired", []),
     }
     # Several views memoise over _load_all, so swapping the catalog without
     # clearing them all would test the OLD question set. interview_config
@@ -47,19 +67,18 @@ def reordered_catalog(monkeypatch):
 def test_category_survives_a_reordered_question_set(reordered_catalog):
     """THE test this column exists for.
 
-    A recording stored as `military_service` must still be military service
-    after two questions are inserted ahead of it — even though its
-    question_index now points somewhere else entirely.
+    A question keeps its category after a whole new category is inserted ahead
+    of it, even though its POSITION has moved — which is why nothing may derive
+    a life period from question_index.
     """
-    # before the edit this id sat at index 3; it is now 5
-    assert interview_config.category_for_question_id("military_service") == "military_service"
+    probe = "military_service_q01"
+    assert interview_config.category_for_question_id(probe) == "military_service"
 
     ids = [q["id"] for q in interview_config.get_questions("he")]
-    assert ids.index("military_service") == 5, "the fixture must actually shift indices"
-
-    # the index that USED to mean military service now means something else —
-    # which is exactly why nothing may derive a category from it
-    assert interview_config.get_questions("he")[3]["id"] != "military_service"
+    # the fixture must actually shift things, or this proves nothing
+    assert ids.index(probe) >= 2
+    # and whatever now sits at the positions the new category took is NOT it
+    assert ids[0] == "new_birth" and ids[1] == "new_parents"
 
 
 def test_categories_are_derived_from_the_file_not_a_constant(reordered_catalog):
@@ -72,8 +91,16 @@ def test_categories_are_derived_from_the_file_not_a_constant(reordered_catalog):
 
 
 def test_category_count_is_not_fixed(reordered_catalog):
-    """Nothing may assume five categories; the set is about to roughly double."""
-    assert len(interview_config.get_categories("he")) == 6
+    """Nothing may assume a fixed number of categories.
+
+    Asserted RELATIVE to the real set rather than against a literal, so this
+    keeps testing the property after the next content edit instead of becoming
+    a number that has to be bumped.
+    """
+    with_extra = len(interview_config.get_categories("he"))
+    interview_config.cache_clear()
+    monkey_free = len(json.load(open(V2_PATH, encoding="utf-8"))["languages"]["he"]["categories"])
+    assert with_extra == monkey_free + 1
 
 
 def test_get_categories_groups_every_question_exactly_once():
@@ -98,8 +125,12 @@ def test_unknown_text_and_ids_are_rejected_rather_than_guessed():
     assert interview_config.question_id_for_text("something nobody asked") is None
     assert interview_config.question_id_for_text("") is None
     assert interview_config.category_for_question_id("not_a_question") is None
-    assert interview_config.is_valid_question_id("childhood_home") is True
+    assert interview_config.is_valid_question_id("childhood_q01") is True
     assert interview_config.is_valid_question_id("brother-ish") is False
+    # A RETIRED question is deliberately not "valid" — it must never be
+    # offered to a producer — but it must still resolve for history.
+    assert interview_config.is_valid_question_id("childhood_home") is False
+    assert interview_config.category_for_question_id("childhood_home") == "childhood"
 
 
 # ── ingest ────────────────────────────────────────────────────────────────

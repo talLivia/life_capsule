@@ -41,19 +41,35 @@ def _cat(category_id):
 # ── the v1 adapter ────────────────────────────────────────────────────────
 
 
-def test_v1_still_works_unchanged():
-    """The live file is still v1. It must adapt into the same shape, or the
-    app breaks before cutover ever happens."""
-    cats = ic.get_categories("he")
-    assert len(cats) == 5
-    assert all(c["steps"] for c in cats)
-    # v1 has no gates, so every step resolves with no answers at all
-    for c in cats:
-        assert ic.resolve_steps(c["steps"], {}) == c["steps"]
-        assert ic.category_is_settled({"steps": c["steps"]}, {})
+def test_the_v1_adapter_still_works(monkeypatch):
+    """The live file is v2 since the cutover, but the adapter stays — a v1
+    document must still load, or any older deployment or fixture breaks.
+
+    Uses an explicit v1 fixture rather than the live file, which is what this
+    test read before the cutover made that the wrong source.
+    """
+    v1 = {
+        "he": [
+            {"id": "a1", "category": "alpha", "category_label": "Alpha", "text": "one?"},
+            {"id": "a2", "category": "alpha", "category_label": "Alpha", "text": "two?"},
+            {"id": "b1", "category": "beta", "category_label": "Beta", "text": "three?"},
+        ]
+    }
+    monkeypatch.setattr(ic, "_load_all", lambda: v1)
+    ic.cache_clear()
+    try:
+        cats = ic.get_categories("he")
+        assert [c["category"] for c in cats] == ["alpha", "beta"]
+        assert len(ic.get_questions("he")) == 3
+        # v1 has no gates, so everything resolves with no answers at all
+        for c in cats:
+            assert ic.resolve_steps(c["steps"], {}) == c["steps"]
+            assert ic.category_is_settled({"steps": c["steps"]}, {})
+    finally:
+        ic.cache_clear()
 
 
-def test_v1_and_v2_present_the_same_interface(v2):
+def test_the_live_file_is_the_v2_content(v2):
     assert len(ic.get_categories("he")) == 16
     assert len(ic.get_questions("he")) == 129
 
