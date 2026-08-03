@@ -799,17 +799,70 @@ legible view you pan beats a complete one you cannot read.
 **Portrait page.** `max-w-4xl` and `h-[calc(100vh-13rem)]`, min 620px. Height is
 what shows several generations at once; width is what panning is for.
 
-**The moments dialog rendered transparent** because of NESTED backdrop-filter.
-`glass-card` carries `backdrop-blur-xl` and the overlay had `backdrop-blur-md`;
-a backdrop-filtered element inside another filters against the outer backdrop
-ROOT, sampling the page as it was *before* the overlay darkened it. The card
-therefore showed the undimmed page through itself. Fixed by making the card
-opaque — one backdrop-filter per stack — and portalling the overlay to
-`document.body`, since `position: fixed` resolves against any ancestor with a
-transform, filter or backdrop-filter rather than the viewport.
+**The moments dialog rendered transparent.** Two changes: the card was made
+opaque instead of `glass-card` (which carries `backdrop-blur-xl` — a
+backdrop-filtered element nested inside another filters against the outer
+backdrop ROOT, sampling the page as it was *before* the overlay darkened it),
+and the overlay was portalled to `document.body`, since `position: fixed`
+resolves against any ancestor with a transform, filter or backdrop-filter
+rather than the viewport.
 
-`AuthModal` has the same `glass-card`-inside-blurred-overlay structure and is
-likely to show the same effect. Not touched here.
+⚠️ **Both are sound, and neither was demonstrated to be the cause.** See 4d —
+this was written as a diagnosis when it was a hypothesis.
+
+#### Phase 4d — width, backdrop verified, sibling parentage confirmed — 2026-08-03
+
+**Width** is `max-w-7xl`, matching the chat view.
+
+**The backdrop, verified instead of reasoned about.** 4c asserted a cause it had
+not checked, so this time every layer was inspected in the built output:
+
+| checked | result |
+| --- | --- |
+| new markup in the built JS chunk | present; old `glass-card` markup gone |
+| `bg-surface-950/95` in production CSS | `background-color:#05050af2` — 95% opaque |
+| same class in the **dev-server** CSS | present, generated 15:38 |
+| `z-[60]`, `backdrop-blur-md`, `animate-scale-in` | all generated |
+| card `backdrop-filter` | none — no nesting left |
+| portalled to `document.body` | yes |
+
+So the shipped code is correct at every layer that can be inspected without a
+browser, in both dev and production builds. The nested-backdrop-filter story in
+4c was a plausible mechanism stated as a finding; it was never confirmed to be
+what was on screen, and the class it blamed was compiling correctly all along.
+
+`scratchpad/verify_modal_backdrop.py` re-runs the whole check and writes an HTML
+page that inlines the real compiled CSS and renders the exact same markup over a
+busy fake page. The class strings are **read out of `FamilyTreePanel.tsx`**
+rather than copied, so the check cannot drift from the component.
+
+**Sibling parentage already works — zero changes.** Confirmed three ways: three
+new tests, and a live-data seed (`--seed-siblings`) rendered through the real
+layout maths.
+
+| case | result |
+| --- | --- |
+| sibling given the producer's own two parents | joins the producer's trunk — 2 parents, 3 drops, no contradiction |
+| half-sibling with a *different* recorded parent | that parent lands in the parents' row, reached only through the sibling |
+| sibling with no recorded parent | placed in the row, no line, nothing inferred |
+
+The second case works only because the walk follows every edge in both
+directions — the new parent is reachable from the root exclusively via the
+sibling.
+
+**The gap is bigger than "an unmentioned half-sibling parent".** No sibling in
+the live archive has *any* parent edge: they are recorded as siblings OF THE
+PRODUCER and nothing says whose children they are. Rendering is not the problem
+and needs no change; capture is. Not built — see the open question at the end
+of this section.
+
+**Pre-existing flaky test fixed.** `test_contradicting_recordings_...` pinned
+which of two contradicting edges wins. Both are written in one transaction, so
+`created_at` ties and `_load_edges` falls through to `id` — a fresh uuid4 per
+run, making the assertion a coin flip. It now asserts what is actually
+guaranteed: the disagreement is reported, and the person is drawn once. Six
+consecutive runs pass. Production ordering was left alone: for a given database
+the ids are fixed, so the tree does not flip between page loads.
 
 ### Phase 4 — family tree page (original plan)
 

@@ -24,9 +24,8 @@ import type { ApiError, EntityMoment, FamilyTree, TreePerson } from '@/lib/types
  *     than rendering a blank canvas that looks broken.
  *
  * The chart gets the page and the moments open over it, rather than the two
- * splitting the width. It is deliberately PORTRAIT — a narrow column like the
- * rest of the site, tall enough to show several generations at once. Height is
- * what a tree needs; width is what panning is for.
+ * splitting the width. `max-w-7xl` matches the chat view — the widest column
+ * the site uses — and the height is what shows several generations at once.
  */
 
 function lifespan(person: TreePerson): string | null {
@@ -249,7 +248,7 @@ export function FamilyTreePanel() {
   const hasFamily = tree.generations.some((g) => g.people.some((p) => !p.is_self))
 
   return (
-    <div className="animate-fade-in max-w-4xl mx-auto px-6 pt-6 pb-16">
+    <div className="animate-fade-in max-w-7xl mx-auto px-6 pt-6 pb-16">
       <header className="flex items-center gap-2 text-primary-400 mb-4">
         <Network size={16} />
         <span className="text-sm font-medium">Family tree</span>

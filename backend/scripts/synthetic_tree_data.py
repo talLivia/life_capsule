@@ -26,7 +26,8 @@ Both directions of the run print a census of the tables this must not touch,
 so "nothing else changed" is demonstrated rather than asserted.
 
     python scripts/synthetic_tree_data.py --status
-    python scripts/synthetic_tree_data.py --seed
+    python scripts/synthetic_tree_data.py --seed            # wide tree
+    python scripts/synthetic_tree_data.py --seed-siblings   # sibling parentage
     python scripts/synthetic_tree_data.py --clean
 """
 
@@ -204,6 +205,85 @@ async def seed(db, producer_id):
     report_census(before, after)
 
 
+async def seed_siblings(db, producer_id):
+    """Record parents FOR THE SIBLINGS, to show what the tree already does.
+
+    Three cases in one picture, all of them existing behaviour:
+      * two siblings given the producer's own two parents — they should join
+        the producer's trunk, three drops off one bus;
+      * one given a real parent plus a parent nobody else has (a half-sibling)
+        — that new parent should appear in the parents' row, reached only
+        through the sibling;
+      * one left alone — still in the row, still with no line, because nothing
+        records whose child they are.
+    """
+    people, relations = await counts(db, producer_id)
+    if people or relations:
+        print(f"Already seeded ({people} entities, {relations} relations). "
+              f"Run --clean first.")
+        return
+
+    before = await census(db)
+    tree = await family_tree.build_tree(db, producer_id)
+    parents = [p for row in tree["generations"] if row["generation"] == -1
+               for p in row["people"]]
+    siblings = [p for row in tree["generations"] if row["generation"] == 0
+                for p in row["people"] if not p["is_self"]]
+    if len(parents) < 2 or len(siblings) < 3:
+        print(f"Need >=2 parents and >=3 siblings; found {len(parents)} and "
+              f"{len(siblings)}. Nothing written.")
+        return
+
+    segment_id = (
+        await db.execute(
+            select(RawSegment.id)
+            .join(InterviewSession, InterviewSession.id == RawSegment.interview_session_id)
+            .where(InterviewSession.user_id == producer_id)
+            .order_by(RawSegment.created_at)
+        )
+    ).scalars().first()
+
+    other_parent_name = "רבקה"
+    taken = set((await db.execute(
+        select(Entity.normalized_name).where(Entity.producer_id == producer_id)
+    )).scalars().all())
+    if other_parent_name.lower() in taken:
+        print(f"'{other_parent_name}' already exists. Nothing written.")
+        return
+
+    other_id = synth_id()
+    db.add(Entity(
+        id=other_id, producer_id=producer_id, name=other_parent_name,
+        normalized_name=other_parent_name.lower(), type="person", is_self=False,
+    ))
+
+    def relate(from_id, rel, to_id):
+        db.add(EntityRelation(
+            id=synth_id(), from_entity_id=from_id, to_entity_id=to_id,
+            relation_type=rel, source_segment_id=segment_id,
+        ))
+
+    # "from is the PARENT of to"
+    shared = siblings[:2]
+    for sib in shared:
+        for parent in parents[:2]:
+            relate(parent["id"], "parent", sib["id"])
+    half = siblings[2]
+    relate(parents[1]["id"], "parent", half["id"])
+    relate(other_id, "parent", half["id"])
+    untouched = [s["name"] for s in siblings[3:]]
+
+    await db.commit()
+    people, relations = await counts(db, producer_id)
+    print(f"seeded: {people} entity, {relations} relations")
+    print(f"  shared parents  : {[s['name'] for s in shared]} "
+          f"<- {[p['name'] for p in parents[:2]]}")
+    print(f"  half-sibling    : {half['name']} <- "
+          f"{parents[1]['name']} + {other_parent_name} (new entity)")
+    print(f"  left unrecorded : {untouched or 'none'}")
+    report_census(before, await census(db))
+
+
 async def clean(db, producer_id):
     before = await census(db)
 
@@ -239,6 +319,7 @@ def report_census(before: dict, after: dict):
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", action="store_true")
+    ap.add_argument("--seed-siblings", action="store_true")
     ap.add_argument("--clean", action="store_true")
     ap.add_argument("--status", action="store_true")
     args = ap.parse_args()
@@ -248,6 +329,8 @@ async def main():
         print(f"producer: {producer_id}\n")
         if args.seed:
             await seed(db, producer_id)
+        elif args.seed_siblings:
+            await seed_siblings(db, producer_id)
         elif args.clean:
             await clean(db, producer_id)
         else:

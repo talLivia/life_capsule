@@ -205,7 +205,15 @@ async def test_contradicting_recordings_are_reported_not_silently_resolved(
     db_session, archive
 ):
     """Two recordings that cannot both be true. Redrawing on the later one
-    would move somebody's generation with nothing to show for it."""
+    would move somebody's generation with nothing to show for it.
+
+    WHICH of the two wins is deliberately not asserted. Both rows are written
+    in one transaction, so `created_at` is identical and `_load_edges` falls
+    through to ordering by `id` — a fresh uuid4 on every run. Pinning the
+    winner made this test a coin flip that passed or failed depending on how
+    the ids sorted that day. What matters, and what is guaranteed, is that the
+    disagreement is REPORTED and the person is drawn once instead of twice.
+    """
     user, segment, root = archive
     other = await _person(db_session, user, "Ambiguous")
     await _relate(db_session, other, "parent", root, segment)
@@ -214,8 +222,10 @@ async def test_contradicting_recordings_are_reported_not_silently_resolved(
     tree = await family_tree.build_tree(db_session, user.id)
     assert len(tree["contradictions"]) == 1
     conflict = tree["contradictions"][0]
-    assert conflict["kept_generation"] == -1, "the first, shortest path stands"
-    assert conflict["implied_generation"] == 1
+    # one path says a generation up, the other says a generation down
+    assert {conflict["kept_generation"], conflict["implied_generation"]} == {-1, 1}
+    # whichever was kept is the row the person actually sits in
+    assert [p["name"] for p in _row(tree, conflict["kept_generation"])] == ["Ambiguous"]
     # and the person is still drawn exactly once
     placed = [p["name"] for row in tree["generations"] for p in row["people"]]
     assert placed.count("Ambiguous") == 1
@@ -263,6 +273,84 @@ async def test_only_people_are_in_the_tree(db_session, archive):
     tree = await family_tree.build_tree(db_session, user.id)
     everyone = [p["name"] for row in tree["generations"] for p in row["people"]]
     assert "Tiberias" not in everyone + [p["name"] for p in tree["unplaced"]]
+
+
+# ── siblings and their parents ────────────────────────────────────────────
+#
+# The question these answer: does a sibling whose parent is recorded — whether
+# that is the producer's own parent or somebody else's — already place and draw
+# correctly, with no special handling? It does. Nothing below is new code being
+# tested; it is the existing walk being pinned down so the answer stays true.
+
+
+async def test_a_sibling_sharing_the_producers_parents_is_placed_by_both_paths(
+    db_session, archive
+):
+    """Two routes to the same row — sibling-of-me, and child-of-my-parent. They
+    must agree, or the shared parentage shows up as a contradiction."""
+    user, segment, root = archive
+    dad = await _person(db_session, user, "Dad")
+    mum = await _person(db_session, user, "Mum")
+    sib = await _person(db_session, user, "Sib")
+    await _relate(db_session, dad, "parent", root, segment)
+    await _relate(db_session, mum, "parent", root, segment)
+    await _relate(db_session, sib, "sibling", root, segment)
+    # the same two parents, now recorded for the sibling as well
+    await _relate(db_session, dad, "parent", sib, segment)
+    await _relate(db_session, mum, "parent", sib, segment)
+
+    tree = await family_tree.build_tree(db_session, user.id)
+    assert {p["name"] for p in _row(tree, 0)} == {"Root Person", "Sib"}
+    assert {p["name"] for p in _row(tree, -1)} == {"Dad", "Mum"}
+    assert tree["contradictions"] == [], "the two routes must not disagree"
+    # Both children hang off the same pair, which is what lets the page draw
+    # one trunk with two drops rather than two unrelated descents.
+    pairs = {(e["from_id"], e["to_id"]) for e in tree["edges"]}
+    assert (dad.id, sib.id) in pairs and (mum.id, sib.id) in pairs
+    assert (dad.id, root.id) in pairs and (mum.id, root.id) in pairs
+
+
+async def test_a_half_sibling_with_a_different_recorded_parent_places_that_parent(
+    db_session, archive
+):
+    """The case worth being sure about: a sibling whose other parent is someone
+    else entirely. That parent is reached THROUGH the sibling, so it only works
+    because the walk goes both ways along every edge."""
+    user, segment, root = archive
+    dad = await _person(db_session, user, "Dad")
+    other = await _person(db_session, user, "Rivka")
+    half = await _person(db_session, user, "Half")
+    await _relate(db_session, dad, "parent", root, segment)
+    await _relate(db_session, half, "sibling", root, segment)
+    await _relate(db_session, dad, "parent", half, segment)
+    await _relate(db_session, other, "parent", half, segment)
+
+    tree = await family_tree.build_tree(db_session, user.id)
+    assert {p["name"] for p in _row(tree, -1)} == {"Dad", "Rivka"}
+    assert {p["name"] for p in _row(tree, 0)} == {"Root Person", "Half"}
+    assert tree["unplaced"] == [], "Rivka is reachable via the half-sibling"
+    assert tree["contradictions"] == []
+
+
+async def test_a_sibling_with_no_recorded_parent_is_still_placed_but_undrawn(
+    db_session, archive
+):
+    """Today's live archive: siblings are recorded as siblings OF THE PRODUCER
+    and nothing says whose children they are. They belong in the row — that is
+    recorded — but there is no parent edge, so the page draws no line to them.
+    Inferring one would be inventing a fact about who someone's parents are."""
+    user, segment, root = archive
+    dad = await _person(db_session, user, "Dad")
+    sib = await _person(db_session, user, "Sib")
+    await _relate(db_session, dad, "parent", root, segment)
+    await _relate(db_session, sib, "sibling", root, segment)
+
+    tree = await family_tree.build_tree(db_session, user.id)
+    assert {p["name"] for p in _row(tree, 0)} == {"Root Person", "Sib"}
+    # No edge connects Dad to Sib, so nothing can be drawn between them.
+    assert not any(
+        e["from_id"] == dad.id and e["to_id"] == sib.id for e in tree["edges"]
+    )
 
 
 # ── moments ───────────────────────────────────────────────────────────────
