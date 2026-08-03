@@ -77,58 +77,66 @@ import {
   Settings,
   Feather,
   Network,
+  Video,
+  Search,
 } from 'lucide-react'
 
 const FEATURES = [
   {
-    icon: Brain,
-    title: 'LLM-Powered Intelligence',
-    description: 'Claude & GPT-4 drive natural conversations with context-aware, cached prompts.',
+    icon: MessageCircle,
+    title: 'Questions worth answering',
+    description:
+      "129 of them, across 16 chapters of a life — from childhood to what they'd want their grandchildren to know. They answer whichever they like, whenever they like.",
     color: 'from-purple-500 to-pink-500',
     glow: 'rgba(168,85,247,0.3)',
   },
   {
-    icon: AudioWaveform,
-    title: 'Voice Cloning',
-    description: 'Chatterbox Multilingual clones any voice from a 10-second sample in 23 languages.',
+    icon: Video,
+    title: 'Their face, their voice',
+    description:
+      "Every answer is video they recorded themselves. Nothing is generated, imitated, or put into their mouth — if they didn't say it, your family will never hear it.",
     color: 'from-blue-500 to-cyan-500',
     glow: 'rgba(59,130,246,0.3)',
   },
   {
-    icon: Activity,
-    title: 'Lip-Sync Animation',
-    description: 'MuseTalk V1.5 produces photorealistic lip-sync video aligned to the spoken audio.',
+    icon: Search,
+    title: 'Ask anything, later',
+    description:
+      'Your family types a question and gets back the moments where they actually answered it. Ask about a name, a year, a place; the archive finds the right piece of the right recording.',
     color: 'from-emerald-500 to-teal-500',
     glow: 'rgba(16,185,129,0.3)',
   },
   {
-    icon: Zap,
-    title: 'Streaming Pipeline',
-    description: 'WebSocket streams tokens, audio, and video chunk-by-chunk for low first-byte latency.',
+    icon: Network,
+    title: 'A family tree that fills itself in',
+    description:
+      'As they record, the people they mention become a tree you can click through. Tap anyone to watch the moments they talk about them.',
     color: 'from-amber-500 to-orange-500',
     glow: 'rgba(245,158,11,0.3)',
   },
   {
     icon: Globe,
-    title: 'Multi-Language',
-    description: 'Whisper STT + Chatterbox TTS support 23 languages end-to-end.',
+    title: 'In the language home was spoken in',
+    description:
+      'Hebrew, Arabic, Russian, English. They answer in their own language, and it stays in their own language.',
     color: 'from-indigo-500 to-blue-500',
     glow: 'rgba(99,102,241,0.3)',
   },
   {
     icon: Shield,
-    title: 'Privacy-First',
-    description: 'Self-host everything — your photos, voices, and conversations stay on your infra.',
+    title: "Yours, and no one else's",
+    description:
+      'Private to the family they invite. Nothing public, nothing sold, nothing used to train anything.',
     color: 'from-rose-500 to-pink-500',
     glow: 'rgba(244,63,94,0.3)',
   },
 ]
 
 const STATS = [
-  { value: '23', label: 'Languages' },
-  { value: '<200ms', label: 'First-byte latency' },
-  { value: '2', label: 'LLM backends' },
-  { value: '100%', label: 'Self-hostable' },
+  { value: '16', label: 'Life chapters' },
+  { value: '129', label: 'Questions to answer' },
+  { value: '∞', label: 'Times your family can ask' },
+  { value: '100%', label: 'Their own words' },
 ]
 
 type View = 'home' | 'avatars' | 'chat' | 'voice' | 'history' | 'settings' | 'record' | 'tree'
@@ -344,39 +352,45 @@ export default function Home() {
               {/* Badge */}
               <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-primary-500/10 border border-primary-500/30 mb-8 animate-slide-up">
                 <Sparkles size={14} className="text-primary-400" />
-                <span className="text-sm text-primary-300 font-medium">Next-Gen AI Avatar Platform</span>
+                <span className="text-sm text-primary-300 font-medium">A family&apos;s story, in their own voice</span>
               </div>
 
               {/* Headline */}
               <h1 className="text-6xl md:text-7xl lg:text-8xl font-black leading-none mb-6 tracking-tight animate-slide-up" style={{ animationDelay: '0.1s' }}>
-                <span className="gradient-text">Talk to</span>
+                <span className="gradient-text">Their stories,</span>
                 <br />
-                <span className="text-white">Any Face,</span>
+                <span className="text-white">in their own</span>
                 <br />
-                <span className="gradient-text-gold">Any Voice.</span>
+                <span className="gradient-text-gold">words.</span>
               </h1>
 
               <p className="max-w-2xl text-lg md:text-xl text-gray-400 mb-10 leading-relaxed animate-slide-up" style={{ animationDelay: '0.2s' }}>
-                Upload a photo, clone a voice, and have real-time AI-powered conversations with
-                photorealistic lip-sync animations. Powered by Claude, Whisper, Chatterbox, and MuseTalk.
+                Someone in your family has a lifetime of stories. We ask the questions, they
+                record the answers, and everything they say is kept exactly as they said it.
+                Years from now your family can ask about a name, a place, a year — and watch
+                them answer, in their own voice.
               </p>
 
               {/* CTAs */}
               <div className="flex flex-wrap items-center justify-center gap-4 animate-slide-up" style={{ animationDelay: '0.3s' }}>
                 <button
-                  onClick={() => setView('avatars')}
+                  onClick={() => setView('record')}
                   className="btn-primary text-base px-8 py-3.5 rounded-2xl group"
                 >
                   <Play size={18} className="group-hover:scale-110 transition-transform" />
-                  Get Started Free
+                  Start recording
                   <ChevronRight size={16} className="group-hover:translate-x-1 transition-transform" />
                 </button>
+                {/* Was "Clone a Voice", pointing at voice cloning — which belongs
+                    to the avatar mode and contradicts the whole pitch. Every
+                    word on this page promises real recorded speech; a CTA
+                    offering a synthesised voice undoes that in one click. */}
                 <button
-                  onClick={() => setView('voice')}
+                  onClick={() => setView('record')}
                   className="btn-secondary text-base px-8 py-3.5 rounded-2xl"
                 >
-                  <Mic2 size={18} />
-                  Clone a Voice
+                  <Feather size={18} />
+                  See how it works
                 </button>
               </div>
 
@@ -395,11 +409,11 @@ export default function Home() {
             <section className="px-6 pb-24 max-w-7xl mx-auto">
               <div className="text-center mb-14">
                 <h2 className="text-4xl font-black mb-4">
-                  Everything you need to build
-                  <span className="gradient-text"> avatar experiences</span>
+                  Everything they say,
+                  <span className="gradient-text"> kept as they said it</span>
                 </h2>
                 <p className="text-gray-400 text-lg max-w-2xl mx-auto">
-                  A complete stack — from voice cloning to lip-sync video — running locally or in the cloud.
+                  No scripts, no rewriting, and nothing invented. Just their answers, ready when someone asks.
                 </p>
               </div>
 
