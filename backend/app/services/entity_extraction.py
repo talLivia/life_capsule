@@ -37,7 +37,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.entity_names import normalize_entity_name
 from app.services.llm import llm_service
@@ -98,6 +98,64 @@ Example output:
 "alternative_type": "organisation", "summary": "הפנימייה שבה למד הדובר"}]"""
 
 
+# The speaker. A transcript names other people but almost never themselves, so
+# every relation to the producer needs a marker instead of a name. A literal
+# that cannot collide with one — no transcript contains this string.
+SELF = "__SELF__"
+
+# Appended to the entity prompt so ONE call does both jobs. A second call over
+# the same transcript could name people the first did not extract, and a
+# relation would then point at an entity that never gets created.
+#
+# `{vocabulary}` is filled from the relation_types TABLE, not hardcoded: that
+# table is the source (entity_relations has a FK to it), so adding a relation
+# type must not require editing a prompt. The FK is the backstop — an invented
+# type fails loudly rather than being stored.
+_RELATION_PROMPT_SUFFIX = """
+
+SECOND TASK - family relations.
+
+After the entity array, output the line RELATIONS: and then a SECOND JSON \
+array of family relations the transcript STATES, with exactly these fields: \
+{{"from": ..., "to": ..., "type": ..., "evidence": ...}}.
+
+  "from" / "to": either a name EXACTLY as it appears in your entity array \
+above, or the literal "__SELF__" for the speaker themselves.
+  "type": one of: {vocabulary}
+  "evidence": the short phrase from the transcript that states it.
+
+DIRECTION MATTERS AND IS EASY TO GET BACKWARDS. "from" is the SUBJECT: the \
+relation reads "<from> is the <type> of <to>".
+  "ניר הוא אח שלי" -> {{"from": "ניר", "to": "__SELF__", "type": "sibling"}}
+  "צבי הוא אבא שלי" -> {{"from": "צבי", "to": "__SELF__", "type": "parent"}} \
+because צבי is the PARENT OF the speaker, NOT the child.
+  "יש לי בת בשם מיה" -> {{"from": "מיה", "to": "__SELF__", "type": "child"}} \
+because מיה is the CHILD OF the speaker.
+
+Only propose a relation when BOTH ends are real and the transcript states it \
+outright. Never infer one from context, never guess at a person whose \
+connection is not stated, and never use an endpoint that is not in your \
+entity array (or __SELF__). If there are none, output an empty array. Fewer \
+certain relations are far better than more likely ones - a wrong relation in \
+a family tree is visible and damaging.
+
+Output nothing after the second array."""
+
+
+def build_extraction_prompt(relation_vocabulary: List[str]) -> str:
+    """The entity prompt, plus the relation task when a vocabulary is given.
+
+    An empty vocabulary means relations are not being captured at all, and the
+    prompt then asks for entities exactly as before — byte-identical, so
+    nothing about existing extraction changes when relations are off.
+    """
+    if not relation_vocabulary:
+        return _ENTITY_EXTRACTION_SYSTEM_PROMPT
+    return _ENTITY_EXTRACTION_SYSTEM_PROMPT + _RELATION_PROMPT_SUFFIX.format(
+        vocabulary=", ".join(sorted(relation_vocabulary))
+    )
+
+
 @dataclass(frozen=True)
 class ExtractedEntity:
     """One named entity this recording mentioned, as the extractor saw it."""
@@ -135,6 +193,115 @@ class ExtractedEntity:
             alternative_type=data.get("alternative_type"),
             summary=data.get("summary"),
         )
+
+
+@dataclass(frozen=True)
+class ExtractedRelation:
+    """One family relation the transcript stated, as proposed — never applied.
+
+    Endpoints are NAMES (or `SELF`), not ids: at extraction time the entities
+    may not exist yet, and after confirmation an identity answer can rename one
+    of them. Resolution to ids happens at write time, against the entities this
+    same extraction produced.
+    """
+
+    from_name: str
+    to_name: str
+    relation_type: str
+    evidence: Optional[str] = None
+
+    def as_dict(self) -> Dict[str, Any]:
+        """Plain dict for LangGraph state — same reason as ExtractedEntity."""
+        return {
+            "from_name": self.from_name,
+            "to_name": self.to_name,
+            "relation_type": self.relation_type,
+            "evidence": self.evidence,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ExtractedRelation":
+        return cls(
+            from_name=data["from_name"],
+            to_name=data["to_name"],
+            relation_type=data["relation_type"],
+            evidence=data.get("evidence"),
+        )
+
+
+def parse_extracted_relations(
+    text: str, entity_names: List[str], allowed_types: List[str]
+) -> List[ExtractedRelation]:
+    """Parse the relations array, dropping everything unusable.
+
+    Strict on purpose, in a way entity parsing is not. An entity we cannot
+    classify is still a real name worth keeping; a relation we cannot resolve
+    is a claim about two people that would land in a family tree. Dropped:
+
+      * a type outside the offered vocabulary (the FK would reject it anyway,
+        but failing here names the value in a log instead of aborting a write);
+      * an endpoint that is neither SELF nor one of THIS extraction's entities
+        — it would point at a row that is never created;
+      * a self-loop, which `ck_entity_relations_not_self` forbids;
+      * duplicates of an already-seen (from, to, type).
+    """
+    marker = re.split(r"RELATIONS:", text or "", maxsplit=1)
+    if len(marker) < 2:
+        return []
+    match = re.search(r"\[.*\]", marker[1], re.DOTALL)
+    if not match:
+        return []
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+
+    # Match endpoints on the MERGE key, not the raw string, so trailing
+    # whitespace or a final-letter variant still resolves to the same entity
+    # the writer will create.
+    by_key = {normalize_entity_name(n): n for n in entity_names}
+    allowed = set(allowed_types)
+
+    out: List[ExtractedRelation] = []
+    seen: set = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        rel_type = str(item.get("type") or "").strip().lower()
+        if rel_type not in allowed:
+            logger.info(f"Dropping proposed relation with unknown type {rel_type!r}")
+            continue
+
+        def _resolve(raw: Any) -> Optional[str]:
+            name = str(raw or "").strip()
+            if name == SELF:
+                return SELF
+            return by_key.get(normalize_entity_name(name))
+
+        src, dst = _resolve(item.get("from")), _resolve(item.get("to"))
+        if src is None or dst is None:
+            logger.info(
+                f"Dropping proposed relation {item.get('from')!r} -> "
+                f"{item.get('to')!r}: an endpoint is not an extracted entity"
+            )
+            continue
+        if src == dst:
+            continue
+
+        key = (normalize_entity_name(src), normalize_entity_name(dst), rel_type)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        evidence = str(item.get("evidence") or "").strip() or None
+        out.append(
+            ExtractedRelation(
+                from_name=src, to_name=dst, relation_type=rel_type, evidence=evidence
+            )
+        )
+    return out
 
 
 def _coerce_type(raw: Any) -> str:
@@ -176,7 +343,14 @@ def parse_extracted_entities(text: str) -> List[ExtractedEntity]:
     dropped entirely, because a nameless entity cannot be merged, shown, or
     confirmed — there is nothing it could be.
     """
-    match = re.search(r"\[.*\]", text or "", re.DOTALL)
+    # Only the text BEFORE the relations marker. The search below is greedy —
+    # `\[.*\]` spans from the first bracket to the LAST one — so once the reply
+    # carries a second array it would swallow both and parse neither, silently
+    # returning zero entities from a perfectly good extraction. Splitting first
+    # is what keeps the two arrays independent.
+    head = re.split(r"RELATIONS:", text or "", maxsplit=1)[0]
+
+    match = re.search(r"\[.*\]", head, re.DOTALL)
     if not match:
         return []
     try:
@@ -220,25 +394,52 @@ def parse_extracted_entities(text: str) -> List[ExtractedEntity]:
     return entities
 
 
-async def extract_entities(transcript: str) -> List[ExtractedEntity]:
-    """Extract this recording's named entities.
+async def extract(
+    transcript: str, relation_vocabulary: Optional[List[str]] = None
+) -> Tuple[List[ExtractedEntity], List[ExtractedRelation]]:
+    """This recording's named entities, and any family relations it states.
 
-    Fail-soft, like every other extraction node in the pipeline: an LLM
-    failure returns no entities rather than failing the segment. The recording
-    itself — transcript, chunks, units — is what answers are built from, and
-    it is already saved by the time this runs. A missing entity map degrades
-    retrieval slightly (measured: accuracy 0.991 with AND without it); a
-    failed segment loses the recording.
+    ONE call for both. Two calls over the same transcript can disagree — one
+    extracting "טבריה" and the other not — and a relation whose endpoint was
+    not extracted points at an entity that never gets created.
+
+    Fail-soft, like every other extraction node: an LLM failure returns
+    nothing rather than failing the segment. The recording itself is what
+    answers are built from and is already saved by the time this runs. A
+    missing entity map degrades retrieval slightly (measured: accuracy 0.991
+    with AND without it); a failed segment loses the recording.
+
+    Relations degrade further and separately: if the relation array is
+    malformed or names people that were not extracted, the ENTITIES still land
+    and only the relations are dropped. Losing a proposed relation costs a
+    question the producer was never asked; losing the entities costs the
+    entity map.
     """
     if not transcript:
-        return []
+        return [], []
+    vocabulary = relation_vocabulary or []
     try:
         raw = await llm_service.generate_response(
             messages=[{"role": "user", "content": transcript}],
-            system_prompt=_ENTITY_EXTRACTION_SYSTEM_PROMPT,
+            system_prompt=build_extraction_prompt(vocabulary),
             temperature=0,  # structured extraction — deterministic
         )
     except Exception as e:
         logger.warning(f"entity extraction failed: {e}")
-        return []
-    return parse_extracted_entities(raw)
+        return [], []
+
+    entities = parse_extracted_entities(raw)
+    if not vocabulary or not entities:
+        # No vocabulary means relations were never asked for; no entities means
+        # every endpoint would be unresolvable anyway.
+        return entities, []
+    relations = parse_extracted_relations(raw, [e.name for e in entities], vocabulary)
+    return entities, relations
+
+
+async def extract_entities(transcript: str) -> List[ExtractedEntity]:
+    """Entities only — the pre-relations entry point, kept for callers that
+    genuinely do not want relations (and for the tests that pin entity
+    parsing on its own)."""
+    entities, _ = await extract(transcript)
+    return entities

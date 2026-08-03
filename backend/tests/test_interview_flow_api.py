@@ -20,7 +20,7 @@ from app import interview_config as ic
 from app.models import InterviewSession, RawSegment, User
 from app.services import gate_answers, interview_flow
 
-V2_PATH = Path(__file__).resolve().parent.parent / "app" / "interview_questions_v2.json"
+V2_PATH = Path(__file__).resolve().parent.parent / "app" / "interview_questions.json"
 
 
 @pytest.fixture

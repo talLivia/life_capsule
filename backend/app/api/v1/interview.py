@@ -584,12 +584,20 @@ async def confirm_entities(
     pending = segment.pending_confirmation
     identity_questions = {q["name"]: q for q in pending.get("identity_questions") or []}
     type_questions = {q["name"]: q for q in pending.get("type_questions") or []}
+    relation_questions = {
+        str(q["index"]): q for q in pending.get("relation_questions") or []
+    }
 
     # Staleness, both directions. An answer to a name this screen never asked
     # about means the client is answering a payload the pipeline has moved
     # past; a missing answer means the screen was submitted incomplete.
-    unknown = (set(payload.identity) - set(identity_questions)) | (
-        set(payload.types) - set(type_questions)
+    unknown = (
+        (set(payload.identity) - set(identity_questions))
+        | (set(payload.types) - set(type_questions))
+        # Relations are staleness-checked the same way even though they are
+        # skippable: skipping means sending nothing, not sending an answer to
+        # a question this recording never raised.
+        | (set(payload.relations) - set(relation_questions))
     )
     if unknown:
         raise HTTPException(
@@ -599,6 +607,10 @@ async def confirm_entities(
                 "refresh pending-confirmations"
             ),
         )
+    # Relations are deliberately absent from this check. Identity and type
+    # must be answered because both defaults are dangerous; a relation nobody
+    # answered is just not stored, and forcing an answer would block a producer
+    # who only wants to record.
     missing = (set(identity_questions) - set(payload.identity)) | (
         set(type_questions) - set(payload.types)
     )
@@ -638,7 +650,15 @@ async def confirm_entities(
     from app.analysis_graph import resume_segment_analysis
 
     await resume_segment_analysis(
-        segment_id, {"identity": identity, "types": dict(payload.types)}
+        segment_id,
+        {
+            "identity": identity,
+            "types": dict(payload.types),
+            # Only the accepted ones matter downstream; the node keeps a
+            # proposal only where this says True, so a declined or skipped
+            # relation and an absent key are the same thing.
+            "relations": dict(payload.relations),
+        },
     )
 
     await db.refresh(segment)

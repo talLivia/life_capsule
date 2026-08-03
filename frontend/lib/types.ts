@@ -237,6 +237,16 @@ export interface TypeQuestion {
   question: string
 }
 
+/** One family relation the extractor proposed. SKIPPABLE — see
+ *  EntityBatchAnswer.relations for why this class differs from the others. */
+export interface RelationQuestion {
+  index: number
+  from_name: string
+  to_name: string
+  relation_type: string
+  evidence?: string | null
+}
+
 export interface PendingConfirmation {
   segment_id: string
   interview_session_id: string
@@ -246,10 +256,18 @@ export interface PendingConfirmation {
   pending_confirmation: {
     identity_questions: IdentityQuestion[]
     type_questions: TypeQuestion[]
+    relation_questions?: RelationQuestion[]
   }
 }
 
 export interface EntityBatchAnswer {
+  /** Proposed relation index (as a string) -> accepted?
+   *
+   *  Skippable, unlike identity and types: an unanswered relation has a real
+   *  empty outcome (store nothing), whereas both silent defaults for the
+   *  others are wrong in opposite directions. Omitting a key and sending
+   *  false mean the same thing. */
+  relations?: Record<string, boolean>
   // Keyed by entity name, matching the pending payload. Every question must
   // be answered — the server rejects a partial submit rather than defaulting,
   // because both plausible defaults are wrong in opposite directions.

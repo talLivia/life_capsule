@@ -20,7 +20,7 @@ from app.models import InterviewGateAnswer, InterviewSession, User
 from app.services import gate_answers
 from app.services.gate_answers import InvalidGateAnswer
 
-V2_PATH = Path(__file__).resolve().parent.parent / "app" / "interview_questions_v2.json"
+V2_PATH = Path(__file__).resolve().parent.parent / "app" / "interview_questions.json"
 
 
 @pytest.fixture

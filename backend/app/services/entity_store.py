@@ -48,8 +48,8 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Entity, EntityMention
-from app.services.entity_extraction import ExtractedEntity
+from app.models import Entity, EntityMention, EntityRelation, RelationType
+from app.services.entity_extraction import ExtractedEntity, ExtractedRelation
 from app.services.entity_names import normalize_entity_name
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,117 @@ class EntityWriteResult:
     # wrong `type` is a visibly wrong label the producer can correct, not a
     # reason to fail an ingest whose transcript is already saved.
     needs_confirmation: List[ExtractedEntity] = field(default_factory=list)
+
+
+async def get_relation_vocabulary(db: AsyncSession, category: str = "family") -> List[str]:
+    """The relation types the extractor may propose, from the TABLE.
+
+    `relation_types` is the source — `entity_relations.relation_type` has a FK
+    to it — so the prompt is filled from here rather than carrying its own
+    list. Adding a relation type is then a data change, and the FK is the
+    backstop: an invented type fails loudly instead of being stored.
+
+    Scoped to one category because Phase 2 proposes family relations only
+    (INTERVIEW-adjacent decision 2.2). Widening it later is passing a different
+    category, not a code change here.
+    """
+    rows = (
+        await db.execute(
+            select(RelationType.relation_type)
+            .where(RelationType.category == category)
+            .order_by(RelationType.relation_type)
+        )
+    ).scalars().all()
+    if not rows:
+        # An empty vocabulary disables relation proposal entirely, and does it
+        # SILENTLY — the prompt simply reverts to entities-only and nothing
+        # ever looks wrong. The rows are seeded by migration 0012, so this
+        # means a database built by Base.metadata.create_all instead of by
+        # migrations (a fresh local dev DB, or a test fixture that forgot to
+        # seed). Say so rather than letting the feature quietly not exist.
+        logger.warning(
+            f"relation_types has no rows for category={category!r} — relation "
+            f"capture is disabled. Seeded by migration 0012; a create_all "
+            f"database will not have it."
+        )
+    return list(rows)
+
+
+async def write_segment_relations(
+    db: AsyncSession,
+    *,
+    segment_id: str,
+    producer_id: str,
+    relations: Sequence[ExtractedRelation],
+    self_marker: str,
+) -> int:
+    """Record the family relations this recording established. Returns the count.
+
+    Only ever called with relations the producer CONFIRMED — nothing here
+    decides whether to store one. A silent wrong relation is worse than an
+    unanswered one, which is why proposal and application are separate steps.
+
+    Replace, don't append, exactly as mentions do: a re-analysis that no longer
+    states a relation must not leave the old one behind, or a relation would
+    outlive the sentence that established it. `source_segment_id` cascades, so
+    deleting the recording removes these too.
+
+    Endpoints are resolved by the SAME merge key the entities were written
+    under, so a confirmed rename lands on the row that was actually created.
+    An endpoint that does not resolve is skipped with a warning rather than
+    failing the ingest — the recording and its entities are already saved, and
+    losing one proposed relation costs less than losing the segment.
+    """
+    await db.execute(
+        delete(EntityRelation).where(EntityRelation.source_segment_id == segment_id)
+    )
+    await db.flush()
+    if not relations:
+        return 0
+
+    self_entity = (
+        await db.execute(
+            select(Entity).where(Entity.producer_id == producer_id, Entity.is_self)
+        )
+    ).scalars().first()
+
+    written = 0
+    for rel in relations:
+        endpoints = []
+        for name in (rel.from_name, rel.to_name):
+            if name == self_marker:
+                endpoints.append(self_entity)
+                continue
+            normalized = normalize_entity_name(name)
+            endpoints.append(
+                await _find_entity(db, producer_id, normalized) if normalized else None
+            )
+
+        source, target = endpoints
+        if source is None or target is None:
+            # The self-entity is the usual culprit: a producer created before
+            # the signup hook has no root, so every relation to them is
+            # unresolvable. scripts/backfill_self_entities.py repairs that.
+            logger.warning(
+                f"Skipping relation {rel.from_name!r} -{rel.relation_type}-> "
+                f"{rel.to_name!r} on segment {segment_id}: endpoint not found"
+            )
+            continue
+        if source.id == target.id:
+            continue  # ck_entity_relations_not_self
+
+        db.add(
+            EntityRelation(
+                from_entity_id=source.id,
+                to_entity_id=target.id,
+                relation_type=rel.relation_type,
+                source_segment_id=segment_id,
+            )
+        )
+        written += 1
+
+    await db.flush()
+    return written
 
 
 async def write_segment_entities(

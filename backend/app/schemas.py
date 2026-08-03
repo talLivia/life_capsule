@@ -309,6 +309,18 @@ class EntityBatchConfirmRequest(BaseModel):
     """
 
     identity: Dict[str, IdentityAnswer] = Field(default_factory=dict)
+    # Proposed relation index (as a string) -> accepted?
+    #
+    # SKIPPABLE, unlike the two below, and the asymmetry is deliberate: an
+    # unanswered relation has a genuinely empty outcome (store nothing, leaving
+    # the archive as it was), whereas both silent defaults for identity and
+    # type are wrong in opposite directions. Omit the key, or send false, and
+    # the relation is simply not stored.
+    #
+    # Keyed by INDEX because two people can hold the same relation to the
+    # speaker — "ניר ורז הם אחים שלי" is two sibling proposals — so a name
+    # would not identify one.
+    relations: Dict[str, bool] = Field(default_factory=dict)
     # entity name -> the chosen type. Must be one of exactly the two the
     # question offered (its `type` or its `alternative_type`); anything else
     # is a 400, since a third value could only come from a client inventing

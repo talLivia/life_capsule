@@ -18,7 +18,7 @@ import pytest
 
 from app.interview_schema import SCHEMA_VERSION, count_gates, count_questions, validate
 
-V2_PATH = Path(__file__).resolve().parent.parent / "app" / "interview_questions_v2.json"
+V2_PATH = Path(__file__).resolve().parent.parent / "app" / "interview_questions.json"
 
 
 @pytest.fixture(scope="module")

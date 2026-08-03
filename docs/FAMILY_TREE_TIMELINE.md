@@ -497,7 +497,36 @@ everything else, and the only phase with an expiring window.
 - Test: a reordered question set leaves historical rows attributed to the same
   category. That is the whole point of the column, so it needs a direct test.
 
-### Phase 2 — relation capture
+### ✅ Phase 2 — relation capture — DONE 2026-08-03
+
+Extraction proposes family relations in the SAME call as entities; the batched
+confirmation screen gained a third, skippable class; confirmed relations are
+written in the same transaction as the entities.
+
+- **Vocabulary comes from `relation_types`**, not a hardcoded list — the table
+  is the source (the FK proves it), so adding a type needs no prompt edit.
+  Family-only per decision 2.2; widening is passing a different category.
+- **Direction is `from` = subject**, tested on the STORED ROW resolved to real
+  entities, not on "a parent row exists". An inverted tree renders perfectly.
+- **One directed row**, no mirror; inverses derive from `inverse_type`.
+- **Re-analysis replaces**, like mentions — a relation must not outlive the
+  sentence that established it.
+
+Two things found while building, both of which failed silently:
+
+1. **The entity regex is greedy.** `\[.*\]` spans first bracket to LAST, so
+   the moment a second array existed it swallowed both, parsed neither, and
+   returned ZERO entities from a good extraction — indistinguishable from a
+   recording that mentioned nobody. The parser now splits on the marker first.
+2. **`relation_types` is seeded by migration 0012 only.** A database built by
+   `Base.metadata.create_all` (a fresh dev DB, or a test fixture) has the table
+   but no rows, which turns relation capture off with nothing to show for it.
+   `get_relation_vocabulary` now warns rather than returning an empty list
+   quietly.
+
+16 new tests (651 total).
+
+### Phase 2 — relation capture (original plan)
 
 **2a. Extraction proposes relations.** Extend `entity_extraction` to return,
 alongside entities, a `relations` list of

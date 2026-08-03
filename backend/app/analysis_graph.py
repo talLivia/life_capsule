@@ -81,7 +81,7 @@ from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import InterviewSession, RawSegment, TranscriptChunk, User
 from app.services import embeddings, entity_extraction, entity_store
-from app.services.entity_extraction import ExtractedEntity
+from app.services.entity_extraction import ExtractedEntity, ExtractedRelation
 from app.services.entity_names import names_are_similar as _names_are_similar
 from app.services.llm import llm_service
 from app.services.storage import storage_service
@@ -114,6 +114,15 @@ class AnalysisState(TypedDict, total=False):
     # transcript can disagree. Dicts, not dataclasses, because this state is
     # checkpointed and may sit through a human confirmation lasting days.
     extracted_entities: List[Dict[str, Any]]
+    # Family relations this recording PROPOSED, as plain dicts (same
+    # serialisation reason as extracted_entities). Proposals only — nothing is
+    # written until the producer confirms, because a silent wrong relation in a
+    # family tree is worse than an unanswered question.
+    proposed_relations: List[Dict[str, Any]]
+    # Which of those the producer accepted, keyed by the same index the
+    # confirmation screen showed. Absent entirely when they skipped — which is
+    # a real answer, not a missing one (relations are skippable by decision).
+    relation_answers: Dict[str, bool]
     importance_score: float
     status: str
     error: str
@@ -490,7 +499,13 @@ async def check_entities_node(state: AnalysisState) -> dict:
     # full objects are written by finalize_ingest. Extracting again there
     # could return a different list, and then the names the producer confirmed
     # would not be the names that got stored.
-    extracted = await entity_extraction.extract_entities(transcript)
+    # Family relations come out of the SAME call — a second pass over the same
+    # transcript could name people this one did not extract, and the relation
+    # would then point at an entity that never gets created. The vocabulary
+    # comes from relation_types, so adding a type needs no prompt edit.
+    async with AsyncSessionLocal() as db:
+        relation_vocabulary = await entity_store.get_relation_vocabulary(db)
+    extracted, proposed = await entity_extraction.extract(transcript, relation_vocabulary)
     names = [e.name for e in extracted]
 
     if names:
@@ -557,6 +572,7 @@ async def check_entities_node(state: AnalysisState) -> dict:
         "names_to_check": to_check,
         "entity_resolutions": auto_resolutions,
         "extracted_entities": [e.as_dict() for e in extracted],
+        "proposed_relations": [r.as_dict() for r in proposed],
     }
 
 
@@ -612,6 +628,30 @@ def type_questions(extracted: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
+def relation_questions(proposed: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The relation questions this recording raises — one per proposal.
+
+    Unlike type questions, EVERY proposal is asked about. There is no
+    equivalent of `alternative_type` to gate on: the extractor either found a
+    stated relation or it did not, and a relation it is confident about is
+    exactly the kind that lands wrong in a family tree if nobody looks.
+
+    Indexed rather than keyed by name: two people can share a relation type to
+    the speaker ("ניר ורז הם אחים שלי"), so name alone does not identify a
+    proposal.
+    """
+    return [
+        {
+            "index": i,
+            "from_name": r["from_name"],
+            "to_name": r["to_name"],
+            "relation_type": r["relation_type"],
+            "evidence": r.get("evidence"),
+        }
+        for i, r in enumerate(proposed)
+    ]
+
+
 async def human_confirm_node(state: AnalysisState) -> dict:
     """ONE interrupt per recording, carrying every question it raises.
 
@@ -629,13 +669,19 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     """
     identity_questions = list(state.get("names_to_check") or [])
     pending_types = type_questions(state.get("extracted_entities") or [])
-    if not identity_questions and not pending_types:
+    pending_relations = relation_questions(state.get("proposed_relations") or [])
+    if not identity_questions and not pending_types and not pending_relations:
         return {}
 
     answer = interrupt(
         {
             "identity_questions": identity_questions,
             "type_questions": pending_types,
+            # A THIRD class, and deliberately a different one: identity and
+            # type must be answered (both silent defaults are dangerous),
+            # while relations are skippable. An unanswered relation is simply
+            # not stored, which is the status quo and harmless.
+            "relation_questions": pending_relations,
         }
     )
 
@@ -679,10 +725,30 @@ async def human_confirm_node(state: AnalysisState) -> dict:
             entity["alternative_type"] = None
         entities.append(entity)
 
+    # Relations: keep only what was explicitly ACCEPTED. Anything else —
+    # declined, or skipped entirely — is simply not stored.
+    #
+    # The default here is the opposite of the identity default, on purpose.
+    # An unanswered identity question resolves to "someone new" because
+    # silence has to mean SOMETHING and a false split is the recoverable
+    # direction. An unanswered relation has a genuinely empty outcome
+    # available: storing nothing leaves the archive exactly as it was, which
+    # is why relations could be made skippable and identity could not.
+    raw_relation_answers = answer.get("relations") or {}
+    accepted = [
+        r
+        for i, r in enumerate(state.get("proposed_relations") or [])
+        if raw_relation_answers.get(str(i)) is True
+        or raw_relation_answers.get(i) is True
+    ]
+
     return {
         "names_to_check": [],
         "entity_resolutions": resolutions,
         "extracted_entities": entities,
+        # Overwritten with the accepted subset, so finalize_ingest writes
+        # exactly what the producer approved and nothing else.
+        "proposed_relations": accepted,
     }
 
 
@@ -733,6 +799,20 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
                 segment_id=segment_id,
                 producer_id=state["group_id"],
                 entities=entities,
+            )
+            # Relations AFTER entities, in the same transaction: an endpoint is
+            # resolved by looking up the entity row, which the call above is
+            # what creates. Only ever the confirmed subset — human_confirm
+            # replaced proposed_relations with what the producer accepted.
+            await entity_store.write_segment_relations(
+                db,
+                segment_id=segment_id,
+                producer_id=state["group_id"],
+                relations=[
+                    ExtractedRelation.from_dict(d)
+                    for d in state.get("proposed_relations") or []
+                ],
+                self_marker=entity_extraction.SELF,
             )
             # ONE commit for the entities AND the status. entity_store
             # deliberately does not commit, so a recording can never be marked

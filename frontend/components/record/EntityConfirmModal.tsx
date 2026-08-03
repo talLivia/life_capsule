@@ -36,6 +36,9 @@ export function EntityConfirmModal() {
   const [pending, setPending] = useState<PendingConfirmation | null>(null)
   const [identity, setIdentity] = useState<Record<string, string>>({})
   const [types, setTypes] = useState<Record<string, string>>({})
+  // Keyed by proposal INDEX, not name: two people can hold the same relation
+  // to the speaker, so a name would not identify one.
+  const [relations, setRelations] = useState<Record<number, boolean>>({})
   const answeringRef = useRef(false)
   const [answering, setAnswering] = useState(false)
 
@@ -65,6 +68,7 @@ export function EntityConfirmModal() {
   useEffect(() => {
     setIdentity({})
     setTypes({})
+    setRelations({})
   }, [pending?.segment_id])
 
   const identityQuestions = useMemo(
@@ -75,8 +79,15 @@ export function EntityConfirmModal() {
     () => pending?.pending_confirmation.type_questions ?? [],
     [pending],
   )
+  const relationQuestions = useMemo(
+    () => pending?.pending_confirmation.relation_questions ?? [],
+    [pending],
+  )
 
-  // The server rejects a partial submit, so the button must not offer one.
+  // The server rejects a partial submit of identity/type, so the button must
+  // not offer one. Relations are deliberately NOT counted here: they are
+  // skippable, and including them would make the button demand answers the
+  // server does not require — turning "you may skip this" into "you may not".
   const allAnswered =
     identityQuestions.every((q) => identity[q.name]) &&
     typeQuestions.every((q) => types[q.name])
@@ -103,6 +114,11 @@ export function EntityConfirmModal() {
           }),
         ),
         types: Object.fromEntries(typeQuestions.map((q) => [q.name, types[q.name]])),
+        // Only the accepted ones. An untouched relation is simply absent,
+        // which the server reads as "not stored" — the same as declining.
+        relations: Object.fromEntries(
+          Object.entries(relations).filter(([, accepted]) => accepted),
+        ),
       })
       setPending(null)
       // Another RECORDING may also be waiting — this screen covers one.
@@ -215,6 +231,48 @@ export function EntityConfirmModal() {
             </div>
           </fieldset>
         ))}
+
+        {relationQuestions.length > 0 && (
+          <fieldset className="flex flex-col gap-2 pt-1 border-t border-white/10">
+            {/* Visually separated because it is a DIFFERENT KIND of question:
+                everything above must be answered, this may be skipped. Saying
+                so beats leaving the producer to infer it from the button
+                staying enabled. */}
+            <legend className="text-sm text-white leading-relaxed mb-1">
+              Family connections I picked up — optional
+            </legend>
+            <p className="text-xs text-gray-400 -mt-1 mb-1">
+              Tick the ones that are right. Anything you leave alone is simply not saved.
+            </p>
+            {relationQuestions.map((q) => (
+              <button
+                key={`rel-${q.index}`}
+                type="button"
+                onClick={() =>
+                  setRelations((s) => ({ ...s, [q.index]: !s[q.index] }))
+                }
+                disabled={answering}
+                className={optionClass(Boolean(relations[q.index]))}
+              >
+                {radio(Boolean(relations[q.index]))}
+                <span className="flex flex-col gap-0.5 text-left">
+                  <span className="text-sm font-medium text-white">
+                    <span dir="auto">{q.from_name === '__SELF__' ? 'You' : q.from_name}</span>
+                    {' is the '}
+                    {q.relation_type.replace(/_/g, ' ')}
+                    {' of '}
+                    <span dir="auto">{q.to_name === '__SELF__' ? 'you' : q.to_name}</span>
+                  </span>
+                  {q.evidence && (
+                    <span dir="auto" className="text-xs text-gray-400">
+                      &ldquo;{q.evidence}&rdquo;
+                    </span>
+                  )}
+                </span>
+              </button>
+            ))}
+          </fieldset>
+        )}
 
         <div className="flex items-center justify-between gap-3 pt-1">
           <span className="text-xs text-gray-400">

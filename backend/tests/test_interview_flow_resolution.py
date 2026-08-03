@@ -18,14 +18,15 @@ import pytest
 
 from app import interview_config as ic
 
-V2_PATH = Path(__file__).resolve().parent.parent / "app" / "interview_questions_v2.json"
+V2_PATH = Path(__file__).resolve().parent.parent / "app" / "interview_questions.json"
 
 
 @pytest.fixture
 def v2(monkeypatch):
-    """Point interview_config at the v2 file. Cutover (step 6) makes this the
-    real file; until then the app still loads v1 and this proves the same code
-    handles both."""
+    """Load the question file explicitly rather than relying on the module's
+    own cached read. Since the cutover this IS the live file, so the fixture is
+    now about isolation from other tests' monkeypatching, not about pointing
+    somewhere else."""
     with open(V2_PATH, encoding="utf-8") as f:
         doc = json.load(f)
     monkeypatch.setattr(ic, "_load_all", lambda: doc)
