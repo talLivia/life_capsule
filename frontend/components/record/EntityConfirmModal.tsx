@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { HelpCircle, Loader2, UserPlus, Check } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
-import type { ApiError, PendingConfirmation } from '@/lib/types'
+import type { ApiError, ConfirmEntitiesResult, PendingConfirmation } from '@/lib/types'
 
 const POLL_INTERVAL_MS = 8000
 
@@ -101,7 +101,7 @@ export function EntityConfirmModal() {
     answeringRef.current = true
     setAnswering(true)
     try {
-      await api.confirmEntities(pending.segment_id, {
+      const outcome: ConfirmEntitiesResult = await api.confirmEntities(pending.segment_id, {
         identity: Object.fromEntries(
           identityQuestions.map((q) => {
             const choice = identity[q.name]
@@ -120,6 +120,13 @@ export function EntityConfirmModal() {
           Object.entries(relations).filter(([, accepted]) => accepted),
         ),
       })
+      // Say what the answer DID. A type answer used to be accepted and then
+      // discarded by the "existing value wins" rule with no feedback at all;
+      // it now takes effect, and the producer is told so rather than having
+      // to go and check.
+      for (const change of outcome?.applied_type_changes ?? []) {
+        toast.success(`${change.name}: ${change.was} → ${change.now}`)
+      }
       setPending(null)
       // Another RECORDING may also be waiting — this screen covers one.
       try {

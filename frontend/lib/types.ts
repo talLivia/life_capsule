@@ -275,6 +275,20 @@ export interface EntityBatchAnswer {
   types: Record<string, string>
 }
 
+/** An entity type the producer's answer actually changed. Returned by
+ *  confirm-entities so the answer visibly takes effect — it used to be
+ *  accepted and silently discarded. */
+export interface AppliedTypeChange {
+  name: string
+  was: string
+  now: string
+}
+
+export interface ConfirmEntitiesResult {
+  segment: RawSegment
+  applied_type_changes: AppliedTypeChange[]
+}
+
 export interface ApiError {
   response?: {
     data?: {

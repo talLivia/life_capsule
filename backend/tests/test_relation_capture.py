@@ -284,3 +284,92 @@ async def test_an_unseeded_vocabulary_is_reported_not_silent(db_session, caplog)
     with caplog.at_level(logging.WARNING):
         assert await entity_store.get_relation_vocabulary(db_session, "family") == []
     assert any("relation capture is disabled" in r.message for r in caplog.records)
+
+
+# ── confirmed type answers (the silent no-op found on real input) ─────────
+
+
+async def test_a_producer_answer_overrides_an_existing_type(db_session, archive):
+    """Observed live: the screen asked "place or organisation?", the producer
+    chose place, the entity stayed organisation, and nothing said so.
+
+    The rule kept an existing type against a LATER EXTRACTION, which is right —
+    ingest order must not decide. But its own reason was that a disagreement
+    "is a question for the producer", and this is the producer answering it.
+    """
+    user, segment = archive
+    await entity_store.write_segment_entities(
+        db_session, segment_id=segment.id, producer_id=user.id,
+        entities=[ExtractedEntity(name="הכפר הירוק", type="organisation")],
+    )
+
+    result = await entity_store.write_segment_entities(
+        db_session, segment_id=segment.id, producer_id=user.id,
+        entities=[
+            ExtractedEntity(name="הכפר הירוק", type="place", type_confirmed=True)
+        ],
+    )
+
+    ent = (
+        await db_session.execute(select(Entity).where(Entity.name == "הכפר הירוק"))
+    ).scalars().one()
+    assert ent.type == "place", "the producer's answer must take effect"
+    assert result.type_changes == [("הכפר הירוק", "organisation", "place")]
+
+
+async def test_an_extractor_guess_still_does_not_override(db_session, archive):
+    """Unchanged: whichever recording was ingested last must not decide."""
+    user, segment = archive
+    await entity_store.write_segment_entities(
+        db_session, segment_id=segment.id, producer_id=user.id,
+        entities=[ExtractedEntity(name="הכפר הירוק", type="organisation")],
+    )
+    result = await entity_store.write_segment_entities(
+        db_session, segment_id=segment.id, producer_id=user.id,
+        entities=[ExtractedEntity(name="הכפר הירוק", type="place")],  # not confirmed
+    )
+    ent = (
+        await db_session.execute(select(Entity).where(Entity.name == "הכפר הירוק"))
+    ).scalars().one()
+    assert ent.type == "organisation"
+    assert result.type_changes == [], "nothing changed, so nothing to report"
+
+
+async def test_a_confirmed_answer_can_never_retype_the_self_entity(db_session, archive):
+    """ck_entities_self_is_person would reject it, and a transcript naming the
+    producer must not be able to turn them into a place however the answer
+    arrived."""
+    user, segment = archive
+    result = await entity_store.write_segment_entities(
+        db_session, segment_id=segment.id, producer_id=user.id,
+        entities=[ExtractedEntity(name="Tal", type="place", type_confirmed=True)],
+    )
+    self_ent = (
+        await db_session.execute(
+            select(Entity).where(Entity.producer_id == user.id, Entity.is_self)
+        )
+    ).scalars().one()
+    assert self_ent.type == "person"
+    assert result.type_changes == []
+
+
+async def test_filling_in_other_is_reported_too(db_session, archive):
+    """Not a conflict, but still a change the producer may want to see."""
+    user, segment = archive
+    await entity_store.write_segment_entities(
+        db_session, segment_id=segment.id, producer_id=user.id,
+        entities=[ExtractedEntity(name="טבריה", type="other")],
+    )
+    result = await entity_store.write_segment_entities(
+        db_session, segment_id=segment.id, producer_id=user.id,
+        entities=[ExtractedEntity(name="טבריה", type="place")],
+    )
+    assert result.type_changes == [("טבריה", "other", "place")]
+
+
+def test_the_confirmed_flag_survives_the_state_round_trip():
+    """It crosses a checkpoint boundary as a dict and may sit there for days —
+    losing it would silently restore the discard."""
+    e = ExtractedEntity(name="x", type="place", type_confirmed=True)
+    assert ExtractedEntity.from_dict(e.as_dict()).type_confirmed is True
+    assert ExtractedEntity.from_dict(ExtractedEntity(name="x").as_dict()).type_confirmed is False

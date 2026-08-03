@@ -1014,7 +1014,10 @@ async def test_confirm_entities_answers_everything_in_one_call(
     )
     db_session.expire_all()
     assert resp.status_code == 200
-    assert resp.json()["status"] == "ready"
+    # confirm-entities returns {segment, applied_type_changes} — the changes
+    # are how a producer's type answer is shown to have taken effect, rather
+    # than being accepted and silently discarded.
+    assert resp.json()["segment"]["status"] == "ready"
 
     after = await client.get(
         "/api/v1/interview/segments/pending-confirmations", headers=auth_headers
@@ -1104,7 +1107,10 @@ async def test_confirm_entities_multi_candidate_validation(
         headers=auth_headers,
     )
     assert resp.status_code == 200
-    assert resp.json()["status"] == "ready"
+    # confirm-entities returns {segment, applied_type_changes} — the changes
+    # are how a producer's type answer is shown to have taken effect, rather
+    # than being accepted and silently discarded.
+    assert resp.json()["segment"]["status"] == "ready"
 
 
 async def test_confirm_entities_rejects_a_type_outside_the_two_offered(

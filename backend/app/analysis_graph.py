@@ -125,6 +125,10 @@ class AnalysisState(TypedDict, total=False):
     relation_answers: Dict[str, bool]
     importance_score: float
     status: str
+    # Type changes the producer's answers actually caused, as
+    # [{name, was, now}] — surfaced by the confirm endpoint so an answer is
+    # visibly applied rather than silently absorbed.
+    applied_type_changes: List[Dict[str, Any]]
     error: str
 
 
@@ -722,6 +726,11 @@ async def human_confirm_node(state: AnalysisState) -> dict:
             chosen = type_answers.get(entity["name"])
             if chosen in (entity["type"], entity["alternative_type"]):
                 entity["type"] = chosen
+                # Mark it as the PRODUCER's answer, not the extractor's guess.
+                # The writer keeps an existing type against a guess but must
+                # yield to a human — without this flag the two are
+                # indistinguishable and the answer is silently discarded.
+                entity["type_confirmed"] = True
             entity["alternative_type"] = None
         entities.append(entity)
 
@@ -794,12 +803,23 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
         )
 
         try:
-            await entity_store.write_segment_entities(
+            write_result = await entity_store.write_segment_entities(
                 db,
                 segment_id=segment_id,
                 producer_id=state["group_id"],
                 entities=entities,
             )
+            applied_type_changes = [
+                {"name": n, "was": was, "now": now}
+                for n, was, now in write_result.type_changes
+            ]
+            if write_result.type_changes:
+                # Logged as well as returned: the producer sees it in the UI,
+                # and anyone reading logs can see an answer took effect.
+                logger.info(
+                    f"Producer type answers applied on segment {segment_id}: "
+                    f"{write_result.type_changes}"
+                )
             # Relations AFTER entities, in the same transaction: an endpoint is
             # resolved by looking up the entity row, which the call above is
             # what creates. Only ever the confirmed subset — human_confirm
@@ -850,7 +870,10 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
     except Exception as e:  # never fail ingestion over a cache refresh
         logger.warning(f"Could not refresh archive cache for {state['group_id']}: {e}")
 
-    return {"status": "ready"}
+    # Carried out of the graph so the confirm endpoint can tell the producer
+    # what their answer actually did. Without it the answer takes effect
+    # invisibly, which is only marginally better than not taking effect.
+    return {"status": "ready", "applied_type_changes": applied_type_changes}
 
 
 async def fail_node(state: AnalysisState) -> dict:

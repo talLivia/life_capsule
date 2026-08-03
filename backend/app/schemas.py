@@ -253,6 +253,21 @@ class RawSegmentResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AppliedTypeChange(BaseModel):
+    """An entity type the producer's answer changed. Returned so the
+    confirmation visibly took effect — an answer that silently does nothing is
+    worse than not asking (observed live on הכפר הירוק)."""
+
+    name: str
+    was: str
+    now: str
+
+
+class ConfirmEntitiesResponse(BaseModel):
+    segment: RawSegmentResponse
+    applied_type_changes: List[AppliedTypeChange] = Field(default_factory=list)
+
+
 class ExtractedEntityResponse(BaseModel):
     name: str
     summary: Optional[str] = None

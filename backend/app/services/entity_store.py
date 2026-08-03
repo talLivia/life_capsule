@@ -70,6 +70,11 @@ class EntityWriteResult:
     # wrong `type` is a visibly wrong label the producer can correct, not a
     # reason to fail an ingest whose transcript is already saved.
     needs_confirmation: List[ExtractedEntity] = field(default_factory=list)
+    # (name, was, now) for every type the PRODUCER's answer actually changed.
+    # Surfaced back through the confirm endpoint so the answer visibly takes
+    # effect — the gap this exists to close is an answer that silently did
+    # nothing.
+    type_changes: List[Tuple[str, str, str]] = field(default_factory=list)
 
 
 async def get_relation_vocabulary(db: AsyncSession, category: str = "family") -> List[str]:
@@ -212,7 +217,8 @@ async def write_segment_entities(
             continue
 
         entity, created = await _get_or_create_entity(
-            db, producer_id=producer_id, extracted=extracted, normalized=normalized
+            db, producer_id=producer_id, extracted=extracted, normalized=normalized,
+            result=result,
         )
         if created:
             result.entities_created += 1
@@ -512,11 +518,21 @@ async def _get_or_create_entity(
     producer_id: str,
     extracted: ExtractedEntity,
     normalized: str,
+    result: Optional[EntityWriteResult] = None,
 ) -> Tuple[Entity, bool]:
     """The merge. Returns (entity, created)."""
+
+    def _record(change: Optional[Tuple[str, str]]) -> None:
+        if change and result is not None:
+            result.type_changes.append((extracted.name, change[0], change[1]))
+
     existing = await _find_entity(db, producer_id, normalized)
     if existing is not None:
-        _maybe_upgrade_type(existing, extracted.type)
+        _record(
+            _maybe_upgrade_type(
+                existing, extracted.type, confirmed=extracted.type_confirmed
+            )
+        )
         return existing, False
 
     entity = Entity(
@@ -551,7 +567,11 @@ async def _get_or_create_entity(
             # The unique constraint was not what rejected this, so the write
             # is genuinely broken and must not be swallowed.
             raise
-        _maybe_upgrade_type(existing, extracted.type)
+        _record(
+            _maybe_upgrade_type(
+                existing, extracted.type, confirmed=extracted.type_confirmed
+            )
+        )
         return existing, False
     return entity, True
 
@@ -654,28 +674,65 @@ async def _find_entity(
     ).scalar_one_or_none()
 
 
-def _maybe_upgrade_type(entity: Entity, new_type: str) -> None:
-    """Fill in a type we did not have; never overwrite one we did.
+def _maybe_upgrade_type(
+    entity: Entity, new_type: str, *, confirmed: bool = False
+) -> Optional[Tuple[str, str]]:
+    """Fill in a type we did not have; never let an EXTRACTOR overwrite one we
+    did; always let the PRODUCER. Returns (old, new) when it changed.
 
     'other' is the fallback for an extraction that could not classify, so a
     later recording that DOES classify the same name is strictly more
-    information and worth taking. A real disagreement (one recording says
-    place, another says organisation) is NOT resolved here — it is a question
-    for the producer, not something to settle by whichever recording was
-    ingested last. Keeping the first answer also keeps `is_self` safe: the
-    self-entity is 'person', so it can never be downgraded by a transcript
-    that happens to name the producer.
+    information and worth taking.
+
+    A disagreement between two extractions is deliberately not resolved here —
+    this function's long-standing rule, and its reason was always that the
+    disagreement "is a question for the producer, not something to settle by
+    whichever recording was ingested last."
+
+    `confirmed=True` is the producer answering that question. Honouring it is
+    what the rule was FOR; ignoring it meant the confirmation screen asked
+    "place or organisation?", accepted the answer, discarded it, and said
+    nothing — observed live on הכפר הירוק, where the producer chose place and
+    the entity stayed organisation with no feedback. A confirmed answer that
+    has no effect is worse than not asking.
+
+    `is_self` is the one exception, and it is a hard one: the self-entity must
+    stay a person or `ck_entities_self_is_person` rejects the write. A
+    transcript that happens to name the producer must never be able to retype
+    them, however the answer arrived.
     """
+    if entity.is_self:
+        return None
+
     if entity.type == "other" and new_type != "other":
+        old = entity.type
         entity.type = new_type
-        return
-    if new_type != "other" and entity.type != new_type:
+        return (old, new_type)
+
+    if new_type == "other" or entity.type == new_type:
+        return None
+
+    if confirmed:
+        old = entity.type
+        entity.type = new_type
         logger.info(
-            "entity_type_disagreement",
+            "entity_type_resolved_by_producer",
             extra={
                 "entity_id": entity.id,
                 "entity_name": entity.name,
-                "kept_type": entity.type,
-                "proposed_type": new_type,
+                "was": old,
+                "now": new_type,
             },
         )
+        return (old, new_type)
+
+    logger.info(
+        "entity_type_disagreement",
+        extra={
+            "entity_id": entity.id,
+            "entity_name": entity.name,
+            "kept_type": entity.type,
+            "proposed_type": new_type,
+        },
+    )
+    return None

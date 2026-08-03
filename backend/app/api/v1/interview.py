@@ -13,6 +13,7 @@ from app import interview_config
 from app.interview_config import get_questions
 from app.models import InterviewSession, RawSegment, User
 from app.schemas import (
+    ConfirmEntitiesResponse,
     EntityBatchConfirmRequest,
     GateAnswerRequest,
     InterviewFlow,
@@ -544,7 +545,9 @@ async def list_pending_confirmations(
     ]
 
 
-@router.post("/segments/{segment_id}/confirm-entities", response_model=RawSegmentResponse)
+@router.post(
+    "/segments/{segment_id}/confirm-entities", response_model=ConfirmEntitiesResponse
+)
 async def confirm_entities(
     segment_id: str,
     payload: EntityBatchConfirmRequest,
@@ -649,7 +652,7 @@ async def confirm_entities(
 
     from app.analysis_graph import resume_segment_analysis
 
-    await resume_segment_analysis(
+    resume_result = await resume_segment_analysis(
         segment_id,
         {
             "identity": identity,
@@ -662,4 +665,7 @@ async def confirm_entities(
     )
 
     await db.refresh(segment)
-    return segment
+    return ConfirmEntitiesResponse(
+        segment=segment,
+        applied_type_changes=(resume_result or {}).get("applied_type_changes") or [],
+    )

@@ -164,6 +164,11 @@ class ExtractedEntity:
     type: str = "other"
     alternative_type: Optional[str] = None
     summary: Optional[str] = None
+    # True once the PRODUCER answered this entity's type question. It is what
+    # lets the writer tell "the extractor guessed place" from "a human said
+    # place" — the first must not overwrite an existing type, the second must.
+    # Never set by the extractor itself; only by human_confirm_node.
+    type_confirmed: bool = False
 
     @property
     def needs_type_confirmation(self) -> bool:
@@ -183,6 +188,7 @@ class ExtractedEntity:
             "type": self.type,
             "alternative_type": self.alternative_type,
             "summary": self.summary,
+            "type_confirmed": self.type_confirmed,
         }
 
     @classmethod
@@ -192,6 +198,7 @@ class ExtractedEntity:
             type=data.get("type") or "other",
             alternative_type=data.get("alternative_type"),
             summary=data.get("summary"),
+            type_confirmed=bool(data.get("type_confirmed")),
         )
 
 
