@@ -709,30 +709,66 @@ async def ensure_self_entity(db: AsyncSession, user) -> Tuple[Optional[Entity], 
 # The producer is asked once, and the answer is written as ordinary parent
 # relations.
 #
-# These two relation names are hardcoded, unlike everything else that reads
-# the `relation_types` vocabulary from the database. That is deliberate: the
-# question being asked is literally "is your parent also their parent", which
-# is about those two relations specifically. It is not generic over the
-# vocabulary, and pretending otherwise by deriving it from `generation_delta`
-# would also sweep in step-parents and spouses, which is exactly wrong here.
+# ## Everything here is keyed by NAME, not by entity id
+#
+# Because the answer has to be available on the FIRST recording. A new
+# producer's first answer is "my parents are צבי and אילנה and my siblings are
+# ...", and at the moment the question is built none of those people exist as
+# rows yet — they are written at finalize, after the confirmation. Keying by id
+# would mean the question could only ever be asked about people some EARLIER
+# recording had already established, which is exactly the bug this replaces:
+# across four recordings the question never once appeared, because each one was
+# itself the recording that created the siblings.
+#
+# Names resolve to entities at write time, by which point write_segment_entities
+# has created them. See write_parentage.
+#
+# These two relation names are hardcoded, unlike everything else that reads the
+# `relation_types` vocabulary from the database. That is deliberate: the
+# question is literally "is your parent also their parent", which is about
+# those two relations. Deriving it from `generation_delta` would also sweep in
+# step-parents and spouses, which is exactly wrong here.
 PARENT_RELATION = "parent"
 SIBLING_RELATION = "sibling"
 
 
-async def parentage_candidates(db: AsyncSession, producer_id: str) -> Dict[str, list]:
-    """The producer's recorded parents, and the siblings still to ask about.
+def _proposed_names(
+    proposed_relations: Sequence[dict], self_marker: str, relation_type: str
+) -> List[str]:
+    """Names this recording proposes as `relation_type` of the producer.
 
-    Returns `{"parents": [...], "siblings": [...]}`, each a list of
-    `{"id", "name"}`. Empty siblings means there is nothing to ask.
+    Symmetric relations are stored one way round, and the extractor may emit
+    either — so the producer can be on either end and both are checked.
+    """
+    found: List[str] = []
+    for relation in proposed_relations or []:
+        if relation.get("relation_type") != relation_type:
+            continue
+        from_name = relation.get("from_name")
+        to_name = relation.get("to_name")
+        if to_name == self_marker and from_name and from_name != self_marker:
+            found.append(from_name)
+        elif from_name == self_marker and to_name and to_name != self_marker:
+            found.append(to_name)
+    return found
 
-    A sibling qualifies when all of these hold:
-      * they are the producer's sibling by a confirmed relation;
-      * they have no parent of their own recorded;
-      * they have never been asked (`parentage_asked_at IS NULL`).
 
-    With no recorded parents for the producer there is nothing to offer as an
-    answer, so the question is not asked at all rather than asked with an
-    empty list of options.
+async def parentage_candidates(
+    db: AsyncSession,
+    producer_id: str,
+    proposed_relations: Optional[Sequence[dict]] = None,
+    self_marker: str = "__SELF__",
+) -> Dict[str, list]:
+    """Who to ask about, and which parents to offer.
+
+    Returns `{"parents": [...], "siblings": [...], "known_people": [...]}`,
+    each entry `{"name", "entity_id"}` with a null id for anyone this recording
+    has only just named.
+
+    Both lists combine what the archive already holds with what THIS recording
+    proposes, which is what makes the question answerable on a producer's very
+    first recording. A sibling qualifies when they have no parent recorded and
+    have never been asked; with no parents to offer, nothing is asked at all.
     """
     self_entity = (
         await db.execute(
@@ -740,9 +776,19 @@ async def parentage_candidates(db: AsyncSession, producer_id: str) -> Dict[str, 
         )
     ).scalars().first()
     if self_entity is None:
-        return {"parents": [], "siblings": []}
+        return {"parents": [], "siblings": [], "known_people": []}
 
-    parents = list(
+    everyone = {
+        e.normalized_name: e
+        for e in (
+            await db.execute(
+                select(Entity).where(Entity.producer_id == producer_id)
+            )
+        ).scalars().all()
+    }
+
+    # ── parents: already recorded, plus any this recording proposes ──────
+    recorded_parents = list(
         (
             await db.execute(
                 select(Entity)
@@ -756,11 +802,21 @@ async def parentage_candidates(db: AsyncSession, producer_id: str) -> Dict[str, 
             )
         ).scalars().all()
     )
+    parents: Dict[str, dict] = {
+        p.normalized_name: {"name": p.name, "entity_id": p.id} for p in recorded_parents
+    }
+    for name in _proposed_names(proposed_relations, self_marker, PARENT_RELATION):
+        key = normalize_entity_name(name)
+        if key and key not in parents:
+            existing = everyone.get(key)
+            parents[key] = {
+                "name": existing.name if existing else name,
+                "entity_id": existing.id if existing else None,
+            }
     if not parents:
-        return {"parents": [], "siblings": []}
+        return {"parents": [], "siblings": [], "known_people": []}
 
-    # Sibling is symmetric and stored as ONE directed row, so the producer may
-    # be on either end. Checking only one direction would miss half of them.
+    # ── siblings: already recorded, plus any this recording proposes ─────
     sibling_rows = (
         await db.execute(
             select(EntityRelation.from_entity_id, EntityRelation.to_entity_id).where(
@@ -770,66 +826,75 @@ async def parentage_candidates(db: AsyncSession, producer_id: str) -> Dict[str, 
             )
         )
     ).all()
-    sibling_ids = {
+    recorded_sibling_ids = {
         (to_id if from_id == self_entity.id else from_id)
         for from_id, to_id in sibling_rows
     }
-    sibling_ids.discard(self_entity.id)
-    if not sibling_ids:
-        return {"parents": [], "siblings": []}
+    recorded_sibling_ids.discard(self_entity.id)
 
-    # Anyone who already has a parent recorded is not asked about — the tree
+    # Anyone who already has a parent recorded is never asked about — the tree
     # can already draw them, whether that parent is the producer's or not.
     with_parents = set(
         (
             await db.execute(
                 select(EntityRelation.to_entity_id).where(
-                    EntityRelation.to_entity_id.in_(sibling_ids),
-                    EntityRelation.relation_type == PARENT_RELATION,
+                    EntityRelation.relation_type == PARENT_RELATION
                 )
             )
         ).scalars().all()
     )
 
-    siblings = list(
-        (
-            await db.execute(
-                select(Entity)
-                .where(
-                    Entity.id.in_(sibling_ids - with_parents),
-                    Entity.parentage_asked_at.is_(None),
-                )
-                .order_by(Entity.name)
-            )
-        ).scalars().all()
-    )
-    if not siblings:
-        return {"parents": [], "siblings": []}
+    candidates: Dict[str, dict] = {}
+    for entity in everyone.values():
+        if entity.id not in recorded_sibling_ids:
+            continue
+        if entity.id in with_parents or entity.parentage_asked_at is not None:
+            continue
+        candidates[entity.normalized_name] = {
+            "name": entity.name,
+            "entity_id": entity.id,
+            # Their sibling relation is already recorded, so a parentage
+            # answer for them stands on its own. A proposed-only sibling is
+            # conditional on that proposal being accepted — see
+            # human_confirm_node.
+            "recorded": True,
+        }
+    for name in _proposed_names(proposed_relations, self_marker, SIBLING_RELATION):
+        key = normalize_entity_name(name)
+        if not key or key in candidates or key in parents:
+            continue
+        existing = everyone.get(key)
+        if existing is not None and (
+            existing.id in with_parents or existing.parentage_asked_at is not None
+        ):
+            continue
+        candidates[key] = {
+            "name": existing.name if existing else name,
+            "entity_id": existing.id if existing else None,
+            "recorded": False,
+        }
+
+    if not candidates:
+        return {"parents": [], "siblings": [], "known_people": []}
 
     # Everyone already in the archive, so "someone else" can be PICKED rather
-    # than typed. write_parentage resolves a typed name by normalised match, so
-    # a spelling that differs by one character silently creates a second person
-    # instead of linking to the first — a datalist is what stops that being the
-    # producer's problem. Excludes the producer: nobody is their own sibling's
-    # parent. The sibling themselves is excluded per-question.
-    known_people = list(
+    # than typed. A typed name resolves by normalised match, so a spelling that
+    # differs by one character silently creates a second person instead of
+    # linking to the first. Excludes the producer: nobody is their own
+    # sibling's parent.
+    known_people = sorted(
         (
-            await db.execute(
-                select(Entity)
-                .where(
-                    Entity.producer_id == producer_id,
-                    Entity.type == "person",
-                    Entity.is_self.is_(False),
-                )
-                .order_by(Entity.name)
-            )
-        ).scalars().all()
+            {"name": e.name, "entity_id": e.id}
+            for e in everyone.values()
+            if e.type == "person" and not e.is_self
+        ),
+        key=lambda p: p["name"],
     )
 
     return {
-        "parents": [{"id": p.id, "name": p.name} for p in parents],
-        "siblings": [{"id": s.id, "name": s.name} for s in siblings],
-        "known_people": [{"id": k.id, "name": k.name} for k in known_people],
+        "parents": sorted(parents.values(), key=lambda p: p["name"]),
+        "siblings": sorted(candidates.values(), key=lambda s: s["name"]),
+        "known_people": known_people,
     }
 
 
@@ -838,83 +903,81 @@ async def write_parentage(
     *,
     producer_id: str,
     segment_id: str,
-    asked_sibling_ids: Sequence[str],
+    asked_sibling_names: Sequence[str],
     answers: Dict[str, dict],
 ) -> Dict[str, int]:
     """Apply the parentage answers. Flushes, never commits.
 
-    `answers` is keyed by sibling entity id:
-        {"<sibling id>": {"parent_ids": [...], "new_parent_name": "מרים"}}
+    `answers` is keyed by sibling NAME:
+        {"ניר": {"parent_names": [...], "new_parent_name": "רבקה"}}
 
-    EVERY sibling in `asked_sibling_ids` is stamped `parentage_asked_at`,
-    answered or not. Skipping is an answer — "I do not know" or "not now" —
+    EVERY sibling in `asked_sibling_names` is stamped `parentage_asked_at`,
+    answered or not. Skipping is an answer — "I do not know", or "not now" —
     and without recording it the same question returns on every future
-    recording until the producer learns to click past the whole screen. This
-    is the same rule `year_asked_at` follows, for the same reason.
+    recording until the producer learns to click past the whole screen. Same
+    rule as `year_asked_at`, for the same reason.
 
     Relations are written with `origin="confirmation"`: the producer said this
     on a screen, not in the recording, and the tree must not offer to play a
     recording that never mentions the person.
+
+    Runs AFTER write_segment_entities, so every name the question offered
+    resolves to a row — including people this recording was the first to name.
     """
     now = datetime.now(timezone.utc)
     result = {"relations": 0, "new_parents": 0, "asked": 0}
 
-    asked = list(dict.fromkeys(asked_sibling_ids))
+    asked = list(dict.fromkeys(asked_sibling_names))
     if not asked:
         return result
 
-    siblings = {
-        e.id: e
-        for e in (
-            await db.execute(
-                select(Entity).where(
-                    Entity.id.in_(asked), Entity.producer_id == producer_id
-                )
-            )
-        ).scalars().all()
-    }
+    async def resolve(name: str) -> Optional[Entity]:
+        normalized = normalize_entity_name(name)
+        return await _find_entity(db, producer_id, normalized) if normalized else None
 
-    # Only the producer's own recorded parents may be ticked. A client naming
-    # any other entity id would otherwise be able to attach an arbitrary
-    # person as somebody's parent.
-    offered = {p["id"] for p in (await parentage_candidates(db, producer_id))["parents"]}
-
-    for sibling_id in asked:
-        sibling = siblings.get(sibling_id)
+    for sibling_name in asked:
+        sibling = await resolve(sibling_name)
         if sibling is None:
-            logger.warning(f"parentage answer for unknown sibling {sibling_id}")
+            # The entity should exist by now; if the producer declined the
+            # sibling relation that named them, it will not. Nothing to stamp
+            # and nothing to write.
+            logger.warning(f"parentage: no entity for sibling {sibling_name!r}")
             continue
 
         sibling.parentage_asked_at = now
         result["asked"] += 1
 
-        answer = answers.get(sibling_id) or {}
-        parent_ids = [pid for pid in (answer.get("parent_ids") or []) if pid in offered]
-
+        answer = answers.get(sibling_name) or {}
+        wanted = list(answer.get("parent_names") or [])
         new_name = (answer.get("new_parent_name") or "").strip()
         if new_name:
-            normalized = normalize_entity_name(new_name)
-            parent = await _find_entity(db, producer_id, normalized) if normalized else None
-            if parent is None and normalized:
+            wanted.append(new_name)
+
+        parent_ids: List[str] = []
+        for parent_name in wanted:
+            parent = await resolve(parent_name)
+            if parent is None:
+                normalized = normalize_entity_name(parent_name)
+                if not normalized:
+                    continue
                 parent = Entity(
                     producer_id=producer_id,
-                    name=new_name,
+                    name=parent_name.strip(),
                     normalized_name=normalized,
                     type="person",
                 )
                 db.add(parent)
                 await db.flush()
                 result["new_parents"] += 1
-            if parent is not None:
-                parent_ids.append(parent.id)
+            parent_ids.append(parent.id)
 
         for parent_id in dict.fromkeys(parent_ids):
-            if parent_id == sibling_id:
+            if parent_id == sibling.id:
                 continue  # ck_entity_relations_not_self
             db.add(
                 EntityRelation(
                     from_entity_id=parent_id,
-                    to_entity_id=sibling_id,
+                    to_entity_id=sibling.id,
                     relation_type=PARENT_RELATION,
                     source_segment_id=segment_id,
                     origin="confirmation",

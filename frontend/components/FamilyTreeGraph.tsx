@@ -75,6 +75,22 @@ const PAD = 20
  *  and zoom with the rows they name — as separate DOM they would drift. */
 const LABEL_W = 150
 
+/**
+ * Only these draw a descent. An `aunt_uncle` edge places somebody in the
+ * parents' row — correctly, they are that generation — but drawing a trunk
+ * down from them to the producer says they are a PARENT, and with four boxes
+ * up there and four identical lines nothing distinguishes the two who are.
+ * Placement and parenthood are different claims and only one of them is a line.
+ */
+const DESCENT_TYPES = new Set(['parent', 'child'])
+
+/** Same-row connector, drawn ONLY for a sibling of somebody in an ancestor
+ *  row. Sibling connectors between the producer's OWN siblings were removed
+ *  as noise — the row says it. One generation up the row does not: it holds
+ *  parents and their siblings side by side, and the line is what tells an
+ *  uncle apart from a father. */
+const SIBLING_RELATION = 'sibling'
+
 const MIN_SCALE = 0.15
 const MAX_SCALE = 2.5
 /** Never open smaller than this, even if the whole tree would not fit. A
@@ -206,7 +222,7 @@ export function FamilyTreeGraph({
   const zoomRef = useRef<ReactZoomPanPinchRef>(null)
   const pressRef = useRef<{ x: number; y: number } | null>(null)
 
-  const { placed, rowLabels, descents, width, height } = useMemo(() => {
+  const { placed, rowLabels, descents, siblingLinks, width, height } = useMemo(() => {
     const rows = orderRows(tree.generations, tree.edges)
     const rowWidths = rows.map((r) => r.length * NODE_W + Math.max(0, r.length - 1) * COL_GAP)
     const widest = Math.max(0, ...rowWidths)
@@ -229,7 +245,8 @@ export function FamilyTreeGraph({
     for (const edge of tree.edges) {
       const a = out.get(edge.from_id)
       const b = out.get(edge.to_id)
-      if (!a || !b || a.y === b.y) continue // same generation: no line
+      if (!a || !b || a.y === b.y) continue // same generation: no descent
+      if (!DESCENT_TYPES.has(edge.relation_type)) continue
       const upper = a.y < b.y ? a : b
       const lower = a.y < b.y ? b : a
       const list = parentsOf.get(lower.person.id) ?? []
@@ -302,9 +319,49 @@ export function FamilyTreeGraph({
       })
     })
 
+    /**
+     * Sibling links inside an ancestor row — an aunt or uncle beside the
+     * parent they are the sibling of.
+     *
+     * The one same-row connector that survives, and the reason it must:
+     * row -1 holds the producer's parents AND their siblings, and without a
+     * line there is nothing at all to say which two of four boxes are the
+     * parents. That was never true of the producer's own row, where the row
+     * label says it.
+     *
+     * Only drawn between ADJACENT columns. A longer one would pass behind the
+     * nodes in between and read as a chain — the occlusion problem from 4a,
+     * which is only safe to reintroduce under that restriction.
+     */
+    const columnOf = new Map<string, number>()
+    rows.forEach((row) => row.forEach((p, i) => columnOf.set(p.id, i)))
+    const rootRow = out.get(tree.root_id ?? '')?.y
+    const siblingLinks = tree.edges
+      .filter((edge) => {
+        const a = out.get(edge.from_id)
+        const b = out.get(edge.to_id)
+        if (!a || !b || edge.relation_type !== SIBLING_RELATION) return false
+        if (a.y !== b.y) return false
+        if (rootRow === undefined || a.y >= rootRow) return false // ancestors only
+        return Math.abs((columnOf.get(edge.from_id) ?? 0) - (columnOf.get(edge.to_id) ?? 0)) === 1
+      })
+      .map((edge) => {
+        const a = out.get(edge.from_id)!
+        const b = out.get(edge.to_id)!
+        const left = a.x < b.x ? a : b
+        const right = a.x < b.x ? b : a
+        return {
+          key: `${edge.from_id}-${edge.to_id}`,
+          x1: left.x + NODE_W,
+          x2: right.x,
+          y: left.y + NODE_H / 2,
+        }
+      })
+
     return {
       placed: out,
       rowLabels: labels,
+      siblingLinks,
       descents: descentList,
       width: LABEL_W + widest + PAD * 2,
       height: rows.length * NODE_H + Math.max(0, rows.length - 1) * ROW_GAP + PAD * 2,
@@ -412,6 +469,15 @@ export function FamilyTreeGraph({
 
               {/* Descents first so nodes paint over their endpoints. */}
               <g fill="none" stroke="rgb(148 163 184 / 0.45)" strokeWidth={1.5}>
+                {/* Aunt/uncle beside the parent they are a sibling of.
+                    Dashed, so it never reads as a parent-child descent. */}
+                {siblingLinks.map((link) => (
+                  <path
+                    key={link.key}
+                    d={`M ${link.x1} ${link.y} H ${link.x2}`}
+                    strokeDasharray="4 4"
+                  />
+                ))}
                 {descents.map((d) => {
                   const cx = (p: Placed) => p.x + NODE_W / 2
                   const parentXs = d.parents.map(cx)

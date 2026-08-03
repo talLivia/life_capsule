@@ -320,6 +320,12 @@ export const api = {
     return response.data
   },
 
+  /** Remove one relation the archive got wrong. The other half of "nothing is
+   *  auto-applied": confirming is only a real decision if undoing is possible. */
+  deleteRelation: async (relationId: string) => {
+    await apiClient.delete(`/api/v1/interview/relations/${relationId}`)
+  },
+
   listSessionSegments: async (sessionId: string) => {
     const response = await apiClient.get(`/api/v1/interview/segments/session/${sessionId}`)
     return response.data

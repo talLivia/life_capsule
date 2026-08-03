@@ -258,6 +258,23 @@ async def _load_segment_and_user(db, segment_id: str):
 # Labels are what the producer reads, not node names. Several nodes share one
 # label deliberately — "Reading it back" covers chunking and embedding, which
 # are one idea to everybody who is not maintaining this file.
+# Roughly how far through the run each stage is, as a percentage.
+#
+# Weighted by MEASURED duration, not by node count: transcription dominates
+# (Deepgram ~2s, Whisper far longer), so an evenly-spaced bar would sprint to
+# 60% and then appear to hang. These are honest about where the time goes —
+# a bar that stalls at a number nobody expects is worse than no bar.
+STAGE_PERCENT = {
+    "transcribe": 15,
+    "create_transcript_chunks": 45,
+    "embed_transcript": 55,
+    "extract_topics": 65,
+    "check_entities": 85,
+    "human_confirm": 100,
+    "score_importance": 92,
+    "finalize_ingest": 97,
+}
+
 STAGE_LABELS = {
     "transcribe": "Listening to your recording",
     "create_transcript_chunks": "Reading it back",
@@ -642,7 +659,13 @@ async def check_entities_node(state: AnalysisState) -> dict:
         # earlier ones that still have no parent recorded. Resolved here for
         # the same reason year_settled is — the database is already open, and
         # human_confirm stays a pure function over state.
-        parentage = await entity_store.parentage_candidates(db, group_id)
+        # Passed this recording's PROPOSED relations, not just what the
+        # archive already holds. A producer's first recording is the one that
+        # names their parents and siblings, so a DB-only question could never
+        # fire on it — which is exactly what happened four times running.
+        parentage = await entity_store.parentage_candidates(
+            db, group_id, [r.as_dict() for r in proposed], entity_extraction.SELF
+        )
 
     return {
         "names_to_check": to_check,
@@ -799,25 +822,36 @@ def parentage_questions(parentage: Optional[Dict[str, Any]]) -> List[Dict[str, A
     known_people = parentage.get("known_people") or []
     if not parents or not siblings:
         return []
+
+    names = [s["name"] for s in siblings]
+    listed = (
+        names[0]
+        if len(names) == 1
+        else f"{', '.join(names[:-1])} and {names[-1]}"
+    )
+    parent_names = (
+        parents[0]["name"]
+        if len(parents) == 1
+        else f"{' and '.join(p['name'] for p in parents[:2])}"
+        if len(parents) == 2
+        else f"{', '.join(p['name'] for p in parents[:-1])} and {parents[-1]['name']}"
+    )
+
     return [
         {
-            "entity_id": sibling["id"],
-            "name": sibling["name"],
-            "question": f'Whose child is "{sibling["name"]}"? (optional)',
+            # ONE question for the whole set. Asking per sibling produced four
+            # near-identical screens whose answer was the same each time, which
+            # is how a producer learns to click past a screen without reading —
+            # and that is how a question that DOES matter gets missed.
+            "question": f"Are {listed} all children of {parent_names}?",
+            "siblings": siblings,
             "parents": parents,
-            # Carried INSIDE the question rather than as a payload key of its
-            # own, deliberately. The client counts every array in the payload
-            # to decide whether to render, and a top-level list of people would
-            # be counted as questions — the exact miscounting that hid two
-            # earlier bugs. Nested, it cannot be.
-            #
-            # Nobody is their own parent, so the sibling is dropped from their
-            # own list.
-            "known_people": [
-                person for person in known_people if person["id"] != sibling["id"]
-            ],
+            # Nested inside the question rather than a payload key of its own:
+            # the client counts every array in the payload to decide whether to
+            # render, so a top-level list of people would be counted as
+            # questions — the miscounting behind two earlier bugs.
+            "known_people": known_people,
         }
-        for sibling in siblings
     ]
 
 
@@ -1016,6 +1050,23 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     # is empty — a skipped question still has to be stamped as asked, or it
     # comes back on every future recording.
     parentage_answers = answer.get("parentage") or {}
+    # A sibling this recording only PROPOSED is asked about on the same screen
+    # — that is what makes the question work on a first recording. But their
+    # parentage may only be written if the sibling relation itself was
+    # accepted: otherwise declining "ניר is my brother" while answering the
+    # grouped question would record ניר's parents anyway.
+    accepted_sibling_names = {
+        r["from_name"] if r["to_name"] == entity_extraction.SELF else r["to_name"]
+        for r in accepted
+        if r.get("relation_type") == entity_store.SIBLING_RELATION
+        and entity_extraction.SELF in (r.get("from_name"), r.get("to_name"))
+    }
+    asked_parentage = [
+        sibling["name"]
+        for question in pending_parentage
+        for sibling in question["siblings"]
+        if sibling.get("recorded") or sibling["name"] in accepted_sibling_names
+    ]
 
     return {
         "names_to_check": [],
@@ -1026,7 +1077,7 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         "proposed_relations": accepted,
         "parentage": {
             **(state.get("parentage") or {}),
-            "asked_ids": [q["entity_id"] for q in pending_parentage],
+            "asked_names": asked_parentage,
             "answers": parentage_answers,
         },
     }
@@ -1110,12 +1161,12 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
             # delete is scoped to origin="recording" precisely so these
             # survive a re-analysis.
             parentage = state.get("parentage") or {}
-            if parentage.get("asked_ids"):
+            if parentage.get("asked_names"):
                 await entity_store.write_parentage(
                     db,
                     producer_id=state["group_id"],
                     segment_id=segment_id,
-                    asked_sibling_ids=parentage.get("asked_ids") or [],
+                    asked_sibling_names=parentage.get("asked_names") or [],
                     answers=parentage.get("answers") or {},
                 )
             # ONE commit for the entities AND the status. entity_store

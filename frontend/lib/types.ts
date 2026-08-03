@@ -136,6 +136,16 @@ export interface ExtractedEntity {
 /** What the system understood from one recording. Read-only. Says nothing
  *  about where each piece is stored — entities are moving from Graphiti to
  *  Postgres behind the endpoint. */
+export interface ExtractedRelation {
+  id: string
+  from_name: string
+  to_name: string
+  relation_type: string
+  label?: string | null
+  /** "recording" — the words said it. "confirmation" — answered on a screen. */
+  origin: string
+}
+
 export interface SegmentExtraction {
   segment_id: string
   question_asked: string
@@ -144,6 +154,8 @@ export interface SegmentExtraction {
   topic_tags: string[]
   unit_count: number
   entities: ExtractedEntity[]
+  /** With ids, so a wrong one can be removed. */
+  relations?: ExtractedRelation[]
   still_processing: boolean
   /** The automatic work is done and the pipeline is paused on a person.
    *  Distinct from still_processing: conflating them left this screen saying
@@ -155,6 +167,8 @@ export interface SegmentExtraction {
    *  home — a copy here would drift the first time one is renamed. */
   progress_stage?: string | null
   progress_label?: string | null
+  /** 0-100, weighted by measured stage duration rather than node count. */
+  progress_percent?: number | null
 }
 
 // ── Interview flow (docs/INTERVIEW_RESTRUCTURE.md step 4) ────────────────
@@ -286,18 +300,33 @@ export interface PendingConfirmation {
  *  The only class NOT raised by the recording being confirmed: these are
  *  siblings from earlier recordings who still have no parent recorded, so the
  *  tree places them in the right row and can draw no line to them. */
-export interface ParentageQuestion {
-  entity_id: string
+export interface ParentagePerson {
   name: string
+  /** Null for anyone this recording has only just named — they have no row
+   *  until finalize. Names, not ids, are what make the question answerable on
+   *  a producer's very first recording. */
+  entity_id: string | null
+  /** Their sibling relation is already recorded, so an answer stands alone.
+   *  Otherwise it is conditional on the sibling proposal being accepted. */
+  recorded?: boolean
+}
+
+/** ONE question for every sibling at once.
+ *
+ *  Per-sibling questions meant four near-identical screens with the same
+ *  answer, which is how a producer learns to click past a screen without
+ *  reading — and how a question that matters gets missed. */
+export interface ParentageQuestion {
   question: string
-  /** The producer's own recorded parents, offered as options. A LIST, not a
-   *  yes/no, because a half-sibling shares one parent. */
-  parents: { id: string; name: string }[]
+  siblings: ParentagePerson[]
+  /** The producer's parents, offered as options. A LIST, not a yes/no,
+   *  because a half-sibling shares one of them. */
+  parents: ParentagePerson[]
   /** Everyone already in the archive, so "someone else" can be picked rather
    *  than typed — a typed name resolves by normalised match, so one different
    *  character creates a duplicate instead of linking. Nested inside the
    *  question on purpose: a top-level array would be counted as questions. */
-  known_people: { id: string; name: string }[]
+  known_people: ParentagePerson[]
 }
 
 export interface EntityBatchAnswer {
@@ -318,7 +347,7 @@ export interface EntityBatchAnswer {
   /** Sibling ENTITY ID -> whose child they are. Skippable: omit a sibling to
    *  say nothing. Keyed by id rather than name because, unlike every other
    *  class, these are people already in the archive. */
-  parentage?: Record<string, { parent_ids: string[]; new_parent_name?: string }>
+  parentage?: Record<string, { parent_names: string[]; new_parent_name?: string }>
   /** Extracted name -> what it should say. The extractor can be CONFIDENTLY
    *  wrong, and a name it never doubted raises no question to answer. */
   name_edits?: Record<string, string>

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { X, Loader2, Sparkles, Tag, Scissors, FileText, Users, AlertTriangle, HelpCircle } from 'lucide-react'
+import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
 import type { ApiError, SegmentExtraction } from '@/lib/types'
 
@@ -39,6 +40,10 @@ const PROGRESS_POLL_MS = 2000
 /** Long enough for the finished state to register as a result rather than a
  *  flash, short enough not to be a step the producer has to sit through. */
 const DONE_DWELL_MS = 1600
+/** After this long with no progress the lock releases. A modal that can
+ *  trap someone forever is worse than one they can leave — but the escape
+ *  is for a pipeline that has genuinely stopped, not a general dismiss. */
+const STUCK_AFTER_MS = 90_000
 
 export function ExtractionModal({
   segmentId,
@@ -48,6 +53,14 @@ export function ExtractionModal({
   onNeedsConfirmation,
 }: ExtractionModalProps) {
   const [data, setData] = useState<SegmentExtraction | null>(null)
+  // Set once the run has gone quiet for too long, or has failed. Until
+  // then a live screen cannot be closed: the whole point is that questions
+  // arrive attached to the recording they are about, rather than ambushing
+  // the producer later against a recording they have moved past.
+  const [escapable, setEscapable] = useState(false)
+  // Relations removed on this screen, hidden immediately rather than after
+  // a refetch — the row is gone server-side the moment the call returns.
+  const [removed, setRemoved] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -99,6 +112,20 @@ export function ExtractionModal({
     }
   }, [live, data?.still_processing, segmentId])
 
+  // Release the lock if the pipeline stops reporting progress, or fails.
+  useEffect(() => {
+    if (!live) return
+    if (data?.status === 'failed') {
+      setEscapable(true)
+      return
+    }
+    if (!data?.still_processing) return
+    // Restarted on every stage change, so a slow-but-moving run never
+    // unlocks — only one that has actually stalled.
+    const id = setTimeout(() => setEscapable(true), STUCK_AFTER_MS)
+    return () => clearTimeout(id)
+  }, [live, data?.still_processing, data?.status, data?.progress_stage])
+
   // Hand over to the confirmation popup, or close when there is nothing left
   // to say. Only when opened by the recorder: the manual button reviews a
   // finished recording and must not vanish while it is being read.
@@ -115,13 +142,15 @@ export function ExtractionModal({
 
   // Escape closes. A read-only panel should never trap someone who opened it
   // out of curiosity.
+  const locked = live && !escapable && (data?.still_processing ?? true)
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape' && !locked) onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, locked])
 
   return (
     <div
@@ -129,7 +158,7 @@ export function ExtractionModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="extraction-title"
-      onClick={onClose}
+      onClick={locked ? undefined : onClose}
     >
       <div
         className="w-full max-w-2xl glass-card flex flex-col max-h-full"
@@ -147,22 +176,15 @@ export function ExtractionModal({
               {title}
             </h2>
           </div>
-          <button
-            onClick={onClose}
-            className="btn-icon shrink-0"
-            aria-label={
-              data?.still_processing
-                ? 'Close — we’ll bring back any questions when this finishes'
-                : 'Close'
-            }
-            title={
-              data?.still_processing
-                ? 'We’ll bring back any questions when this finishes'
-                : undefined
-            }
-          >
-            <X size={16} />
-          </button>
+          {locked ? (
+            <span className="text-[11px] text-gray-500 shrink-0 max-w-[9rem] text-right leading-snug">
+              Please wait — any questions will appear here
+            </span>
+          ) : (
+            <button onClick={onClose} className="btn-icon shrink-0" aria-label="Close">
+              <X size={16} />
+            </button>
+          )}
         </div>
 
         <div className="p-6 overflow-y-auto messages-scroll flex flex-col gap-6">
@@ -196,30 +218,84 @@ export function ExtractionModal({
               )}
 
               {data.still_processing && (
-                // Three things at once, because the producer needs all three:
-                // WHAT is happening (the stage), that it is still happening
-                // (the spinner), and that questions may follow.
-                //
-                // The last one is the part that was missing. The screen is
-                // dismissible on purpose — a producer who only wants to record
-                // must never be trapped — but nothing distinguished "done, you
-                // may go" from "still working, questions are coming", so
-                // leaving looked like the expected move.
-                <div className="flex flex-col gap-2 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-sm">
-                  <div className="flex items-center gap-3">
-                    <Loader2 size={16} className="animate-spin shrink-0" />
-                    <span>
-                      {data.progress_label
-                        ? `${data.progress_label}…`
-                        : 'Reading your recording…'}
+                // A real bar, not a spinner and not a vague reassurance. The
+                // percentages are weighted by measured stage duration, so it
+                // does not sprint to 60% and then appear to hang.
+                <div className="flex flex-col gap-2 px-4 py-3 rounded-xl bg-surface-800/60 border border-white/10">
+                  <div className="flex items-center justify-between gap-3 text-sm text-white">
+                    <span>{data.progress_label ?? 'Reading your recording'}</span>
+                    <span className="text-primary-300 tabular-nums">
+                      {data.progress_percent ?? 0}%
                     </span>
                   </div>
-                  <p className="text-xs text-amber-300/80 leading-relaxed">
-                    Hang on a moment — if anything needs checking, we&apos;ll ask you
-                    as soon as this finishes. You can close this and keep recording;
-                    the questions will still find you.
+                  <div
+                    className="h-2 rounded-full bg-surface-700 overflow-hidden"
+                    role="progressbar"
+                    aria-valuenow={data.progress_percent ?? 0}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  >
+                    <div
+                      className="h-full bg-primary-500 transition-all duration-500"
+                      style={{ width: `${data.progress_percent ?? 0}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    {escapable
+                      ? 'This is taking longer than expected — you can close this and carry on; the questions will still find you.'
+                      : 'Stay here — if anything needs checking, the questions open next.'}
                   </p>
                 </div>
+              )}
+
+              {/* What this recording claims about who people ARE to each
+                  other — and the only place any of it can be undone.
+
+                  This is the other half of "nothing is auto-applied": a
+                  relation the producer confirmed is only a real decision if it
+                  can be taken back. Until this existed a mis-extracted "X is
+                  your father" was permanent and invisible, which is worse than
+                  a question nobody read. */}
+              {(data.relations ?? []).some((r) => !removed.has(r.id)) && (
+                <Section icon={<Users size={15} />} label="Relationships it recorded">
+                  <ul className="flex flex-col gap-2">
+                    {(data.relations ?? [])
+                      .filter((relation) => !removed.has(relation.id))
+                      .map((relation) => (
+                        <li
+                          key={relation.id}
+                          className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl bg-surface-700/50 border border-white/10"
+                        >
+                          <span dir="auto" className="text-sm text-white">
+                            {relation.from_name}
+                            <span className="text-gray-400">
+                              {' '}
+                              — {relation.label ?? relation.relation_type} of{' '}
+                            </span>
+                            {relation.to_name}
+                            {relation.origin === 'confirmation' && (
+                              <span className="text-[11px] text-gray-500"> (you answered this)</span>
+                            )}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await api.deleteRelation(relation.id)
+                                setRemoved((current) => new Set(current).add(relation.id))
+                                toast.success('Removed')
+                              } catch {
+                                toast.error('Could not remove that — please try again')
+                              }
+                            }}
+                            className="text-xs text-gray-400 hover:text-red-300 shrink-0"
+                          >
+                            Remove
+                          </button>
+                        </li>
+                      ))}
+                  </ul>
+                </Section>
               )}
 
               <Section icon={<Users size={15} />} label="People, places and things found">

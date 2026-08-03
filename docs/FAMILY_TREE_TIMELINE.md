@@ -1369,3 +1369,91 @@ behind §8.7 and §8.10. Nested, it cannot be. Verified on live data: the payloa
 counts **4**, the four siblings, not 4 + 11 people. The producer is excluded
 (nobody is their own sibling's parent) and each sibling is excluded from their
 own list.
+
+### 8.12 One grouped question, asked on the FIRST recording — 2026-08-03
+
+Four recordings, and the parentage question never once appeared. The cause was
+not a bug in the code that was written; it was the design. The question was
+built from the DATABASE, but the recording that names your parents and siblings
+is the one that CREATES them — written at finalize, after the questions. So the
+producer whose first answer is "my parents are X and Y and my siblings are A, B
+and C" could never be asked, and would have had to record something unrelated
+first. That is the default onboarding path, not an edge case. Each
+delete-and-re-record reset it to zero again.
+
+**Everything is keyed by NAME now**, parents and siblings alike, and candidates
+merge what the archive holds with what THIS recording proposes. Names resolve to
+rows in `write_parentage`, which runs after `write_segment_entities`. A sibling
+this recording only proposed is gated on that proposal being ACCEPTED —
+declining "ניר is my brother" while answering the group must not record ניר's
+parents.
+
+**One grouped question** replaces one per sibling: *"Are חן, ניר, עדי and רז all
+children of אילנה and צבי?"* with a single Yes, and a per-person row for anyone
+who does not fit. Four near-identical screens with the same answer each time is
+how a producer learns to click past a screen without reading — which is how a
+question that matters gets missed.
+
+**Rejected: inferring it.** Proposed as "if there is exactly one recorded parent
+pair, link them silently and note the assumption". Declined because the false
+case is common — "אח שלי" routinely covers half- and step-brothers — and because
+"exactly one recorded pair, no contradicting evidence" describes nearly every
+archive early on, when it means *nothing has been recorded yet*, not *nothing
+else exists*. Absence of evidence, at recording one, is not evidence of absence.
+
+### 8.13 Relations can be removed — 2026-08-03
+
+`DELETE /api/v1/interview/relations/{id}`, surfaced in the extraction panel.
+
+The other half of "nothing is auto-applied": confirming a relation is only a
+real decision if declining one later is possible, and until now nothing anywhere
+could undo one. A mis-extracted "X is your father" was permanent and invisible —
+worse than a question nobody read. This is also the prerequisite for any future
+argument that something can be "corrected afterwards"; that sentence was not
+true of relations before today.
+
+Deletes the row and nothing else: a wrong relationship between two real people
+does not make either of them unreal. Scoped through the from-entity's producer;
+404 rather than 403, since distinguishing them would confirm the id exists.
+
+### 8.14 Aunt/uncle lines, and the one same-row connector that survives
+
+`aunt_uncle` became a tree edge at minus one in `0018`, which placed אמנון and
+קובי in the parents' row — correct — and then drew a **descent trunk** from each
+down to the producer, identical to a parent. Four boxes up there, four identical
+lines, nothing saying which two are the parents. Placement and parenthood are
+different claims and only one of them is a line.
+
+Only `parent` and `child` edges draw descents now.
+
+And one same-row connector comes back, **only** between a sibling pair inside an
+ancestor row, and **only** between adjacent columns. The producer's own row never
+needed it — the row label says it. An ancestor row does: it holds parents and
+their siblings side by side, and the line is the only thing telling an uncle
+apart from a father. Adjacent-only because a longer one would pass behind the
+nodes between and read as a chain — the 4a occlusion problem, safe to
+reintroduce solely under that restriction. Dashed, so it never reads as a
+descent.
+
+*Still needed for אמנון/קובי specifically:* the archive records them as
+`aunt_uncle` of the producer, not as `sibling` of צבי, so there is no pair for
+the connector to join. Capturing which side they are on is what would produce
+that edge — not built.
+
+### 8.15 The extraction screen holds the producer — 2026-08-03
+
+Opens on every recording, shows a **real percentage bar** weighted by measured
+stage duration (transcription dominates, so evenly-spaced stages would sprint to
+60% and then appear to hang), and **cannot be dismissed while work is genuinely
+in flight** — no close button, no Escape, no backdrop click. It ends in exactly
+one of two ways: the questions open, or it confirms there is nothing to ask and
+closes itself.
+
+The reason for the lock is not ceremony: questions that arrive later attach
+themselves to a recording the producer has already moved past, and there is no
+way to tell what they are about.
+
+The escape stays, narrowly. On `failed`, or after 90s with no stage change, the
+lock releases and says why. The timer restarts on every stage change, so a slow
+but moving run never unlocks — only one that has actually stalled. A modal that
+can trap someone forever is worse than one they can leave.

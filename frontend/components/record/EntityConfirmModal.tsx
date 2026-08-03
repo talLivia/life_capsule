@@ -205,19 +205,22 @@ export function EntityConfirmModal({
             ([original, corrected]) => corrected.trim() && corrected.trim() !== original,
           ),
         ),
-        // Only siblings the producer actually answered for. An untouched one
-        // is absent, which the server reads as a skip — it still stamps them
-        // as asked, so the question does not return, but nothing is written.
+        // Only siblings actually answered for. An untouched one is absent,
+        // which the server reads as a skip: still stamped as asked so the
+        // question never returns, but nothing written.
         parentage: Object.fromEntries(
-          parentageQuestions
-            .map((q) => {
-              const ticked = parentage[q.entity_id] ?? []
-              const typed = (newParent[q.entity_id] ?? '').trim()
-              return [q.entity_id, { parent_ids: ticked, new_parent_name: typed || undefined }]
+          (parentageQuestions[0]?.siblings ?? [])
+            .map((sibling) => {
+              const shared = parentage[sibling.name] ?? []
+              const typed = (newParent[sibling.name] ?? '').trim()
+              return [
+                sibling.name,
+                { parent_names: shared, new_parent_name: typed || undefined },
+              ]
             })
             .filter(([, a]) => {
-              const answer = a as { parent_ids: string[]; new_parent_name?: string }
-              return answer.parent_ids.length > 0 || answer.new_parent_name
+              const answer = a as { parent_names: string[]; new_parent_name?: string }
+              return answer.parent_names.length > 0 || answer.new_parent_name
             }),
         ),
       })
@@ -437,128 +440,167 @@ export function EntityConfirmModal({
           </fieldset>
         )}
 
-        {/* Whose child is each sibling. The only section NOT about the
-            recording being confirmed — these are siblings from earlier ones
-            who still have no parent recorded, which is why the tree can place
-            them in the right row and draw no line to them.
+        {/* ONE grouped question, not one per sibling.
+            Four near-identical screens whose answer is the same each time is
+            how a producer learns to click past a screen without reading —
+            which is how a question that DOES matter gets missed.
 
-            Checkboxes, not "same as you / different": a half-sibling shares
-            ONE parent, and a yes/no cannot say which. */}
-        {parentageQuestions.length > 0 && (
-          <fieldset className="flex flex-col gap-3 pt-1 border-t border-white/10">
-            <legend className="text-sm text-white leading-relaxed mb-1">
-              Whose children are they? — optional
-            </legend>
-            <p className="text-xs text-gray-400 -mt-1 mb-1">
-              You&apos;ve mentioned these people as your siblings, but not whose
-              children they are — so nothing joins them to anyone in your family
-              tree. Pick the parents they share with you, or say it&apos;s someone
-              else. Asked once either way.
-            </p>
-            {parentageQuestions.map((q) => (
-              <div key={`parentage-${q.entity_id}`} className="flex flex-col gap-1.5">
-                <span dir="auto" className="text-sm text-white">{q.name}</span>
-                <div className="flex flex-wrap gap-2">
-                  {q.parents.map((parent) => {
-                    const ticked = (parentage[q.entity_id] ?? []).includes(parent.id)
-                    return (
-                      <button
-                        key={parent.id}
-                        type="button"
-                        disabled={answering}
-                        onClick={() =>
-                          setParentage((s) => {
-                            const current = s[q.entity_id] ?? []
-                            return {
-                              ...s,
-                              [q.entity_id]: ticked
-                                ? current.filter((id) => id !== parent.id)
-                                : [...current, parent.id],
+            The single Yes covers the ordinary case. Anyone who does not fit
+            gets the per-person branch, because a half-sibling shares ONE
+            parent and no yes/no can say which. */}
+        {parentageQuestions.map((group) => {
+          const allShared =
+            group.siblings.length > 0 &&
+            group.siblings.every(
+              (sibling) =>
+                (parentage[sibling.name] ?? []).length === group.parents.length,
+            )
+          const answerAll = () =>
+            setParentage((current) => {
+              const next = { ...current }
+              for (const sibling of group.siblings) {
+                next[sibling.name] = allShared
+                  ? []
+                  : group.parents.map((parent) => parent.name)
+              }
+              return next
+            })
+
+          return (
+            <fieldset
+              key="parentage"
+              className="flex flex-col gap-3 pt-1 border-t border-white/10"
+            >
+              <legend className="text-sm text-white leading-relaxed mb-1">
+                <span dir="auto">{group.question}</span>
+              </legend>
+              <p className="text-xs text-gray-400 -mt-1 mb-1">
+                You&apos;ve said these people are your siblings, but not whose
+                children they are — so nothing joins them to anyone in your tree.
+                Asked once either way.
+              </p>
+
+              <button
+                type="button"
+                disabled={answering}
+                onClick={answerAll}
+                className={`self-start px-4 py-2 rounded-lg border text-sm transition-colors ${
+                  allShared
+                    ? 'border-primary-400 bg-primary-500/15 text-white'
+                    : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
+                }`}
+              >
+                {allShared ? 'Yes — all of them' : 'Yes — all of them'}
+              </button>
+
+              <div className="flex flex-col gap-2 pl-1">
+                {group.siblings.map((sibling) => {
+                  const shared = parentage[sibling.name] ?? []
+                  const typed = (newParent[sibling.name] ?? '').trim()
+                  const open = otherOpen[sibling.name]
+                  return (
+                    <div key={sibling.name} className="flex flex-col gap-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span dir="auto" className="text-sm text-white w-24 shrink-0">
+                          {sibling.name}
+                        </span>
+                        {group.parents.map((parent) => {
+                          const ticked = shared.includes(parent.name)
+                          return (
+                            <button
+                              key={parent.name}
+                              type="button"
+                              disabled={answering}
+                              onClick={() =>
+                                setParentage((current) => ({
+                                  ...current,
+                                  [sibling.name]: ticked
+                                    ? shared.filter((n) => n !== parent.name)
+                                    : [...shared, parent.name],
+                                }))
+                              }
+                              className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
+                                ticked
+                                  ? 'border-primary-400 bg-primary-500/15 text-white'
+                                  : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
+                              }`}
+                            >
+                              <span dir="auto">{parent.name}</span>
+                            </button>
+                          )
+                        })}
+                        <button
+                          type="button"
+                          disabled={answering}
+                          onClick={() =>
+                            setOtherOpen((current) => {
+                              const opening = !current[sibling.name]
+                              if (!opening) {
+                                // Backing out must not leave a stale name to be
+                                // submitted for a path that was abandoned.
+                                setNewParent((n) => ({ ...n, [sibling.name]: '' }))
+                              }
+                              return { ...current, [sibling.name]: opening }
+                            })
+                          }
+                          className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
+                            open
+                              ? 'border-primary-400 bg-primary-500/15 text-white'
+                              : 'border-white/10 bg-surface-800 text-gray-400 hover:border-white/25'
+                          }`}
+                        >
+                          Someone else
+                        </button>
+                      </div>
+
+                      {open && (
+                        <div className="flex flex-col gap-1 pl-24">
+                          <label
+                            htmlFor={`other-parent-${sibling.name}`}
+                            className="text-xs text-gray-400"
+                          >
+                            Then whose child are they?
+                          </label>
+                          <input
+                            id={`other-parent-${sibling.name}`}
+                            type="text"
+                            dir="auto"
+                            list="parentage-known-people"
+                            value={newParent[sibling.name] ?? ''}
+                            onChange={(e) =>
+                              setNewParent((current) => ({
+                                ...current,
+                                [sibling.name]: e.target.value,
+                              }))
                             }
-                          })
-                        }
-                        className={`px-3 py-1.5 rounded-lg border text-sm transition-colors ${
-                          ticked
-                            ? 'border-primary-400 bg-primary-500/15 text-white'
-                            : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
-                        }`}
-                      >
-                        <span dir="auto">{parent.name}</span>
-                      </button>
-                    )
-                  })}
-                  {/* The negative branch, made sayable. Without it, "these
-                      are not their parents" and "I did not answer" are the
-                      same submission — and a half-sibling could only ever be
-                      recorded as sharing, or as nothing. */}
-                  <button
-                    type="button"
-                    disabled={answering}
-                    onClick={() =>
-                      setOtherOpen((s) => {
-                        const opening = !s[q.entity_id]
-                        if (!opening) {
-                          // Closing discards the name, so a stale one is never
-                          // submitted for a branch the producer backed out of.
-                          setNewParent((n) => ({ ...n, [q.entity_id]: '' }))
-                        }
-                        return { ...s, [q.entity_id]: opening }
-                      })
-                    }
-                    className={`px-3 py-1.5 rounded-lg border text-sm transition-colors ${
-                      otherOpen[q.entity_id]
-                        ? 'border-primary-400 bg-primary-500/15 text-white'
-                        : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
-                    }`}
-                  >
-                    Someone else
-                  </button>
-                </div>
+                            disabled={answering}
+                            placeholder="a name"
+                            className="w-56 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
+                          />
+                        </div>
+                      )}
 
-                {otherOpen[q.entity_id] && (
-                  <div className="flex flex-col gap-1 pl-1">
-                    <label
-                      htmlFor={`other-parent-${q.entity_id}`}
-                      className="text-xs text-gray-400"
-                    >
-                      Then whose child are they?
-                    </label>
-                    <input
-                      id={`other-parent-${q.entity_id}`}
-                      type="text"
-                      dir="auto"
-                      list={`people-${q.entity_id}`}
-                      value={newParent[q.entity_id] ?? ''}
-                      onChange={(e) =>
-                        setNewParent((s) => ({ ...s, [q.entity_id]: e.target.value }))
-                      }
-                      disabled={answering}
-                      placeholder="a name"
-                      className="w-56 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
-                    />
-                    {/* Picking beats typing: a typed name resolves by
-                        normalised match, so one different character makes a
-                        second person instead of linking to the first. */}
-                    <datalist id={`people-${q.entity_id}`}>
-                      {q.known_people.map((person) => (
-                        <option key={person.id} value={person.name} />
-                      ))}
-                    </datalist>
-                  </div>
-                )}
-
-                {/* Say what silence will do, rather than letting it look like
-                    the question is still open. */}
-                {(parentage[q.entity_id] ?? []).length === 0 &&
-                  !(newParent[q.entity_id] ?? '').trim() && (
-                    <span className="text-[11px] text-gray-500 pl-1">
-                      Skipped — nothing recorded, and we won&apos;t ask about them again.
-                    </span>
-                  )}
+                      {shared.length === 0 && !typed && (
+                        <span className="text-[11px] text-gray-500 pl-24">
+                          Skipped — nothing recorded, and we won&apos;t ask again.
+                        </span>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
-            ))}
-          </fieldset>
-        )}
+
+              {/* Picking beats typing: a typed name resolves by normalised
+                  match, so one different character makes a second person
+                  instead of linking to the first. */}
+              <datalist id="parentage-known-people">
+                {group.known_people.map((person) => (
+                  <option key={person.name} value={person.name} />
+                ))}
+              </datalist>
+            </fieldset>
+          )
+        })}
 
         {yearQuestions.length > 0 && (
           <fieldset className="flex flex-col gap-2 pt-1 border-t border-white/10">

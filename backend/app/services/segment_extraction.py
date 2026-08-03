@@ -23,9 +23,10 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from sqlalchemy import select
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import InterviewSession, RawSegment, TranscriptChunk
+from app.models import Entity, InterviewSession, RawSegment, TranscriptChunk
 from app.services import entity_store
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,19 @@ class SegmentExtraction:
     # home — a client copy would drift the first time a node is renamed.
     progress_stage: Optional[str] = None
     progress_label: Optional[str] = None
+    progress_percent: Optional[int] = None
+    # The relations this recording established, WITH their ids, so a wrong one
+    # can be removed. Until now nothing anywhere could undo a relation, which
+    # is what made "you can correct it afterwards" untrue.
+    relations: List["ExtractedRelationRow"] = field(default_factory=list)
+
+
+def _stage_percent(stage: Optional[str]) -> Optional[int]:
+    if not stage:
+        return None
+    from app.analysis_graph import STAGE_PERCENT
+
+    return STAGE_PERCENT.get(stage)
 
 
 def _stage_label(stage: Optional[str]) -> Optional[str]:
@@ -91,6 +105,51 @@ def _stage_label(stage: Optional[str]) -> Optional[str]:
     from app.analysis_graph import STAGE_LABELS
 
     return STAGE_LABELS.get(stage)
+
+
+@dataclass
+class ExtractedRelationRow:
+    id: str
+    from_name: str
+    to_name: str
+    relation_type: str
+    label: Optional[str] = None
+    origin: str = "recording"
+
+
+async def _load_relations(db, segment_id: str, group_id: str):
+    from app.models import EntityRelation, RelationType
+
+    from_entity = aliased(Entity)
+    to_entity = aliased(Entity)
+    rows = (
+        await db.execute(
+            select(EntityRelation, from_entity.name, to_entity.name, RelationType.label_en)
+            .join(from_entity, from_entity.id == EntityRelation.from_entity_id)
+            .join(to_entity, to_entity.id == EntityRelation.to_entity_id)
+            .join(
+                RelationType,
+                RelationType.relation_type == EntityRelation.relation_type,
+                isouter=True,
+            )
+            .where(
+                EntityRelation.source_segment_id == segment_id,
+                from_entity.producer_id == group_id,
+            )
+            .order_by(EntityRelation.created_at, EntityRelation.id)
+        )
+    ).all()
+    return [
+        ExtractedRelationRow(
+            id=relation.id,
+            from_name=from_name,
+            to_name=to_name,
+            relation_type=relation.relation_type,
+            label=label,
+            origin=relation.origin,
+        )
+        for relation, from_name, to_name, label in rows
+    ]
 
 
 async def get_segment_extraction(
@@ -141,7 +200,10 @@ async def get_segment_extraction(
         awaiting_confirmation=segment.status == "pending_confirmation",
         progress_stage=segment.progress_stage,
         progress_label=_stage_label(segment.progress_stage),
+        progress_percent=_stage_percent(segment.progress_stage),
     )
+
+    result.relations = await _load_relations(db, segment_id, group_id)
 
     try:
         result.entities = await _load_entities(db, segment_id, group_id)

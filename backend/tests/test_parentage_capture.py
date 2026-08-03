@@ -161,16 +161,23 @@ def test_no_question_without_both_parents_and_siblings():
     assert parentage_questions({"parents": [{"id": "p", "name": "P"}], "siblings": []}) == []
 
 
-def test_the_question_offers_every_recorded_parent():
+def test_one_grouped_question_covers_every_sibling():
+    """Four near-identical screens whose answer is the same each time is how a
+    producer learns to click past a screen without reading — which is how a
+    question that DOES matter gets missed."""
     questions = parentage_questions(
         {
-            "parents": [{"id": "p1", "name": "Dad"}, {"id": "p2", "name": "Mum"}],
-            "siblings": [{"id": "s1", "name": "Sib"}],
+            "parents": [{"name": "Dad", "entity_id": "p1"},
+                        {"name": "Mum", "entity_id": "p2"}],
+            "siblings": [{"name": "Sib", "entity_id": "s1"},
+                         {"name": "Other", "entity_id": "s2"}],
+            "known_people": [],
         }
     )
-    assert len(questions) == 1
-    assert questions[0]["entity_id"] == "s1"
-    # Both, so a half-sibling can be recorded as sharing only one.
+    assert len(questions) == 1, "one question, not one per sibling"
+    assert questions[0]["question"] == "Are Sib and Other all children of Dad and Mum?"
+    assert [s["name"] for s in questions[0]["siblings"]] == ["Sib", "Other"]
+    # Both parents offered, so a half-sibling can be recorded as sharing one.
     assert [p["name"] for p in questions[0]["parents"]] == ["Dad", "Mum"]
 
 
@@ -194,13 +201,8 @@ async def test_ticking_both_parents_writes_both_edges(db_session, family):
         db_session,
         producer_id=family["user"].id,
         segment_id=family["segment"].id,
-        asked_sibling_ids=[family["sib"].id],
-        answers={
-            family["sib"].id: {
-                "parent_ids": [family["dad"].id, family["mum"].id],
-                "new_parent_name": None,
-            }
-        },
+        asked_sibling_names=["Sib"],
+        answers={"Sib": {"parent_names": ["Dad", "Mum"], "new_parent_name": None}},
     )
     assert written["relations"] == 2
     assert len(await _parents_of(db_session, family["sib"].id)) == 2
@@ -212,13 +214,8 @@ async def test_a_half_sibling_can_share_only_one_parent(db_session, family):
         db_session,
         producer_id=family["user"].id,
         segment_id=family["segment"].id,
-        asked_sibling_ids=[family["sib"].id],
-        answers={
-            family["sib"].id: {
-                "parent_ids": [family["dad"].id],
-                "new_parent_name": "Rivka",
-            }
-        },
+        asked_sibling_names=["Sib"],
+        answers={"Sib": {"parent_names": ["Dad"], "new_parent_name": "Rivka"}},
     )
     assert written["relations"] == 2 and written["new_parents"] == 1
     parents = await _parents_of(db_session, family["sib"].id)
@@ -239,7 +236,7 @@ async def test_skipping_still_records_that_we_asked(db_session, family):
         db_session,
         producer_id=family["user"].id,
         segment_id=family["segment"].id,
-        asked_sibling_ids=[family["sib"].id],
+        asked_sibling_names=["Sib"],
         answers={},
     )
     assert written["relations"] == 0 and written["asked"] == 1
@@ -249,19 +246,21 @@ async def test_skipping_still_records_that_we_asked(db_session, family):
     assert found["siblings"] == [], "asked once, never again"
 
 
-async def test_a_parent_id_that_was_never_offered_is_ignored(db_session, family):
-    """Defence in depth — the API rejects this outright. The store must not
-    attach a stranger as somebody's parent even if it is called directly."""
-    stranger = await family["person"]("Stranger")
-    written = await entity_store.write_parentage(
-        db_session,
-        producer_id=family["user"].id,
-        segment_id=family["segment"].id,
-        asked_sibling_ids=[family["sib"].id],
-        answers={family["sib"].id: {"parent_ids": [stranger.id]}},
+async def test_a_parent_not_offered_is_refused_at_the_api_edge(db_session, family):
+    """Where the check lives, now that answers are names.
+
+    The store resolves a name to a row and writes it — it has to, because a
+    parent named for the first time on this recording is a legitimate answer.
+    So "was this parent actually offered" is checked at the edge, against the
+    question's own parent list, before it ever reaches the store.
+    """
+    from app.schemas import ParentageAnswer
+
+    offered = {"Dad", "Mum"}
+    given = ParentageAnswer(parent_names=["Stranger"])
+    assert set(given.parent_names) - offered == {"Stranger"}, (
+        "the API rejects exactly this set difference"
     )
-    assert written["relations"] == 0
-    assert await _parents_of(db_session, family["sib"].id) == []
 
 
 async def test_answers_are_marked_as_coming_from_a_screen(db_session, family):
@@ -271,8 +270,8 @@ async def test_answers_are_marked_as_coming_from_a_screen(db_session, family):
         db_session,
         producer_id=family["user"].id,
         segment_id=family["segment"].id,
-        asked_sibling_ids=[family["sib"].id],
-        answers={family["sib"].id: {"parent_ids": [family["dad"].id]}},
+        asked_sibling_names=["Sib"],
+        answers={"Sib": {"parent_names": ["Dad"]}},
     )
     row = (await _parents_of(db_session, family["sib"].id))[0]
     assert row.origin == "confirmation"
@@ -286,8 +285,8 @@ async def test_reanalysis_does_not_destroy_a_parentage_answer(db_session, family
         db_session,
         producer_id=family["user"].id,
         segment_id=family["segment"].id,
-        asked_sibling_ids=[family["sib"].id],
-        answers={family["sib"].id: {"parent_ids": [family["dad"].id]}},
+        asked_sibling_names=["Sib"],
+        answers={"Sib": {"parent_names": ["Dad"]}},
     )
     await entity_store.write_segment_relations(
         db_session,
@@ -314,10 +313,8 @@ async def test_the_answer_makes_the_tree_draw_the_sibling(db_session, family):
         db_session,
         producer_id=family["user"].id,
         segment_id=family["segment"].id,
-        asked_sibling_ids=[family["sib"].id],
-        answers={
-            family["sib"].id: {"parent_ids": [family["dad"].id, family["mum"].id]}
-        },
+        asked_sibling_names=["Sib"],
+        answers={"Sib": {"parent_names": ["Dad", "Mum"]}},
     )
 
     after = await family_tree.build_tree(db_session, family["user"].id)
@@ -546,21 +543,15 @@ async def test_the_question_carries_the_people_already_in_the_archive(
     assert "Root Person" not in known, "the producer is not their sibling's parent"
 
 
-def test_a_sibling_is_not_offered_as_their_own_parent():
+def test_the_grouped_question_carries_the_archive_for_picking():
     questions = parentage_questions(
         {
-            "parents": [{"id": "p1", "name": "Dad"}],
-            "siblings": [{"id": "s1", "name": "Sib"}, {"id": "s2", "name": "Other"}],
-            "known_people": [
-                {"id": "s1", "name": "Sib"},
-                {"id": "s2", "name": "Other"},
-                {"id": "x", "name": "Rivka"},
-            ],
+            "parents": [{"name": "Dad", "entity_id": "p1"}],
+            "siblings": [{"name": "Sib", "entity_id": "s1"}],
+            "known_people": [{"name": "Rivka", "entity_id": "x"}],
         }
     )
-    by_name = {q["name"]: q for q in questions}
-    assert [p["name"] for p in by_name["Sib"]["known_people"]] == ["Other", "Rivka"]
-    assert [p["name"] for p in by_name["Other"]["known_people"]] == ["Sib", "Rivka"]
+    assert [p["name"] for p in questions[0]["known_people"]] == ["Rivka"]
 
 
 def test_known_people_is_nested_so_it_can_never_be_counted_as_questions():
@@ -572,12 +563,138 @@ def test_known_people_is_nested_so_it_can_never_be_counted_as_questions():
     payload = build_confirmation_payload(
         {
             "parentage": {
-                "parents": [{"id": "p", "name": "P"}],
-                "siblings": [{"id": "s", "name": "S"}],
-                "known_people": [{"id": "k", "name": "K"}],
+                "parents": [{"name": "P", "entity_id": "p"}],
+                "siblings": [{"name": "S", "entity_id": "s"}],
+                "known_people": [{"name": "K", "entity_id": "k"}],
             }
         }
     )
     assert "known_people" not in payload
     assert len(payload["parentage_questions"]) == 1
-    assert payload["parentage_questions"][0]["known_people"] == [{"id": "k", "name": "K"}]
+    assert payload["parentage_questions"][0]["known_people"] == [
+        {"name": "K", "entity_id": "k"}
+    ]
+
+
+# ── the FIRST recording must be able to answer it ─────────────────────────
+#
+# The failure this closes, observed four times running: the question was built
+# from the database only, but the recording that names your parents and
+# siblings is the one that CREATES them — they are written at finalize, after
+# the questions. So the producer whose first answer is "my parents are X and Y
+# and my siblings are A, B, C" was never asked, and would have had to record
+# something unrelated first. That is the default onboarding path.
+
+
+@pytest.fixture
+async def fresh_producer(db_session):
+    """A producer with a self-entity and nothing else — recording one."""
+    user = User(
+        id="u-fresh", email="f@example.com", username="fresh",
+        hashed_password="x", role="producer", full_name="New Person",
+    )
+    db_session.add(user)
+    await db_session.flush()
+    session = InterviewSession(user_id=user.id, status="active")
+    db_session.add(session)
+    await db_session.flush()
+    segment = RawSegment(
+        interview_session_id=session.id, question_asked="Tell me about your family",
+        question_index=0, question_id="childhood_q01", status="ready",
+    )
+    db_session.add(segment)
+    root = Entity(
+        producer_id=user.id, name="New Person", normalized_name="new person",
+        type="person", is_self=True,
+    )
+    db_session.add(root)
+    await db_session.flush()
+    return user, segment, root
+
+
+async def test_the_very_first_recording_can_be_asked(db_session, fresh_producer):
+    """Nothing in the archive yet: the parents and siblings exist only as
+    proposals on this screen, and the question must still be askable."""
+    user, _segment, _root = fresh_producer
+    proposed = [
+        {"from_name": "Dad", "to_name": "__SELF__", "relation_type": "parent"},
+        {"from_name": "Mum", "to_name": "__SELF__", "relation_type": "parent"},
+        {"from_name": "Sib", "to_name": "__SELF__", "relation_type": "sibling"},
+        {"from_name": "Other", "to_name": "__SELF__", "relation_type": "sibling"},
+    ]
+    found = await entity_store.parentage_candidates(
+        db_session, user.id, proposed, "__SELF__"
+    )
+    assert [p["name"] for p in found["parents"]] == ["Dad", "Mum"]
+    assert [s["name"] for s in found["siblings"]] == ["Other", "Sib"]
+    assert all(s["entity_id"] is None for s in found["siblings"]), "no rows yet"
+    assert all(not s["recorded"] for s in found["siblings"])
+
+    questions = parentage_questions(found)
+    assert len(questions) == 1
+    assert questions[0]["question"] == "Are Other and Sib all children of Dad and Mum?"
+
+
+async def test_the_answer_resolves_names_written_by_the_same_recording(
+    db_session, fresh_producer
+):
+    """write_parentage runs after write_segment_entities, so a name the
+    question offered before the row existed resolves by the time it is used."""
+    user, segment, _root = fresh_producer
+    for name in ("Dad", "Mum", "Sib"):
+        db_session.add(Entity(
+            producer_id=user.id, name=name, normalized_name=name.lower(),
+            type="person",
+        ))
+    await db_session.flush()
+
+    written = await entity_store.write_parentage(
+        db_session,
+        producer_id=user.id,
+        segment_id=segment.id,
+        asked_sibling_names=["Sib"],
+        answers={"Sib": {"parent_names": ["Dad", "Mum"]}},
+    )
+    assert written["relations"] == 2 and written["new_parents"] == 0
+
+    sib = (await db_session.execute(
+        Entity.__table__.select().where(Entity.normalized_name == "sib")
+    )).first()
+    rows = (await db_session.execute(
+        EntityRelation.__table__.select().where(
+            EntityRelation.to_entity_id == sib.id,
+            EntityRelation.relation_type == "parent",
+        )
+    )).all()
+    assert len(rows) == 2
+    assert {r.origin for r in rows} == {"confirmation"}
+
+
+async def test_a_sibling_already_asked_is_not_re_offered_via_a_proposal(
+    db_session, family
+):
+    """Ask-once must survive the new path too: a sibling stamped as asked must
+    not come back just because a later recording names them again."""
+    family["sib"].parentage_asked_at = datetime.now(timezone.utc)
+    await db_session.flush()
+
+    found = await entity_store.parentage_candidates(
+        db_session,
+        family["user"].id,
+        [{"from_name": "Sib", "to_name": "__SELF__", "relation_type": "sibling"}],
+        "__SELF__",
+    )
+    assert found["siblings"] == []
+
+
+async def test_a_sibling_who_already_has_a_parent_is_not_re_offered_via_a_proposal(
+    db_session, family
+):
+    await family["relate"](family["dad"], "parent", family["sib"])
+    found = await entity_store.parentage_candidates(
+        db_session,
+        family["user"].id,
+        [{"from_name": "Sib", "to_name": "__SELF__", "relation_type": "sibling"}],
+        "__SELF__",
+    )
+    assert found["siblings"] == []

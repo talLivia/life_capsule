@@ -363,6 +363,24 @@ class ExtractedEntityResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ExtractedRelationResponse(BaseModel):
+    """A relation this recording established, with the id needed to remove it.
+
+    Exposed so a wrong one can be undone. Until this existed, "you can correct
+    it afterwards" was not true of relations anywhere in the product.
+    """
+
+    id: str
+    from_name: str
+    to_name: str
+    relation_type: str
+    label: Optional[str] = None
+    # "recording" — the words said it. "confirmation" — answered on a screen.
+    origin: str = "recording"
+
+    model_config = {"from_attributes": True}
+
+
 class SegmentExtractionResponse(BaseModel):
     """What the system understood from one recording — read-only, for the
     producer to check and catch a mistake. Deliberately says nothing about
@@ -376,6 +394,7 @@ class SegmentExtractionResponse(BaseModel):
     topic_tags: List[str] = []
     unit_count: int = 0
     entities: List[ExtractedEntityResponse] = []
+    relations: List[ExtractedRelationResponse] = []
     still_processing: bool = False
     # The automatic work is finished and the pipeline is paused on a person.
     # Distinct from still_processing, which means we have not finished looking.
@@ -386,6 +405,9 @@ class SegmentExtractionResponse(BaseModel):
     # so the client never has to keep a copy of the node list in step.
     progress_stage: Optional[str] = None
     progress_label: Optional[str] = None
+    # How far through, 0-100. Weighted by measured duration rather than node
+    # count, so the bar does not sprint and then appear to hang.
+    progress_percent: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -411,10 +433,12 @@ class ParentageAnswer(BaseModel):
     "my two, and one more nobody has mentioned".
     """
 
-    # Entity ids of the producer's own recorded parents. Validated against the
-    # parents that question actually offered — an id from anywhere else is
-    # rejected rather than quietly attaching a stranger as somebody's parent.
-    parent_ids: List[str] = Field(default_factory=list)
+    # NAMES of the producer's own parents, as the question offered them.
+    # Names rather than ids because the question has to work on a producer's
+    # FIRST recording, where their parents were named moments ago and have no
+    # row yet. Validated against the parents that question actually offered, so
+    # a stranger cannot be attached as somebody's parent.
+    parent_names: List[str] = Field(default_factory=list)
     # A parent never mentioned in any recording. Becomes an ordinary entity
     # with an ordinary parent relation, exactly as any other capture would.
     new_parent_name: Optional[str] = None
@@ -458,14 +482,9 @@ class EntityBatchConfirmRequest(BaseModel):
     # is a 400, since a third value could only come from a client inventing
     # one and would land in a column with a CHECK constraint on it.
     types: Dict[str, str] = Field(default_factory=dict)
-    # Sibling ENTITY ID -> whose child they are. Skippable like relations and
+    # Sibling NAME -> whose child they are. Skippable like relations and
     # years: omit a sibling entirely to say nothing, and the only consequence
     # is that they are stamped as asked and never asked again.
-    #
-    # Keyed by entity id, not by name, because unlike every other class here
-    # these questions are about people ALREADY in the archive rather than
-    # names just extracted from this recording — the id is what identifies
-    # them, and two siblings could share a first name.
     parentage: Dict[str, "ParentageAnswer"] = Field(default_factory=dict)
     # Extracted name -> what it should actually say. Skippable, and unlike
     # every other field here it answers no question: the extractor can be

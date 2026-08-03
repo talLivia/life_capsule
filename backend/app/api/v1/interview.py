@@ -474,6 +474,45 @@ async def get_segment_extraction(
     return extraction
 
 
+@router.delete(
+    "/relations/{relation_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def delete_relation(
+    relation_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """Remove one relation the archive got wrong.
+
+    The missing half of "nothing is auto-applied". Confirming a relation is
+    only a real decision if declining one later is possible, and until this
+    existed nothing anywhere could undo one — a mis-extracted "X is your
+    father" was permanent and invisible, which is worse than a question.
+
+    Scoped through the FROM-entity's producer, the same way the family tree
+    scopes edges. Both ends always belong to one producer, so one join is
+    enough. 404 rather than 403 for someone else's relation: distinguishing
+    them would confirm the id exists.
+
+    Deletes the row and nothing else. The entities stay — a wrong relationship
+    between two real people does not make either of them unreal.
+    """
+    from app.models import Entity, EntityRelation
+
+    relation = (
+        await db.execute(
+            select(EntityRelation)
+            .join(Entity, Entity.id == EntityRelation.from_entity_id)
+            .where(EntityRelation.id == relation_id, Entity.producer_id == user.id)
+        )
+    ).scalars().first()
+    if relation is None:
+        raise HTTPException(status_code=404, detail="Relation not found")
+
+    await db.delete(relation)
+    await db.commit()
+
+
 @router.delete("/segments/{segment_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_segment(
     segment_id: str,
@@ -592,9 +631,10 @@ async def confirm_entities(
         str(q["index"]): q for q in pending.get("relation_questions") or []
     }
     year_questions = {q["name"]: q for q in pending.get("year_questions") or []}
-    parentage_questions = {
-        q["entity_id"]: q for q in pending.get("parentage_questions") or []
-    }
+    # ONE grouped question, so the offered names are pooled from it.
+    parentage_group = (pending.get("parentage_questions") or [{}])[0]
+    parentage_siblings = {s["name"] for s in parentage_group.get("siblings") or []}
+    parentage_parents = {p["name"] for p in parentage_group.get("parents") or []}
     # Not a question — the full list of names this recording produced, any of
     # which may be corrected.
     editable_names = {e["name"] for e in pending.get("editable_entities") or []}
@@ -610,7 +650,7 @@ async def confirm_entities(
         # a question this recording never raised.
         | (set(payload.relations) - set(relation_questions))
         | (set(payload.years) - set(year_questions))
-        | (set(payload.parentage) - set(parentage_questions))
+        | (set(payload.parentage) - parentage_siblings)
         | (set(payload.name_edits) - editable_names)
     )
     if unknown:
@@ -679,19 +719,18 @@ async def confirm_entities(
             )
 
     parentage_answers: dict = {}
-    for entity_id, given in payload.parentage.items():
-        offered = {p["id"] for p in parentage_questions[entity_id].get("parents") or []}
-        unknown_parents = set(given.parent_ids) - offered
+    for sibling_name, given in payload.parentage.items():
+        unknown_parents = set(given.parent_names) - parentage_parents
         if unknown_parents:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"parent_ids for {entity_id} must be parents offered by that "
-                    f"question; not offered: {sorted(unknown_parents)}"
+                    f"parent_names for {sibling_name} must be parents this question "
+                    f"offered; not offered: {sorted(unknown_parents)}"
                 ),
             )
-        parentage_answers[entity_id] = {
-            "parent_ids": list(given.parent_ids),
+        parentage_answers[sibling_name] = {
+            "parent_names": list(given.parent_names),
             "new_parent_name": (given.new_parent_name or "").strip() or None,
         }
 
