@@ -25,7 +25,10 @@ interface SegmentUploadProps {
   /** Stable question id — see api.ingestSegment. */
   questionId: string
   questionText: string
-  onAccepted: () => void | Promise<void>
+  /** Receives the new segment's id, so the parent can open its extraction
+   *  screen. An upload is not a lesser kind of recording — it goes through
+   *  the same ingest and deserves the same review. */
+  onAccepted: (segmentId?: string) => void | Promise<void>
 }
 
 // Kept in step with _EXT_BY_CONTENT_TYPE in interview.py — the backend
@@ -75,7 +78,7 @@ export function SegmentUpload({
     try {
       const presign = await api.presignSegmentUpload(questionIndex, contentType)
       await uploadSegmentBlob(presign.upload_url, file, presign.content_type, setFraction)
-      await api.ingestSegment({
+      const ingested = await api.ingestSegment({
         interview_session_id: sessionId,
         question_index: questionIndex,
         question_id: questionId,
@@ -83,7 +86,7 @@ export function SegmentUpload({
         video_key: presign.video_key,
       })
       toast.success('Video added to your story')
-      await onAccepted()
+      await onAccepted(ingested?.id)
     } catch (err: unknown) {
       const detail = (err as ApiError)?.response?.data?.detail || (err as ApiError)?.message
       toast.error(detail || 'Could not upload that video')

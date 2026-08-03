@@ -776,3 +776,57 @@ def test_a_payload_with_no_parentage_is_left_alone():
     assert normalise_pending_confirmation(None) == {}
     payload = {"identity_questions": [{"name": "X"}]}
     assert normalise_pending_confirmation(payload) is payload
+
+
+# ── an ask-once stamp must not outlive its answer ─────────────────────────
+
+
+async def test_deleting_the_recording_that_held_the_answer_reopens_the_question(
+    db_session, family
+):
+    """The bug that cost five recordings.
+
+    The stamp lives on the ENTITY; the answer it recorded lives in
+    entity_relations, scoped to the recording open at the time. Deleting that
+    recording cascades the relations away and, left alone, the stamp then says
+    "already asked" about a question whose answer no longer exists — so it can
+    never be asked again and the tree can never draw the line.
+    """
+    await entity_store.write_parentage(
+        db_session,
+        producer_id=family["user"].id,
+        segment_id=family["segment"].id,
+        asked_sibling_names=["Sib"],
+        answers={"Sib": {"parent_names": ["Dad", "Mum"]}},
+    )
+    assert family["sib"].parentage_asked_at is not None
+    found = await entity_store.parentage_candidates(db_session, family["user"].id)
+    assert found["siblings"] == [], "answered, so not asked again"
+
+    cleared = await entity_store.clear_parentage_stamps_for_segment(
+        db_session, family["segment"].id
+    )
+    assert cleared == 1
+    assert family["sib"].parentage_asked_at is None
+
+
+async def test_a_skipped_answer_keeps_its_stamp_when_an_unrelated_recording_goes(
+    db_session, family
+):
+    """Only the people whose answer was destroyed become askable again. A
+    producer who was asked and skipped said something, and nothing of theirs
+    was lost."""
+    await entity_store.write_parentage(
+        db_session,
+        producer_id=family["user"].id,
+        segment_id=family["segment"].id,
+        asked_sibling_names=["Sib"],
+        answers={},  # skipped
+    )
+    assert family["sib"].parentage_asked_at is not None
+
+    cleared = await entity_store.clear_parentage_stamps_for_segment(
+        db_session, family["segment"].id
+    )
+    assert cleared == 0, "no parent edges came from that segment"
+    assert family["sib"].parentage_asked_at is not None

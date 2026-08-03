@@ -94,8 +94,12 @@ export function ExtractionModal({
    * Refetches quietly — `load` would flip `loading` and blank the panel every
    * two seconds.
    */
+  // Polls however the screen was opened. A recording still being processed
+  // is still being processed whether the producer arrived automatically or
+  // by clicking, and a panel that silently stops updating is the thing that
+  // made questions appear to come out of nowhere later.
   useEffect(() => {
-    if (!live || !data?.still_processing) return
+    if (!data?.still_processing) return
     let cancelled = false
     const id = setInterval(async () => {
       try {
@@ -110,11 +114,10 @@ export function ExtractionModal({
       cancelled = true
       clearInterval(id)
     }
-  }, [live, data?.still_processing, segmentId])
+  }, [data?.still_processing, segmentId])
 
   // Release the lock if the pipeline stops reporting progress, or fails.
   useEffect(() => {
-    if (!live) return
     if (data?.status === 'failed') {
       setEscapable(true)
       return
@@ -124,25 +127,33 @@ export function ExtractionModal({
     // unlocks — only one that has actually stalled.
     const id = setTimeout(() => setEscapable(true), STUCK_AFTER_MS)
     return () => clearTimeout(id)
-  }, [live, data?.still_processing, data?.status, data?.progress_stage])
+  }, [data?.still_processing, data?.status, data?.progress_stage])
 
   // Hand over to the confirmation popup, or close when there is nothing left
   // to say. Only when opened by the recorder: the manual button reviews a
   // finished recording and must not vanish while it is being read.
   useEffect(() => {
-    if (!live || !data) return
+    if (!data) return
+    // Hand off however the screen was opened. Leaving it up with the
+    // questions rendered UNDERNEATH it — which is what happened — means the
+    // producer has to close a panel to discover that anything is waiting.
     if (data.awaiting_confirmation || data.status === 'pending_confirmation') {
       onNeedsConfirmation?.()
       return
     }
-    if (data.still_processing) return
+    // Only a screen that opened ITSELF closes itself. One opened on purpose
+    // to read a finished recording must stay until it is dismissed.
+    if (!live || data.still_processing) return
     const id = setTimeout(onClose, DONE_DWELL_MS)
     return () => clearTimeout(id)
   }, [live, data, onClose, onNeedsConfirmation])
 
   // Escape closes. A read-only panel should never trap someone who opened it
   // out of curiosity.
-  const locked = live && !escapable && (data?.still_processing ?? true)
+  // Locked whenever real work is in flight, however the screen was opened.
+  // The point is that nobody wanders off mid-processing and meets the
+  // questions later attached to a recording they have moved past.
+  const locked = !escapable && (data?.still_processing ?? false)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -248,56 +259,6 @@ export function ExtractionModal({
                 </div>
               )}
 
-              {/* What this recording claims about who people ARE to each
-                  other — and the only place any of it can be undone.
-
-                  This is the other half of "nothing is auto-applied": a
-                  relation the producer confirmed is only a real decision if it
-                  can be taken back. Until this existed a mis-extracted "X is
-                  your father" was permanent and invisible, which is worse than
-                  a question nobody read. */}
-              {(data.relations ?? []).some((r) => !removed.has(r.id)) && (
-                <Section icon={<Users size={15} />} label="Relationships it recorded">
-                  <ul className="flex flex-col gap-2">
-                    {(data.relations ?? [])
-                      .filter((relation) => !removed.has(relation.id))
-                      .map((relation) => (
-                        <li
-                          key={relation.id}
-                          className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl bg-surface-700/50 border border-white/10"
-                        >
-                          <span dir="auto" className="text-sm text-white">
-                            {relation.from_name}
-                            <span className="text-gray-400">
-                              {' '}
-                              — {relation.label ?? relation.relation_type} of{' '}
-                            </span>
-                            {relation.to_name}
-                            {relation.origin === 'confirmation' && (
-                              <span className="text-[11px] text-gray-500"> (you answered this)</span>
-                            )}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              try {
-                                await api.deleteRelation(relation.id)
-                                setRemoved((current) => new Set(current).add(relation.id))
-                                toast.success('Removed')
-                              } catch {
-                                toast.error('Could not remove that — please try again')
-                              }
-                            }}
-                            className="text-xs text-gray-400 hover:text-red-300 shrink-0"
-                          >
-                            Remove
-                          </button>
-                        </li>
-                      ))}
-                  </ul>
-                </Section>
-              )}
-
               <Section icon={<Users size={15} />} label="People, places and things found">
                 {data.entities_unavailable ? (
                   <div className="flex items-center gap-2 text-sm text-amber-300">
@@ -315,20 +276,63 @@ export function ExtractionModal({
                   </p>
                 ) : (
                   <ul className="flex flex-col gap-2">
-                    {data.entities.map(e => (
+                    {data.entities.map(e => {
+                      // Relations are listed UNDER the person they are about
+                      // rather than in a section of their own. Two lists meant
+                      // the same names twice, and a relation belongs to its
+                      // subject more than it belongs to a list of relations.
+                      const theirs = (data.relations ?? []).filter(
+                        r => r.from_name === e.name && !removed.has(r.id),
+                      )
+                      return (
                       <li
                         key={e.name}
                         className="px-4 py-3 rounded-xl bg-surface-700/50 border border-white/10"
                       >
-                        <p className="text-sm font-medium text-white">{e.name}</p>
+                        <div className="flex items-baseline gap-2">
+                          <span dir="auto" className="text-sm text-white font-medium">{e.name}</span>
+                          {e.kind && (
+                            <span className="text-[11px] text-gray-500">{e.kind}</span>
+                          )}
+                        </div>
                         {e.summary && (
-                          // The summary is where a wrong-but-plausible
-                          // extraction shows itself — not that a name was
-                          // picked up, but what it was taken to MEAN.
-                          <p className="text-xs text-gray-400 mt-1 leading-relaxed">{e.summary}</p>
+                          <p dir="auto" className="text-xs text-gray-400 mt-1">{e.summary}</p>
+                        )}
+                        {theirs.length > 0 && (
+                          <ul className="flex flex-col gap-1 mt-2">
+                            {theirs.map(relation => (
+                              <li
+                                key={relation.id}
+                                className="flex items-center justify-between gap-3"
+                              >
+                                <span dir="auto" className="text-xs text-gray-300">
+                                  {relation.label ?? relation.relation_type} of {relation.to_name}
+                                  {relation.origin === 'confirmation' && (
+                                    <span className="text-gray-500"> (you answered this)</span>
+                                  )}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    try {
+                                      await api.deleteRelation(relation.id)
+                                      setRemoved(current => new Set(current).add(relation.id))
+                                      toast.success('Removed')
+                                    } catch {
+                                      toast.error('Could not remove that — please try again')
+                                    }
+                                  }}
+                                  className="text-[11px] text-gray-500 hover:text-red-300 shrink-0"
+                                >
+                                  Remove
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
                         )}
                       </li>
-                    ))}
+                      )
+                    })}
                   </ul>
                 )}
               </Section>

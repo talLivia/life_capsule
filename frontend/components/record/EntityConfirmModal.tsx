@@ -278,7 +278,7 @@ export function EntityConfirmModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4 animate-fade-in"
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4 animate-fade-in"
       role="dialog"
       aria-modal="true"
       aria-labelledby="entity-confirm-heading"
@@ -358,8 +358,29 @@ export function EntityConfirmModal({
                 everything above must be answered, this may be skipped. Saying
                 so beats leaving the producer to infer it from the button
                 staying enabled. */}
-            <legend className="text-sm text-white leading-relaxed mb-1">
-              Family connections I picked up — optional
+            <legend className="flex items-center justify-between gap-3 w-full text-sm text-white leading-relaxed mb-1">
+              <span>Did we get these relationships right? — optional</span>
+              {relationQuestions.length > 1 && (
+                // The common case is "all of them", and making that eight
+                // clicks is how a screen gets skipped wholesale.
+                <button
+                  type="button"
+                  disabled={answering}
+                  onClick={() =>
+                    setRelations(current => {
+                      const allAccepted = relationQuestions.every(q => current[q.index])
+                      const next: Record<number, boolean> = { ...current }
+                      for (const q of relationQuestions) next[q.index] = !allAccepted
+                      return next
+                    })
+                  }
+                  className="text-xs text-primary-300 hover:text-primary-200 shrink-0"
+                >
+                  {relationQuestions.every(q => relations[q.index])
+                    ? 'Clear all'
+                    : 'Yes to all'}
+                </button>
+              )}
             </legend>
             <p className="text-xs text-gray-400 -mt-1 mb-1">
               Tick the ones that are right. Anything you leave alone is simply not saved.

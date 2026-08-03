@@ -898,6 +898,50 @@ async def parentage_candidates(
     }
 
 
+async def clear_parentage_stamps_for_segment(
+    db: AsyncSession, segment_id: str
+) -> int:
+    """Un-ask the parentage question for anyone whose ANSWER this segment held.
+
+    An ask-once stamp lives on the entity; the answer it recorded lives in
+    `entity_relations`, scoped to the recording that was open when it was
+    given. Deleting that recording cascades the relations away — and left on
+    its own, the stamp then says "already asked" about a question whose answer
+    no longer exists. The producer can never be asked again, and the tree can
+    never draw the line. Observed exactly once and it cost five recordings.
+
+    Only the people whose parent edges came from THIS segment are cleared. A
+    producer who was asked and skipped keeps their stamp, because nothing they
+    said was destroyed.
+    """
+    affected = set(
+        (
+            await db.execute(
+                select(EntityRelation.to_entity_id).where(
+                    EntityRelation.source_segment_id == segment_id,
+                    EntityRelation.relation_type == PARENT_RELATION,
+                )
+            )
+        ).scalars().all()
+    )
+    if not affected:
+        return 0
+
+    entities = list(
+        (
+            await db.execute(
+                select(Entity).where(
+                    Entity.id.in_(affected), Entity.parentage_asked_at.isnot(None)
+                )
+            )
+        ).scalars().all()
+    )
+    for entity in entities:
+        entity.parentage_asked_at = None
+    await db.flush()
+    return len(entities)
+
+
 async def write_parentage(
     db: AsyncSession,
     *,

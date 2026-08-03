@@ -64,6 +64,9 @@ class DeletionResult:
     # were per-segment, so it could only ever equal segments_deleted. This
     # counts something that actually varies and is worth reporting.
     entities_removed: int = 0
+    # People who can be asked whose child they are again, because the
+    # recording holding that answer was deleted.
+    parentage_reopened: int = 0
     files_deleted: int = 0
     failures: List[str] = field(default_factory=list)
 
@@ -136,6 +139,15 @@ async def _delete_segments(segment_ids: List[str], group_id: str) -> DeletionRes
                 except Exception as e:
                     # A missing file is fine — the point is that it's gone.
                     logger.warning(f"Could not delete stored file {video_key}: {e}")
+
+            # BEFORE the cascade: anyone whose parentage answer was stored
+            # against this recording becomes askable again. The stamp is on the
+            # entity and the answer is on the relation, so a deletion that took
+            # the answer would otherwise leave a permanent "already asked" with
+            # nothing to show for it.
+            result.parentage_reopened += (
+                await entity_store.clear_parentage_stamps_for_segment(db, segment_id)
+            )
 
             # Deleting the row cascades to its entity_mentions, then the sweep
             # removes any entity no recording mentions any more. ONE
