@@ -96,6 +96,19 @@ const SIBLING_RELATION = 'sibling'
 const BAND_GAP = 96
 /** Room above the rows for the branch headings. */
 const BAND_LABEL_H = 26
+/**
+ * Height of one connector lane above the chart.
+ *
+ * The uncle connector arcs OVER the rows rather than dipping below them. Both
+ * are node-free — every inter-row gap is, which is why neither reintroduces
+ * the occlusion bug — but everything else that is drawn (parent trunks, child
+ * buses) lives below the rows, so above is the only space nothing competes
+ * for. With four uncles that is four dips fighting the trunks, or four arcs
+ * over empty canvas.
+ *
+ * Lanes stack so two arcs never overlap, the same nesting the dips used.
+ */
+const ARC_LANE_H = 16
 
 const MIN_SCALE = 0.15
 const MAX_SCALE = 2.5
@@ -235,11 +248,11 @@ const CLICK_SLOP_PX = 5
  * grandchildren.
  *
  * Aunts and uncles are reached through `aunt_uncle`, so they are NOT on the
- * spine — and they stay in the main band anyway. That is deliberate. The
- * complaint was cousins cluttering the producer's row, not uncles cluttering
- * the parents' row, and moving an uncle into their own band would separate
- * them from the parent they are a sibling of, breaking the one line that
- * explains why the branch exists. Only their DESCENDANTS band off.
+ * spine, and they head a band of their own together with their descendants —
+ * a genuinely separate little tree off to the side. The single line back to
+ * the parent they are a sibling of is the only thing joining it to the main
+ * family, which is the point: it should read as an arc reaching over, not as
+ * a spine line cutting through.
  */
 function assignBands(
   tree: FamilyTree,
@@ -297,6 +310,9 @@ function assignBands(
     if (row.generation >= 0) continue
     for (const head of row.people) {
       if (spine.has(head.id)) continue
+      // The head joins their own band, not the parents' row.
+      bandOf.set(head.id, head.id)
+      headName.set(head.id, nameOf.get(head.id) ?? '')
       const queue = [head.id]
       const seen = new Set([head.id])
       while (queue.length) {
@@ -330,7 +346,10 @@ export function FamilyTreeGraph({
   const zoomRef = useRef<ReactZoomPanPinchRef>(null)
   const pressRef = useRef<{ x: number; y: number } | null>(null)
 
-  const { placed, rowLabels, descents, siblingLinks, bandHeadings, width, height } =
+  const {
+    placed, rowLabels, descents, siblingLinks, siblingArcs, bandHeadings,
+    arcSpacePx, width, height,
+  } =
     useMemo(() => {
     const rows = orderRows(tree.generations, tree.edges)
     const generationOf = new Map<string, number>()
@@ -377,7 +396,16 @@ export function FamilyTreeGraph({
     const totalWidth = cursor - BAND_GAP
 
     const hasBranches = bandOrder.length > 1
-    const topPad = PAD + (hasBranches ? BAND_LABEL_H : 0)
+    // One lane per cross-band sibling connector, reserved ABOVE the headings
+    // so an arc never runs through a heading or a band divider.
+    const arcCount = tree.edges.filter((edge) => {
+      if (edge.relation_type !== SIBLING_RELATION) return false
+      const a = bandOf.get(edge.from_id) ?? MAIN
+      const b = bandOf.get(edge.to_id) ?? MAIN
+      return a !== b
+    }).length
+    const arcSpace = arcCount * ARC_LANE_H
+    const topPad = PAD + arcSpace + (hasBranches ? BAND_LABEL_H : 0)
 
     const out = new Map<string, Placed>()
     const labels: { text: string; y: number }[] = []
@@ -404,7 +432,7 @@ export function FamilyTreeGraph({
         band,
         text: `${headName.get(band) ?? ''}'s family`,
         x: (bandStart.get(band) ?? 0) + (bandWidth.get(band) ?? 0) / 2,
-        y: PAD + 4,
+        y: PAD + arcSpace + 4,
         left: bandStart.get(band) ?? 0,
       }))
 
@@ -501,15 +529,22 @@ export function FamilyTreeGraph({
      * nodes in between and read as a chain — the occlusion problem from 4a,
      * which is only safe to reintroduce under that restriction.
      */
-    const rootRow = out.get(tree.root_id ?? '')?.y
+    const rootY = out.get(tree.root_id ?? '')?.y
+    // Same-band, adjacent columns: a short dash between facing edges, as
+    // before. Nothing can be between them, so nothing can be behind the line.
     const siblingLinks = tree.edges
       .filter((edge) => {
         const a = out.get(edge.from_id)
         const b = out.get(edge.to_id)
         if (!a || !b || edge.relation_type !== SIBLING_RELATION) return false
         if (a.y !== b.y) return false
-        if (rootRow === undefined || a.y >= rootRow) return false // ancestors only
-        return Math.abs((columnOf.get(edge.from_id) ?? 0) - (columnOf.get(edge.to_id) ?? 0)) === 1
+        if ((bandOf.get(edge.from_id) ?? MAIN) !== (bandOf.get(edge.to_id) ?? MAIN)) {
+          return false
+        }
+        if (rootY === undefined || a.y >= rootY) return false
+        return (
+          Math.abs((columnOf.get(edge.from_id) ?? 0) - (columnOf.get(edge.to_id) ?? 0)) === 1
+        )
       })
       .map((edge) => {
         const a = out.get(edge.from_id)!
@@ -524,12 +559,47 @@ export function FamilyTreeGraph({
         }
       })
 
+    /**
+     * Cross-band sibling connectors — the uncle and the parent they belong to.
+     *
+     * Routed through the gap ABOVE their row: up from one top edge, across,
+     * down into the other. Every inter-row gap is node-free by construction,
+     * so the line passes behind nothing; above the topmost row it crosses
+     * nothing at all, not even another line. That is what makes this safe
+     * where a straight line across the gutter is not — a straight line crosses
+     * everything BETWEEN the endpoints, not just the empty gutter, and with
+     * two uncle bands it would pass behind the first uncle to reach the second.
+     *
+     * Lanes stack so two arcs never sit on top of each other.
+     */
+    const siblingArcs = tree.edges
+      .filter((edge) => {
+        const a = out.get(edge.from_id)
+        const b = out.get(edge.to_id)
+        if (!a || !b || edge.relation_type !== SIBLING_RELATION) return false
+        if (a.y !== b.y) return false
+        return (bandOf.get(edge.from_id) ?? MAIN) !== (bandOf.get(edge.to_id) ?? MAIN)
+      })
+      .map((edge, index) => {
+        const a = out.get(edge.from_id)!
+        const b = out.get(edge.to_id)!
+        // Deepest lane nearest the row, so a longer arc never crosses a
+        // shorter one on its way over.
+        const lane = a.y - 18 - index * ARC_LANE_H
+        return {
+          key: `arc-${edge.from_id}-${edge.to_id}`,
+          d: `M ${a.x + NODE_W / 2} ${a.y} V ${lane} H ${b.x + NODE_W / 2} V ${b.y}`,
+        }
+      })
+
     return {
       placed: out,
       rowLabels: labels,
       siblingLinks,
+      siblingArcs,
       descents: descentList,
       bandHeadings,
+      arcSpacePx: arcSpace,
       width: totalWidth + PAD,
       height:
         topPad + rows.length * NODE_H + Math.max(0, rows.length - 1) * ROW_GAP + PAD,
@@ -626,7 +696,7 @@ export function FamilyTreeGraph({
                 <g key={heading.band}>
                   <line
                     x1={heading.left - BAND_GAP / 2}
-                    y1={PAD}
+                    y1={PAD + arcSpacePx}
                     x2={heading.left - BAND_GAP / 2}
                     y2={height - PAD}
                     stroke="rgb(148 163 184 / 0.15)"
@@ -667,6 +737,17 @@ export function FamilyTreeGraph({
               <g fill="none" stroke="rgb(148 163 184 / 0.45)" strokeWidth={1.5}>
                 {/* Aunt/uncle beside the parent they are a sibling of.
                     Dashed, so it never reads as a parent-child descent. */}
+                {/* The one line joining a side branch to the family. Dashed
+                    and light: it says "these two are siblings", never "this is
+                    the spine". */}
+                {siblingArcs.map((arc) => (
+                  <path
+                    key={arc.key}
+                    d={arc.d}
+                    stroke="rgb(148 163 184 / 0.3)"
+                    strokeDasharray="5 5"
+                  />
+                ))}
                 {siblingLinks.map((link) => (
                   <path
                     key={link.key}
