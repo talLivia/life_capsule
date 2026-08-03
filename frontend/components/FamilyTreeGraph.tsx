@@ -91,6 +91,12 @@ const DESCENT_TYPES = new Set(['parent', 'child'])
  *  uncle apart from a father. */
 const SIBLING_RELATION = 'sibling'
 
+/** Space between the main line and a side branch. Wide enough that the
+ *  gap reads as a separation rather than an unusually large column gap. */
+const BAND_GAP = 96
+/** Room above the rows for the branch headings. */
+const BAND_LABEL_H = 26
+
 const MIN_SCALE = 0.15
 const MAX_SCALE = 2.5
 /** Never open smaller than this, even if the whole tree would not fit. A
@@ -215,6 +221,102 @@ function orderRows(
  *  somebody's moments on what the hand meant as a pan. */
 const CLICK_SLOP_PX = 5
 
+/**
+ * Which people are on the producer's own line, and which hang off a side
+ * branch.
+ *
+ * The problem this solves: generation was the only thing position encoded, so
+ * a cousin — same generation, different branch — sat inline between the
+ * producer's siblings. With a real family that row becomes an unreadable
+ * strip, and the two facts it conflates are not the same fact.
+ *
+ * The SPINE is what you reach from the producer through parent, child and
+ * sibling edges only: parents, siblings, children, grandparents,
+ * grandchildren.
+ *
+ * Aunts and uncles are reached through `aunt_uncle`, so they are NOT on the
+ * spine — and they stay in the main band anyway. That is deliberate. The
+ * complaint was cousins cluttering the producer's row, not uncles cluttering
+ * the parents' row, and moving an uncle into their own band would separate
+ * them from the parent they are a sibling of, breaking the one line that
+ * explains why the branch exists. Only their DESCENDANTS band off.
+ */
+function assignBands(
+  tree: FamilyTree,
+  generationOf: Map<string, number>
+): { bandOf: Map<string, string>; headName: Map<string, string> } {
+  const family = new Map<string, { id: string; type: string }[]>()
+  for (const edge of tree.edges) {
+    family.set(edge.from_id, [
+      ...(family.get(edge.from_id) ?? []),
+      { id: edge.to_id, type: edge.relation_type },
+    ])
+    family.set(edge.to_id, [
+      ...(family.get(edge.to_id) ?? []),
+      { id: edge.from_id, type: edge.relation_type },
+    ])
+  }
+
+  // Ancestors and descendants always extend the spine. A SIBLING edge extends
+  // it only from the producer themselves — your siblings are your line, your
+  // parent's siblings are aunts and uncles, and the edge is identical.
+  //
+  // Getting this wrong is not subtle in its effect and is very subtle to spot:
+  // the side question writes `uncle -sibling-> parent`, so treating sibling as
+  // a spine edge everywhere pulled every uncle onto the spine and their
+  // children with them, and the banding silently did nothing at all.
+  const spine = new Set<string>()
+  const root = tree.root_id
+  if (root) {
+    const queue = [root]
+    spine.add(root)
+    while (queue.length) {
+      const current = queue.shift()!
+      for (const next of family.get(current) ?? []) {
+        const extends_ =
+          next.type === 'parent' ||
+          next.type === 'child' ||
+          (next.type === 'sibling' && current === root)
+        if (!extends_ || spine.has(next.id)) continue
+        spine.add(next.id)
+        queue.push(next.id)
+      }
+    }
+  }
+
+  const bandOf = new Map<string, string>()
+  const headName = new Map<string, string>()
+  const nameOf = new Map<string, string>()
+  for (const row of tree.generations) {
+    for (const person of row.people) nameOf.set(person.id, person.name)
+  }
+
+  // Branch heads: everyone in an ancestor row who is not on the spine — the
+  // aunts and uncles. They stay in the main band; their descendants do not.
+  for (const row of tree.generations) {
+    if (row.generation >= 0) continue
+    for (const head of row.people) {
+      if (spine.has(head.id)) continue
+      const queue = [head.id]
+      const seen = new Set([head.id])
+      while (queue.length) {
+        const current = queue.shift()!
+        for (const next of family.get(current) ?? []) {
+          if (next.type !== 'parent' && next.type !== 'child') continue
+          if (seen.has(next.id) || spine.has(next.id)) continue
+          // Downwards only: an uncle's PARENT is not part of his branch.
+          if ((generationOf.get(next.id) ?? 0) <= (generationOf.get(current) ?? 0)) continue
+          seen.add(next.id)
+          bandOf.set(next.id, head.id)
+          headName.set(head.id, nameOf.get(head.id) ?? '')
+          queue.push(next.id)
+        }
+      }
+    }
+  }
+  return { bandOf, headName }
+}
+
 export function FamilyTreeGraph({
   tree,
   selectedId,
@@ -228,23 +330,83 @@ export function FamilyTreeGraph({
   const zoomRef = useRef<ReactZoomPanPinchRef>(null)
   const pressRef = useRef<{ x: number; y: number } | null>(null)
 
-  const { placed, rowLabels, descents, siblingLinks, width, height } = useMemo(() => {
+  const { placed, rowLabels, descents, siblingLinks, bandHeadings, width, height } =
+    useMemo(() => {
     const rows = orderRows(tree.generations, tree.edges)
-    const rowWidths = rows.map((r) => r.length * NODE_W + Math.max(0, r.length - 1) * COL_GAP)
-    const widest = Math.max(0, ...rowWidths)
+    const generationOf = new Map<string, number>()
+    tree.generations.forEach((row) =>
+      row.people.forEach((p) => generationOf.set(p.id, row.generation))
+    )
+    const { bandOf, headName } = assignBands(tree, generationOf)
+
+    // One band for the producer's own line, then one per side branch. Order is
+    // fixed by first appearance so the chart does not reshuffle between loads.
+    const MAIN = '__main__'
+    const bandOrder: string[] = [MAIN]
+    rows.forEach((row) =>
+      row.forEach((p) => {
+        const band = bandOf.get(p.id) ?? MAIN
+        if (!bandOrder.includes(band)) bandOrder.push(band)
+      })
+    )
+
+    const membersByRowBand = rows.map((row) => {
+      const grouped = new Map<string, TreePerson[]>()
+      row.forEach((p) => {
+        const band = bandOf.get(p.id) ?? MAIN
+        grouped.set(band, [...(grouped.get(band) ?? []), p])
+      })
+      return grouped
+    })
+
+    const spanOf = (n: number) => (n ? n * NODE_W + (n - 1) * COL_GAP : 0)
+    const bandWidth = new Map<string, number>()
+    bandOrder.forEach((band) => {
+      bandWidth.set(
+        band,
+        Math.max(0, ...membersByRowBand.map((g) => spanOf((g.get(band) ?? []).length)))
+      )
+    })
+
+    const bandStart = new Map<string, number>()
+    let cursor = PAD + LABEL_W
+    bandOrder.forEach((band) => {
+      bandStart.set(band, cursor)
+      cursor += (bandWidth.get(band) ?? 0) + BAND_GAP
+    })
+    const totalWidth = cursor - BAND_GAP
+
+    const hasBranches = bandOrder.length > 1
+    const topPad = PAD + (hasBranches ? BAND_LABEL_H : 0)
 
     const out = new Map<string, Placed>()
     const labels: { text: string; y: number }[] = []
+    const columnOf = new Map<string, number>()
     rows.forEach((row, rowIndex) => {
-      // Centre every row against the widest, so the chart reads as one shape
-      // rather than a left-aligned stack.
-      const startX = PAD + LABEL_W + (widest - rowWidths[rowIndex]) / 2
-      const y = PAD + rowIndex * (NODE_H + ROW_GAP)
+      const y = topPad + rowIndex * (NODE_H + ROW_GAP)
       labels.push({ text: generationLabel(tree.generations[rowIndex].generation), y })
-      row.forEach((person, i) => {
-        out.set(person.id, { person, x: startX + i * (NODE_W + COL_GAP), y })
+      membersByRowBand[rowIndex].forEach((people, band) => {
+        // Centred within its own band, so each band reads as one shape rather
+        // than a left-aligned stack against the next one.
+        const start =
+          (bandStart.get(band) ?? PAD + LABEL_W) +
+          ((bandWidth.get(band) ?? 0) - spanOf(people.length)) / 2
+        people.forEach((person, i) => {
+          out.set(person.id, { person, x: start + i * (NODE_W + COL_GAP), y })
+          columnOf.set(person.id, i)
+        })
       })
     })
+
+    const bandHeadings = bandOrder
+      .filter((band) => band !== MAIN)
+      .map((band) => ({
+        band,
+        text: `${headName.get(band) ?? ''}'s family`,
+        x: (bandStart.get(band) ?? 0) + (bandWidth.get(band) ?? 0) / 2,
+        y: PAD + 4,
+        left: bandStart.get(band) ?? 0,
+      }))
 
     // ── descents: group children by the exact set of parents they hang from ──
     const parentsOf = new Map<string, Placed[]>()
@@ -339,8 +501,6 @@ export function FamilyTreeGraph({
      * nodes in between and read as a chain — the occlusion problem from 4a,
      * which is only safe to reintroduce under that restriction.
      */
-    const columnOf = new Map<string, number>()
-    rows.forEach((row) => row.forEach((p, i) => columnOf.set(p.id, i)))
     const rootRow = out.get(tree.root_id ?? '')?.y
     const siblingLinks = tree.edges
       .filter((edge) => {
@@ -369,8 +529,10 @@ export function FamilyTreeGraph({
       rowLabels: labels,
       siblingLinks,
       descents: descentList,
-      width: LABEL_W + widest + PAD * 2,
-      height: rows.length * NODE_H + Math.max(0, rows.length - 1) * ROW_GAP + PAD * 2,
+      bandHeadings,
+      width: totalWidth + PAD,
+      height:
+        topPad + rows.length * NODE_H + Math.max(0, rows.length - 1) * ROW_GAP + PAD,
     }
   }, [tree])
 
@@ -458,6 +620,31 @@ export function FamilyTreeGraph({
               role="img"
               aria-label="Family tree"
             >
+              {/* A side branch gets a heading and a divider, so "same
+                  generation" and "same branch" stop being the same position. */}
+              {bandHeadings.map((heading) => (
+                <g key={heading.band}>
+                  <line
+                    x1={heading.left - BAND_GAP / 2}
+                    y1={PAD}
+                    x2={heading.left - BAND_GAP / 2}
+                    y2={height - PAD}
+                    stroke="rgb(148 163 184 / 0.15)"
+                    strokeWidth={1}
+                    strokeDasharray="2 6"
+                  />
+                  <text
+                    x={heading.x}
+                    y={heading.y}
+                    textAnchor="middle"
+                    dominantBaseline="hanging"
+                    className="fill-gray-500 text-[11px] uppercase tracking-wide"
+                  >
+                    {heading.text}
+                  </text>
+                </g>
+              ))}
+
               {/* Row labels, inside the transform so they travel with the rows. */}
               <g>
                 {rowLabels.map((label) => (
