@@ -322,6 +322,13 @@ export const api = {
 
   /** Remove one relation the archive got wrong. The other half of "nothing is
    *  auto-applied": confirming is only a real decision if undoing is possible. */
+  /** Delete every recording and everything derived from it. Irreversible.
+   *  The account, avatars, voice samples and the self-entity survive. */
+  resetArchive: async () => {
+    const response = await apiClient.post('/api/v1/interview/archive/reset')
+    return response.data
+  },
+
   deleteRelation: async (relationId: string) => {
     await apiClient.delete(`/api/v1/interview/relations/${relationId}`)
   },

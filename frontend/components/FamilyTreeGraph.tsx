@@ -144,10 +144,16 @@ function truncate(name: string, max = 16): string {
   return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : name
 }
 
+/**
+ * Short on purpose. These are drawn in a fixed-width gutter beside the rows,
+ * and "You and your generation" is wider than the gutter — it ran underneath
+ * the first node of its own row. Reserving space is only half the fix if the
+ * text can still outgrow it, so the text is what shrank.
+ */
 const GENERATION_LABELS: Record<number, string> = {
   [-2]: 'Grandparents',
   [-1]: 'Parents',
-  0: 'You and your generation',
+  0: 'You',
   1: 'Children',
   2: 'Grandchildren',
 }
@@ -157,7 +163,7 @@ function generationLabel(generation: number): string {
   // Beyond the named rows, say the distance rather than inventing a word for
   // it — "3 generations up" is honest where "great-grandparents" might not be.
   const n = Math.abs(generation)
-  return generation < 0 ? `${n} generations up` : `${n} generations down`
+  return generation < 0 ? `${n} up` : `${n} down`
 }
 
 /**
@@ -457,8 +463,11 @@ export function FamilyTreeGraph({
                 {rowLabels.map((label) => (
                   <text
                     key={label.y}
-                    x={PAD}
+                    // Anchored to the RIGHT edge of the gutter, so the label
+                    // grows away from the nodes instead of into them.
+                    x={PAD + LABEL_W - 18}
                     y={label.y + NODE_H / 2}
+                    textAnchor="end"
                     dominantBaseline="central"
                     className="fill-gray-500 text-[11px] uppercase tracking-wide"
                   >

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ChevronLeft, Feather, Gift, Loader2, PartyPopper, Plus, ShieldOff } from 'lucide-react'
+import { Feather, Gift, Loader2, PartyPopper, Plus, ShieldOff } from 'lucide-react'
 import { EntityConfirmModal } from '@/components/record/EntityConfirmModal'
 import { ExtractionModal } from '@/components/record/ExtractionModal'
 import { GateStep } from '@/components/record/GateStep'
@@ -64,7 +64,7 @@ export function RecordPanel() {
   const {
     flow, loading, error, reload,
     openCategory, viewingStep, isReviewing, progressLabel,
-    openCategoryId, setOpenCategory, selectStep, goBack, canGoBack,
+    openCategoryId, setOpenCategory, selectStep,
     answerGate, answering, onRecordingAccepted,
   } = useInterviewFlow()
 
@@ -175,6 +175,7 @@ export function RecordPanel() {
         </div>
         <div className="max-w-md mx-auto px-6 pb-16">
           <InterviewAccordion
+            freeNavigation={flow.free_navigation}
             categories={flow.categories}
             openCategoryId={openCategoryId}
             viewingStepId={viewingStep?.id ?? null}
@@ -207,14 +208,14 @@ export function RecordPanel() {
         />
       )}
 
-      <header className="max-w-6xl mx-auto px-6 pt-10 pb-5">
+      <header className="max-w-7xl mx-auto px-6 pt-10 pb-5">
         <div className="flex items-center gap-2 text-primary-400">
           <Feather size={16} />
           <span className="text-sm font-medium">Your Story</span>
         </div>
       </header>
 
-      <div className="max-w-6xl mx-auto px-6 pb-16 grid grid-cols-1 lg:grid-cols-5 gap-6 items-start">
+      <div className="max-w-7xl mx-auto px-6 pb-16 grid grid-cols-1 lg:grid-cols-5 gap-6 items-start">
         {/* ── The step being answered ─────────────────────────────────── */}
         <main className="lg:col-span-3 flex flex-col gap-5 order-2 lg:order-1">
           {viewingStep?.kind === 'gate' ? (
@@ -280,20 +281,18 @@ export function RecordPanel() {
             </>
           ) : null}
 
-          {/* Back only. There is no Next: finishing a recording advances the
-              flow by itself, and jumping ahead is not offered here or
-              accepted by the server. */}
-          <div className="flex items-center pt-1">
-            <button onClick={goBack} disabled={!canGoBack} className="btn-secondary">
-              <ChevronLeft size={16} />
-              Previous question
-            </button>
-          </div>
+          {/* No Back button. Every earlier question is one click away in
+              the accordion, which says WHICH question it goes to — Back
+              only ever went to the same place, without saying so. */}
         </main>
 
         {/* ── Categories ──────────────────────────────────────────────── */}
-        <aside className="lg:col-span-2 order-1 lg:order-2 lg:sticky lg:top-6">
+        {/* Its own scroll container. With 16 categories this list is taller
+            than the viewport, and letting it grow the PAGE means scrolling
+            past the whole interview to reach the recorder. */}
+        <aside className="lg:col-span-2 order-1 lg:order-2 lg:sticky lg:top-6 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto messages-scroll">
           <InterviewAccordion
+            freeNavigation={flow.free_navigation}
             categories={flow.categories}
             openCategoryId={openCategoryId}
             viewingStepId={viewingStep?.id ?? null}

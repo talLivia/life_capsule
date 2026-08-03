@@ -12,7 +12,7 @@ from app.analysis_graph import normalise_pending_confirmation
 from app.database import get_db
 from app import interview_config
 from app.interview_config import get_questions
-from app.models import InterviewSession, RawSegment, User
+from app.models import Entity, InterviewSession, RawSegment, User
 from app.schemas import (
     ConfirmEntitiesResponse,
     EntityBatchConfirmRequest,
@@ -473,6 +473,48 @@ async def get_segment_extraction(
         # "doesn't exist" would confirm another producer's segment id.
         raise HTTPException(status_code=404, detail="Recording not found")
     return extraction
+
+
+@router.post("/archive/reset", status_code=status.HTTP_200_OK)
+async def reset_archive(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """Delete every recording and everything derived from it. Irreversible.
+
+    Deliberately scoped: the account, avatars and voice samples survive,
+    because they are not derived from recordings and destroying them would
+    make a data reset indistinguishable from deleting the account. The
+    self-entity survives too — it is created at signup, it is what relations
+    point at, and a producer who reset their data is not a producer who has
+    ceased to exist.
+
+    The ask-once stamps are cleared on whatever survives. Without that, a
+    fresh archive would inherit "already asked" from a life that no longer
+    exists and the questions would never come back — the same failure that
+    cost five recordings when a stamp outlived its answer.
+    """
+    from app.services import segment_deletion
+
+    result = await segment_deletion.delete_all_producer_recordings(user.id)
+
+    survivors = list(
+        (await db.execute(select(Entity).where(Entity.producer_id == user.id)))
+        .scalars()
+        .all()
+    )
+    for entity in survivors:
+        entity.year_asked_at = None
+        entity.parentage_asked_at = None
+        entity.side_asked_at = None
+    await db.commit()
+
+    return {
+        "recordings_deleted": result.segments_deleted,
+        "files_deleted": result.files_deleted,
+        "entities_removed": result.entities_removed,
+        "entities_remaining": len(survivors),
+    }
 
 
 @router.delete(

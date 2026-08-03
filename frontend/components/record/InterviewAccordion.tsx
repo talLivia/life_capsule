@@ -24,6 +24,11 @@ interface InterviewAccordionProps {
   viewingStepId: string | null
   onOpenCategory: (categoryId: string) => void
   onSelectStep: (stepId: string) => void
+  /** With free navigation on, EVERYTHING is reachable — any category
+   *  and any question inside it. Unlocking categories but not the
+   *  steps within them left the producer able to open a category and
+   *  still not jump to a question in it. */
+  freeNavigation?: boolean
 }
 
 export function InterviewAccordion({
@@ -32,6 +37,7 @@ export function InterviewAccordion({
   viewingStepId,
   onOpenCategory,
   onSelectStep,
+  freeNavigation = false,
 }: InterviewAccordionProps) {
   return (
     <div className="flex flex-col gap-2">
@@ -110,7 +116,7 @@ export function InterviewAccordion({
                   // Forward jumps are not offered — the server refuses the
                   // recording anyway, so a clickable step here would only
                   // produce a rejection.
-                  const selectable = i <= currentIndex
+                  const selectable = freeNavigation || i <= currentIndex
 
                   return (
                     <li key={step.id}>

@@ -14,6 +14,11 @@ const CHAT_MODE_LABELS: Record<ChatMode, string> = {
   video_clips_v2: 'Original video clips (beta 2)',
 }
 
+/** What has to be typed before the archive can be destroyed. A button
+ *  alone is one misclick; a checkbox is one misclick and a shrug. Typing
+ *  the word is the smallest thing that cannot happen by accident. */
+const RESET_PHRASE = 'DELETE'
+
 export function SettingsPanel() {
   const { user, setAuth, token, clearAuth } = useStore()
   const [fullName, setFullName] = useState(user?.full_name || '')
@@ -30,6 +35,8 @@ export function SettingsPanel() {
   const chatMode = user?.chat_mode || 'avatar'
 
   const freeNavigation = Boolean(user?.free_navigation)
+  const [resetPhrase, setResetPhrase] = useState('')
+  const [resetting, setResetting] = useState(false)
 
   // Mirrors setChatMode: same updateProfile path, same auth refresh, same
   // guest guard. See docs/INTERVIEW_RESTRUCTURE.md §7A for why this exists —
@@ -337,6 +344,58 @@ export function SettingsPanel() {
       {!isGuest && user?.role !== 'family' && <FamilyInvitePanel />}
 
       {/* Danger zone */}
+      <div className="card flex flex-col gap-4 mt-6 border border-red-500/20">
+        <div className="flex items-center gap-2">
+          <Trash2 size={16} className="text-red-400" />
+          <h2 className="text-xl font-bold text-white">Delete all my recordings</h2>
+        </div>
+        <div className="divider" />
+        <p className="text-sm text-gray-400">
+          Every recording, transcript, and the people and relationships found in them.
+          The videos are deleted from storage too.{' '}
+          <span className="text-gray-300">This cannot be undone.</span>
+        </p>
+        <p className="text-xs text-gray-500">
+          Your account, avatars and voice samples are not touched, and you stay in your
+          own family tree — you just start with an empty archive.
+        </p>
+        <label htmlFor="reset-confirm" className="text-xs text-gray-400">
+          Type <span className="text-red-300 font-semibold">{RESET_PHRASE}</span> to confirm
+        </label>
+        <input
+          id="reset-confirm"
+          type="text"
+          value={resetPhrase}
+          onChange={(e) => setResetPhrase(e.target.value)}
+          disabled={resetting}
+          placeholder={RESET_PHRASE}
+          className="w-full md:w-56 px-3 py-2 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
+        />
+        <button
+          onClick={async () => {
+            if (resetPhrase !== RESET_PHRASE) return
+            setResetting(true)
+            try {
+              const result = await api.resetArchive()
+              toast.success(
+                `Deleted ${result.recordings_deleted} recording${
+                  result.recordings_deleted === 1 ? '' : 's'
+                }`,
+              )
+              setResetPhrase('')
+            } catch {
+              toast.error('Could not delete your recordings — please try again')
+            } finally {
+              setResetting(false)
+            }
+          }}
+          disabled={resetting || resetPhrase !== RESET_PHRASE}
+          className="btn-danger w-full md:w-auto md:self-end disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {resetting ? 'Deleting…' : 'Delete everything'}
+        </button>
+      </div>
+
       <div className="card flex flex-col gap-5 mt-6 border border-red-500/20">
         <div className="flex items-center gap-2">
           <Trash2 size={16} className="text-red-400" />
