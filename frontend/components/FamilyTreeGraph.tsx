@@ -1,25 +1,41 @@
 'use client'
 
-import { useMemo } from 'react'
-import type { FamilyTree, TreeEdge, TreePerson } from '@/lib/types'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { Maximize2, Minus, Plus } from 'lucide-react'
+import {
+  TransformComponent,
+  TransformWrapper,
+  type ReactZoomPanPinchRef,
+} from 'react-zoom-pan-pinch'
+import type { FamilyTree, TreePerson } from '@/lib/types'
 
 /**
  * The family tree as a node graph with drawn connections.
  *
- * Hand-built SVG rather than a layout library, deliberately. A family tree is
+ * Node and edge rendering is hand-built SVG, deliberately. A family tree is
  * not a tree — two parents point at one child, so it is a DAG, and the usual
- * packages (d3-hierarchy, react-d3-tree) assume exactly one parent per node.
- * The genuinely hard part, assigning generations, already happened server-side
- * in family_tree.py; what is left here is arithmetic on rows and paths.
+ * layout packages (d3-hierarchy, react-d3-tree) assume exactly one parent per
+ * node. The genuinely hard part, assigning generations, already happened
+ * server-side in family_tree.py; what is left here is arithmetic on rows.
  *
- * ## Only recorded relations are drawn
+ * Only the VIEWPORT is a library (react-zoom-pan-pinch). Pointer-anchored
+ * wheel zoom, trackpad and touch pinch, and telling a drag apart from a click
+ * are fiddly in ways that feel broken when slightly wrong, and none of them
+ * are about family structure. The split is deliberate: the library never sees
+ * a node or an edge.
  *
- * Siblings connect to the PRODUCER, not up to the parents, because that is
- * what the archive actually says: "ניר is my brother" and "צבי is my father"
- * are two separate facts, and nothing has ever stated that ניר is צבי's child.
- * A conventional genealogy chart would run every sibling up to the same
- * parents — inventing edges nobody recorded. This looks slightly less tidy and
- * is the honest picture; see "the tree never guesses" in family_tree.py.
+ * ## Only parent-child relations are drawn
+ *
+ * Same-generation relations — siblings, partners — are shown by SHARING A ROW,
+ * not by a line. The row already carries that information, and the connectors
+ * were pure noise: with four siblings all recorded as siblings of the
+ * producer, the lines fanned out from one node and had to be routed around
+ * the nodes in between to avoid reading as a chain that nobody recorded.
+ * Deleting them deleted that whole problem.
+ *
+ * Note this means a recorded MARRIAGE between two people in the same row is
+ * not visible as such — they are simply both in the row. Called out in the
+ * caption under the chart rather than left for someone to notice.
  *
  * Positions are computed here and nowhere else. The server owns WHO is in
  * which generation; this owns where they sit on screen.
@@ -30,13 +46,17 @@ const NODE_H = 58
 const COL_GAP = 26
 const ROW_GAP = 104
 const PAD = 20
+/** Left gutter for the row labels, which live inside the SVG so that they pan
+ *  and zoom with the rows they name — as separate DOM they would drift. */
+const LABEL_W = 150
+
+const MIN_SCALE = 0.15
+const MAX_SCALE = 2.5
 
 interface Placed {
   person: TreePerson
   x: number // left edge
   y: number // top edge
-  row: number
-  col: number
 }
 
 /** Up to two initials. Works the same for Hebrew and Latin names. */
@@ -54,6 +74,22 @@ function truncate(name: string, max = 16): string {
   return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : name
 }
 
+const GENERATION_LABELS: Record<number, string> = {
+  [-2]: 'Grandparents',
+  [-1]: 'Parents',
+  0: 'You and your generation',
+  1: 'Children',
+  2: 'Grandchildren',
+}
+
+function generationLabel(generation: number): string {
+  if (GENERATION_LABELS[generation]) return GENERATION_LABELS[generation]
+  // Beyond the named rows, say the distance rather than inventing a word for
+  // it — "3 generations up" is honest where "great-grandparents" might not be.
+  const n = Math.abs(generation)
+  return generation < 0 ? `${n} generations up` : `${n} generations down`
+}
+
 /**
  * Order each row to reduce crossings: a node sits near the average position of
  * the neighbours it is already connected to in the row above.
@@ -64,7 +100,7 @@ function truncate(name: string, max = 16): string {
  */
 function orderRows(
   generations: FamilyTree['generations'],
-  edges: TreeEdge[]
+  edges: FamilyTree['edges']
 ): TreePerson[][] {
   const neighbours = new Map<string, Set<string>>()
   for (const e of edges) {
@@ -98,6 +134,11 @@ function orderRows(
   return rows
 }
 
+/** How far a pointer may travel between down and up and still count as a
+ *  click. Without this, nudging the canvas while pressing a node opens
+ *  somebody's moments on what the hand meant as a pan. */
+const CLICK_SLOP_PX = 5
+
 export function FamilyTreeGraph({
   tree,
   selectedId,
@@ -107,256 +148,263 @@ export function FamilyTreeGraph({
   selectedId: string | null
   onSelect: (person: TreePerson) => void
 }) {
-  const { placed, width, height, dipFor } = useMemo(() => {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const zoomRef = useRef<ReactZoomPanPinchRef>(null)
+  const pressRef = useRef<{ x: number; y: number } | null>(null)
+
+  const { placed, rowLabels, width, height } = useMemo(() => {
     const rows = orderRows(tree.generations, tree.edges)
     const rowWidths = rows.map((r) => r.length * NODE_W + Math.max(0, r.length - 1) * COL_GAP)
     const widest = Math.max(0, ...rowWidths)
 
     const out = new Map<string, Placed>()
+    const labels: { text: string; y: number }[] = []
     rows.forEach((row, rowIndex) => {
       // Centre every row against the widest, so the chart reads as one shape
       // rather than a left-aligned stack.
-      const startX = PAD + (widest - rowWidths[rowIndex]) / 2
+      const startX = PAD + LABEL_W + (widest - rowWidths[rowIndex]) / 2
+      const y = PAD + rowIndex * (NODE_H + ROW_GAP)
+      labels.push({ text: generationLabel(tree.generations[rowIndex].generation), y })
       row.forEach((person, i) => {
-        out.set(person.id, {
-          person,
-          x: startX + i * (NODE_W + COL_GAP),
-          y: PAD + rowIndex * (NODE_H + ROW_GAP),
-          row: rowIndex,
-          col: i,
-        })
+        out.set(person.id, { person, x: startX + i * (NODE_W + COL_GAP), y })
       })
-    })
-
-    /**
-     * Same-row connectors that skip over a column have to detour BELOW the row.
-     *
-     * This is the never-guesses rule at the rendering layer. The producer has
-     * four siblings, all recorded as siblings OF THE PRODUCER. Drawn as
-     * straight horizontal lines those pass behind the nodes in between, and
-     * what a reader sees is a chain — חן–ניר–עדי–רז linked to each other —
-     * which is a set of relations nobody ever recorded. Occlusion is not
-     * neutral: a hidden line segment still reads as a connection between the
-     * two things it visibly touches.
-     *
-     * Longer spans go deeper, so the arcs nest instead of overlapping. Depth
-     * stays inside the row gap, above where descent lines run across.
-     */
-    const dip = new Map<number, number>()
-    const span = (edgeIndex: number) => {
-      const a = out.get(tree.edges[edgeIndex].from_id)!
-      const b = out.get(tree.edges[edgeIndex].to_id)!
-      return Math.abs(a.col - b.col)
-    }
-    const byRow = new Map<number, number[]>()
-    tree.edges.forEach((edge, i) => {
-      const a = out.get(edge.from_id)
-      const b = out.get(edge.to_id)
-      if (!a || !b || a.row !== b.row) return
-      if (Math.abs(a.col - b.col) <= 1) return // adjacent: nothing in between
-      byRow.set(a.row, [...(byRow.get(a.row) ?? []), i])
-    })
-
-    let deepestOnLastRow = 0
-    byRow.forEach((indices, rowIndex) => {
-      indices
-        .sort((x, y) => span(x) - span(y))
-        .forEach((edgeIndex, k) => {
-          const depth = Math.min(14 + k * 9, ROW_GAP / 2 - 10)
-          dip.set(edgeIndex, depth)
-          if (rowIndex === rows.length - 1) {
-            deepestOnLastRow = Math.max(deepestOnLastRow, depth)
-          }
-        })
     })
 
     return {
       placed: out,
-      dipFor: dip,
-      width: widest + PAD * 2,
-      // The bottom row's detours have no row gap beneath them to sit in, so
-      // the canvas grows to hold them rather than clipping.
-      height:
-        rows.length * NODE_H +
-        Math.max(0, rows.length - 1) * ROW_GAP +
-        PAD * 2 +
-        deepestOnLastRow,
+      rowLabels: labels,
+      width: LABEL_W + widest + PAD * 2,
+      height: rows.length * NODE_H + Math.max(0, rows.length - 1) * ROW_GAP + PAD * 2,
     }
   }, [tree])
 
+  /** Scale at which the whole chart fits the container. Never above 1 — a
+   *  small family should not be blown up to fill the screen. */
+  const fitScale = useCallback(() => {
+    const el = containerRef.current
+    if (!el) return 1
+    return Math.max(
+      MIN_SCALE,
+      Math.min(1, (el.clientWidth - 32) / width, (el.clientHeight - 32) / height)
+    )
+  }, [width, height])
+
+  // A tree wider than the viewport opens fitted rather than scrolled off the
+  // right edge, where the producer would have to discover panning to find out
+  // anything is missing.
+  useEffect(() => {
+    const id = window.requestAnimationFrame(() => {
+      zoomRef.current?.centerView(fitScale(), 0)
+    })
+    return () => window.cancelAnimationFrame(id)
+  }, [fitScale])
+
   if (placed.size === 0) return null
 
-  const centre = (p: Placed) => ({ cx: p.x + NODE_W / 2, cy: p.y + NODE_H / 2 })
+  const control =
+    'p-2 rounded-lg bg-surface-800/80 border border-white/10 text-gray-300 ' +
+    'hover:text-white hover:border-white/30 transition-colors'
 
   return (
-    <div className="overflow-x-auto">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        width={width}
-        height={height}
-        role="img"
-        aria-label="Family tree"
-        className="max-w-full h-auto"
+    <div
+      ref={containerRef}
+      className="relative w-full h-full overflow-hidden rounded-2xl bg-surface-900/40 border border-white/6"
+    >
+      <TransformWrapper
+        ref={zoomRef}
+        minScale={MIN_SCALE}
+        maxScale={MAX_SCALE}
+        limitToBounds={false}
+        centerOnInit
+        doubleClick={{ disabled: true }}
+        wheel={{ step: 0.08 }}
+        panning={{ velocityDisabled: true }}
       >
-        {/* Edges first so nodes paint over their endpoints. */}
-        <g>
-          {tree.edges.map((edge, i) => {
-            const a = placed.get(edge.from_id)
-            const b = placed.get(edge.to_id)
-            if (!a || !b) return null // an unplaced endpoint has no position
+        <>
+          <div className="absolute top-3 right-3 z-10 flex flex-col gap-1.5">
+            <button
+              type="button"
+              onClick={() => zoomRef.current?.zoomIn()}
+              className={control}
+              aria-label="Zoom in"
+            >
+              <Plus size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={() => zoomRef.current?.zoomOut()}
+              className={control}
+              aria-label="Zoom out"
+            >
+              <Minus size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={() => zoomRef.current?.centerView(fitScale(), 200)}
+              className={control}
+              aria-label="Fit tree to screen"
+            >
+              <Maximize2 size={15} />
+            </button>
+          </div>
 
-            const A = centre(a)
-            const B = centre(b)
-            const sameRow = a.y === b.y
-
-            if (sameRow) {
-              // Sibling or spouse — dashed, so it reads differently from a
-              // parent-child descent.
-              const left = A.cx < B.cx ? a : b
-              const right = A.cx < B.cx ? b : a
-              const depth = dipFor.get(i)
-              const key = `${edge.from_id}-${edge.to_id}-${edge.relation_type}-${i}`
-              const stroke = 'rgb(148 163 184 / 0.35)'
-
-              if (depth === undefined) {
-                // Adjacent columns: nothing to pass behind.
-                return (
-                  <line
-                    key={key}
-                    x1={left.x + NODE_W}
-                    y1={left.y + NODE_H / 2}
-                    x2={right.x}
-                    y2={right.y + NODE_H / 2}
-                    stroke={stroke}
-                    strokeWidth={1.5}
-                    strokeDasharray="4 4"
-                  />
-                )
-              }
-
-              const base = left.y + NODE_H
-              return (
-                <path
-                  key={key}
-                  d={`M ${left.x + NODE_W / 2} ${base} V ${base + depth} H ${
-                    right.x + NODE_W / 2
-                  } V ${base}`}
-                  fill="none"
-                  stroke={stroke}
-                  strokeWidth={1.5}
-                  strokeDasharray="4 4"
-                />
-              )
-            }
-
-            // Different generations — an orthogonal descent, the shape a
-            // genealogy chart uses: down, across, down.
-            const upper = a.y < b.y ? a : b
-            const lower = a.y < b.y ? b : a
-            const midY = upper.y + NODE_H + (lower.y - (upper.y + NODE_H)) / 2
-            const ux = upper.x + NODE_W / 2
-            const lx = lower.x + NODE_W / 2
-            return (
-              <path
-                key={`${edge.from_id}-${edge.to_id}-${edge.relation_type}-${i}`}
-                d={`M ${ux} ${upper.y + NODE_H} V ${midY} H ${lx} V ${lower.y}`}
-                fill="none"
-                stroke="rgb(148 163 184 / 0.45)"
-                strokeWidth={1.5}
-              />
-            )
-          })}
-        </g>
-
-        {/* Nodes */}
-        <g>
-          {Array.from(placed.values()).map(({ person, x, y }) => {
-            const isSelected = person.id === selectedId
-            const years =
-              person.year_start || person.year_end
-                ? `${person.year_start ?? '?'}–${person.year_end ?? ''}`
-                : null
-
-            return (
-              <g
-                key={person.id}
-                transform={`translate(${x}, ${y})`}
-                onClick={() => onSelect(person)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    onSelect(person)
-                  }
-                }}
-                tabIndex={0}
-                role="button"
-                aria-label={`${person.name}${person.is_self ? ' (you)' : ''}`}
-                className="cursor-pointer focus:outline-none"
-              >
-                <rect
-                  width={NODE_W}
-                  height={NODE_H}
-                  rx={12}
-                  className={
-                    isSelected
-                      ? 'fill-primary-500/20 stroke-primary-400'
-                      : person.is_self
-                        ? 'fill-surface-800 stroke-primary-500/50'
-                        : 'fill-surface-800/70 stroke-white/10 hover:stroke-white/30'
-                  }
-                  strokeWidth={1.5}
-                />
-
-                {/* Initials stand in for a photo — none are stored. */}
-                <circle
-                  cx={NODE_H / 2}
-                  cy={NODE_H / 2}
-                  r={16}
-                  className={person.is_self ? 'fill-primary-500/30' : 'fill-white/8'}
-                />
-                <text
-                  x={NODE_H / 2}
-                  y={NODE_H / 2}
-                  textAnchor="middle"
-                  dominantBaseline="central"
-                  className="fill-white text-[12px] font-semibold"
-                >
-                  {initials(person.name)}
-                </text>
-
-                <text
-                  x={NODE_H - 4}
-                  y={years ? NODE_H / 2 - 6 : NODE_H / 2}
-                  dominantBaseline="central"
-                  className="fill-white text-[12px] font-medium"
-                >
-                  {truncate(person.name)}
-                </text>
-                {years && (
+          <TransformComponent
+            wrapperStyle={{ width: '100%', height: '100%' }}
+            contentStyle={{ width, height }}
+          >
+            <svg
+              viewBox={`0 0 ${width} ${height}`}
+              width={width}
+              height={height}
+              role="img"
+              aria-label="Family tree"
+            >
+              {/* Row labels, inside the transform so they travel with the rows. */}
+              <g>
+                {rowLabels.map((label) => (
                   <text
-                    x={NODE_H - 4}
-                    y={NODE_H / 2 + 10}
+                    key={label.y}
+                    x={PAD}
+                    y={label.y + NODE_H / 2}
                     dominantBaseline="central"
-                    className="fill-gray-500 text-[10px]"
+                    className="fill-gray-500 text-[11px] uppercase tracking-wide"
                   >
-                    {years}
+                    {label.text}
                   </text>
-                )}
-                {person.is_self && !years && (
-                  <text
-                    x={NODE_H - 4}
-                    y={NODE_H / 2 + 10}
-                    dominantBaseline="central"
-                    className="fill-primary-400/80 text-[10px]"
-                  >
-                    You
-                  </text>
-                )}
+                ))}
               </g>
-            )
-          })}
-        </g>
-      </svg>
+
+              {/* Edges first so nodes paint over their endpoints. */}
+              <g>
+                {tree.edges.map((edge, i) => {
+                  const a = placed.get(edge.from_id)
+                  const b = placed.get(edge.to_id)
+                  if (!a || !b) return null // an unplaced endpoint has no position
+                  // Same generation: siblings and partners are shown by the
+                  // shared row, never by a line. See the header.
+                  if (a.y === b.y) return null
+
+                  // An orthogonal descent, the shape a genealogy chart uses:
+                  // down, across, down.
+                  const upper = a.y < b.y ? a : b
+                  const lower = a.y < b.y ? b : a
+                  const midY = upper.y + NODE_H + (lower.y - (upper.y + NODE_H)) / 2
+                  const ux = upper.x + NODE_W / 2
+                  const lx = lower.x + NODE_W / 2
+                  return (
+                    <path
+                      key={`${edge.from_id}-${edge.to_id}-${edge.relation_type}-${i}`}
+                      d={`M ${ux} ${upper.y + NODE_H} V ${midY} H ${lx} V ${lower.y}`}
+                      fill="none"
+                      stroke="rgb(148 163 184 / 0.45)"
+                      strokeWidth={1.5}
+                    />
+                  )
+                })}
+              </g>
+
+              {/* Nodes */}
+              <g>
+                {Array.from(placed.values()).map(({ person, x, y }) => {
+                  const isSelected = person.id === selectedId
+                  const years =
+                    person.year_start || person.year_end
+                      ? `${person.year_start ?? '?'}–${person.year_end ?? ''}`
+                      : null
+
+                  return (
+                    <g
+                      key={person.id}
+                      transform={`translate(${x}, ${y})`}
+                      onPointerDown={(e) => {
+                        pressRef.current = { x: e.clientX, y: e.clientY }
+                      }}
+                      onPointerUp={(e) => {
+                        const down = pressRef.current
+                        pressRef.current = null
+                        if (!down) return
+                        const moved =
+                          Math.abs(e.clientX - down.x) + Math.abs(e.clientY - down.y)
+                        if (moved <= CLICK_SLOP_PX) onSelect(person)
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          onSelect(person)
+                        }
+                      }}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`${person.name}${person.is_self ? ' (you)' : ''}`}
+                      className="cursor-pointer focus:outline-none"
+                    >
+                      <rect
+                        width={NODE_W}
+                        height={NODE_H}
+                        rx={12}
+                        className={
+                          isSelected
+                            ? 'fill-primary-500/20 stroke-primary-400'
+                            : person.is_self
+                              ? 'fill-surface-800 stroke-primary-500/50'
+                              : 'fill-surface-800/70 stroke-white/10 hover:stroke-white/30'
+                        }
+                        strokeWidth={1.5}
+                      />
+
+                      {/* Initials stand in for a photo — none are stored. */}
+                      <circle
+                        cx={NODE_H / 2}
+                        cy={NODE_H / 2}
+                        r={16}
+                        className={person.is_self ? 'fill-primary-500/30' : 'fill-white/8'}
+                      />
+                      <text
+                        x={NODE_H / 2}
+                        y={NODE_H / 2}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        className="fill-white text-[12px] font-semibold"
+                      >
+                        {initials(person.name)}
+                      </text>
+
+                      <text
+                        x={NODE_H - 4}
+                        y={years ? NODE_H / 2 - 6 : NODE_H / 2}
+                        dominantBaseline="central"
+                        className="fill-white text-[12px] font-medium"
+                      >
+                        {truncate(person.name)}
+                      </text>
+                      {years && (
+                        <text
+                          x={NODE_H - 4}
+                          y={NODE_H / 2 + 10}
+                          dominantBaseline="central"
+                          className="fill-gray-500 text-[10px]"
+                        >
+                          {years}
+                        </text>
+                      )}
+                      {person.is_self && !years && (
+                        <text
+                          x={NODE_H - 4}
+                          y={NODE_H / 2 + 10}
+                          dominantBaseline="central"
+                          className="fill-primary-400/80 text-[10px]"
+                        >
+                          You
+                        </text>
+                      )}
+                    </g>
+                  )
+                })}
+              </g>
+            </svg>
+          </TransformComponent>
+        </>
+      </TransformWrapper>
     </div>
   )
 }

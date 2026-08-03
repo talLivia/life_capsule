@@ -691,19 +691,78 @@ sits at column 0 with the siblings at 1-4. Drawn as straight horizontal lines,
 three of those connectors pass **behind** the nodes in between, and what a
 reader sees is a chain חן–ניר–עדי–רז — four relations nobody recorded.
 Occlusion is not neutral: a hidden line segment still reads as a connection
-between the two things it visibly touches. Same-row edges spanning more than
-one column now detour below the row, nesting at depths 14/23/32, all of which
-stay above the midline where descent lines run across.
+between the two things it visibly touches. Same-row edges were therefore
+routed below the row — and then **removed entirely in 4b**, which deleted the
+problem instead of solving it.
 
-For the same reason siblings connect to the **producer**, not up to the
-parents. "ניר is my brother" and "צבי is my father" are separate facts, and
-nothing states that ניר is צבי's child. A conventional genealogy chart would
-draw those edges anyway.
+Siblings connect to the **producer**, not up to the parents. "ניר is my
+brother" and "צבי is my father" are separate facts, and nothing states that
+ניר is צבי's child. A conventional genealogy chart would draw those edges
+anyway.
 
 Verified by replicating the layout maths against the live tree rather than by
 eye: no overlapping nodes, no edge with an unplaced endpoint, no connector
 drawn through a node, and the panel's row-label pitch equal to the SVG's row
 pitch (162px — they are separate constants and would silently drift apart).
+
+#### Phase 4b — full page, pan/zoom, no same-row lines — 2026-08-03
+
+Three changes, all rendering-layer. `family_tree.py` still untouched.
+
+**Same-generation connectors removed.** Siblings and partners are shown by
+sharing a row. The row already carries that, and with four siblings all
+recorded as siblings *of the producer* the lines fanned from one node and
+needed the 4a detour routing to avoid reading as a chain. Deleting the lines
+deleted the routing, the `row`/`col` bookkeeping, and the occlusion problem.
+
+Two consequences, both real and both accepted:
+
+- A recorded **marriage** between two people in the same row is no longer
+  visible as a marriage. Stated in the caption under the chart rather than
+  left for someone to notice.
+- Anyone whose only relation is same-generation now has **no drawn line at
+  all**. On the live archive that is 4 of the 5 people in row 0.
+
+**Viewport is a library; nodes and edges are not.** `react-zoom-pan-pinch`
+(~13KB gz) handles pointer-anchored wheel zoom, trackpad and touch pinch, and
+drag panning. This reverses the 4a "no library" call *for that piece only*,
+because pan/zoom went from hypothetical to required. The reasoning that ruled
+libraries out — a family tree is a DAG that `d3-hierarchy` cannot model — was
+about LAYOUT, and layout is still hand-built. The library never sees a node.
+
+A 5px movement threshold separates a click on a node from a pan that happened
+to start on one; without it, nudging the canvas opens somebody's moments.
+
+**Row labels moved inside the SVG** so they pan and zoom with the rows they
+name. This also deleted a constant that had to be kept equal to `NODE_H +
+ROW_GAP` in a separate file — drift there would have been silent.
+
+**Full page.** The chart gets the width and the moments open in a modal over
+it. A tree is a shape you read across; giving it 60% so an empty aside could
+hold the other 40% had it backwards.
+
+##### Stress test — 12 aunts/uncles + 15 nieces/nephews
+
+Temporary synthetic rows (`scripts/synthetic_tree_data.py --seed/--clean`),
+`entities` and `entity_relations` only, no fabricated recordings. Seeded,
+measured, deleted; `raw_segments`/`entity_mentions`/`interview_sessions`/
+`messages` verified identical at 17/25/2/391 before and after.
+
+Geometry held at 34 nodes and **2774×422px**: no overlapping nodes, no line
+crossing a node it is not attached to, descent lines median 522px / max
+1131px of horizontal travel. Fits a 1440px viewport at scale 0.51 — too small
+to read, which is what pan and zoom are for.
+
+Two things did NOT hold, both pre-existing and exposed by the width:
+
+1. **Row labels become false.** Row −1 labelled "Parents" held 12 people who
+   are not parents; row +1 labelled "Children" held 15 nieces and nephews and
+   zero children. The labels name a row after the producer's *closest*
+   relation in it, which stops being true as soon as anyone else is there.
+   Fix is generation-relative wording ("your parents' generation").
+2. **Floating nodes.** 12 of 14 in row −1 had no drawn line, because
+   sibling-of-parent is a same-generation relation and those are no longer
+   drawn. They read as disconnected rather than as aunts and uncles.
 
 ### Phase 4 — family tree page (original plan)
 
