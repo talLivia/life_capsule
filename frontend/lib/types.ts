@@ -145,6 +145,10 @@ export interface SegmentExtraction {
   unit_count: number
   entities: ExtractedEntity[]
   still_processing: boolean
+  /** The automatic work is done and the pipeline is paused on a person.
+   *  Distinct from still_processing: conflating them left this screen saying
+   *  "hang on a moment" indefinitely while the questions sat ready. */
+  awaiting_confirmation?: boolean
   entities_unavailable: boolean
   /** Which analysis node is running, and what to call it. Both null once the
    *  run is over. The label is resolved server-side so the node list has one

@@ -377,6 +377,9 @@ class SegmentExtractionResponse(BaseModel):
     unit_count: int = 0
     entities: List[ExtractedEntityResponse] = []
     still_processing: bool = False
+    # The automatic work is finished and the pipeline is paused on a person.
+    # Distinct from still_processing, which means we have not finished looking.
+    awaiting_confirmation: bool = False
     entities_unavailable: bool = False
     # Which node of the analysis graph is running, and what to call it on
     # screen. Both None once the run is over. The label is resolved server-side

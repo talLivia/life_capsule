@@ -1296,3 +1296,45 @@ placed", because the type had `is_tree_edge=False` and a NULL delta. An aunt
 or uncle is a sibling of a parent — the parents' row, one generation up.
 Migration `0018`. This is a GENERATION offset and not a claim about parentage:
 the row is shared, the edges are not.
+
+### 8.10 🚨 The same omission again, one layer up — fixed 2026-08-03
+
+The router fix (§8.7) made the pipeline pause correctly. The screen still
+showed nothing, and the cause was the same shape in the client.
+
+`EntityConfirmModal` guarded its render with:
+
+```ts
+const totalCount = identityQuestions.length + typeQuestions.length
+if (!pending || totalCount === 0) return null
+```
+
+Live segment `ac4e221f`: **10 relation questions, 10 year questions, 10
+editable names — fetched, in state, and thrown away**, because the two oldest
+classes happened to be empty. Written when identity and type were the only
+classes; three later classes never reached it. Exactly the router bug, one
+layer up, and it survived the router fix because fixing a gate does not fix a
+copy of that gate somewhere else.
+
+Meanwhile the extraction screen said *"hang on a moment, we'll ask as soon as
+this finishes"* — indefinitely — because `still_processing` was
+`status not in (ready, analyzed, failed)`, so `pending_confirmation` counted as
+processing. **Awaiting a person is not working**, and the manual panel has no
+handoff, so it had no other words available.
+
+Both fixes are structural rather than longer lists:
+
+- `countQuestions` counts **every array in the payload except a named
+  non-question set** (`editable_entities`). A class added on the server is
+  counted here without this file being touched.
+- `awaiting_confirmation` is its own field, and `still_processing` now excludes
+  `pending_confirmation`. The extraction panel says which state it is in, on
+  the manual path as well as the live one.
+
+Also fixed: the footer read "0 of 0 answered" when nothing was required. It now
+says "Everything here is optional", because only identity and type are
+compulsory and a zero-of-zero counter reads as an error.
+
+Verified against the live payload: old guard 0 → renders nothing; new guard
+20 questions → renders, with the 10 editable names correctly NOT counted as
+questions.

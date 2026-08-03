@@ -11,6 +11,32 @@ const POLL_INTERVAL_MS = 8000
 /** Sentinel for "someone new" — never a real candidate id. */
 const NEW_ENTITY = '__new__'
 
+/** Keys in the pending payload that are NOT questions. Everything else in it
+ *  is one, counted generically so that a class added on the server appears
+ *  here without this file being edited — the omission that caused the bug
+ *  below could not then happen again. */
+const NON_QUESTION_KEYS = new Set(['editable_entities'])
+
+/**
+ * How many questions this recording raises, of ANY class.
+ *
+ * The bug this replaces: the render guard was `totalCount === 0`, where
+ * totalCount counted identity and type ONLY. A recording with ten relation
+ * questions, ten year questions and ten editable names — fetched, in state,
+ * ready to render — returned null and showed nothing at all, because the two
+ * oldest classes happened to be empty. Exactly the same omission as the graph
+ * router that skipped confirmation entirely, one layer up.
+ */
+function countQuestions(
+  payload: PendingConfirmation['pending_confirmation'] | undefined,
+): number {
+  return Object.entries(payload ?? {}).reduce(
+    (total, [key, value]) =>
+      NON_QUESTION_KEYS.has(key) || !Array.isArray(value) ? total : total + value.length,
+    0,
+  )
+}
+
 /**
  * Everything unclear about ONE recording, on one screen, with one submit.
  *
@@ -135,7 +161,12 @@ export function EntityConfirmModal({
   const answeredCount =
     identityQuestions.filter((q) => identity[q.name]).length +
     typeQuestions.filter((q) => types[q.name]).length
-  const totalCount = identityQuestions.length + typeQuestions.length
+  // Only identity and type are REQUIRED — the server rejects a partial submit
+  // of those two and nothing else — so they alone drive the submit button.
+  const requiredCount = identityQuestions.length + typeQuestions.length
+  // Whether the screen appears at all is a different question, and counting
+  // it the same way is what hid thirty questions behind an empty one.
+  const questionCount = countQuestions(pending?.pending_confirmation)
 
   const submit = async () => {
     if (!pending || !allAnswered) return
@@ -217,7 +248,7 @@ export function EntityConfirmModal({
     }
   }
 
-  if (!pending || totalCount === 0) return null
+  if (!pending || questionCount === 0) return null
 
   const optionClass = (selected: boolean) =>
     `flex items-start gap-3 w-full text-left px-4 py-3 rounded-xl border transition-all duration-150 ${
@@ -250,9 +281,9 @@ export function EntityConfirmModal({
             <span className="text-sm font-semibold">Quick check</span>
           </div>
           <h2 id="entity-confirm-heading" className="text-white text-base mt-2 leading-relaxed">
-            {totalCount === 1
+            {questionCount === 1
               ? 'One thing to check about this recording:'
-              : `${totalCount} things to check about this recording:`}
+              : `${questionCount} things to check about this recording:`}
           </h2>
           <p className="text-xs text-gray-400 mt-1 italic">{pending.question_asked}</p>
         </div>
@@ -493,7 +524,14 @@ export function EntityConfirmModal({
 
         <div className="flex items-center justify-between gap-3 pt-1">
           <span className="text-xs text-gray-400">
-            {allAnswered ? 'All answered' : `${answeredCount} of ${totalCount} answered`}
+            {requiredCount === 0
+              ? // Nothing is compulsory here — saying "0 of 0 answered" reads
+                // as an error, and saying "All answered" claims something the
+                // producer has not done.
+                'Everything here is optional'
+              : allAnswered
+                ? 'All answered'
+                : `${answeredCount} of ${requiredCount} answered`}
           </span>
           <button
             type="button"

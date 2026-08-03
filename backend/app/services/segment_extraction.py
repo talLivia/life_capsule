@@ -65,7 +65,13 @@ class SegmentExtraction:
     # True when analysis hasn't finished, so the UI can say "still working"
     # rather than presenting an empty extraction as a finished one — the
     # difference between "we found nothing" and "we haven't looked yet".
+    # "We have not finished looking yet." Deliberately FALSE while awaiting
+    # confirmation: at that point the automatic work is done and the pipeline
+    # is waiting on a person, which is a different thing and needs different
+    # words. Conflating them left the screen saying "hang on a moment" forever
+    # while thirty questions sat ready.
     still_processing: bool = False
+    awaiting_confirmation: bool = False
     # Set when the entity store could not be reached. The rest of the
     # extraction is still worth showing, but an empty entity list would
     # otherwise read as "no people found", which is a very different claim.
@@ -130,7 +136,9 @@ async def get_segment_extraction(
         transcript=segment.transcript,
         topic_tags=list(segment.topic_tags or []),
         unit_count=_count_units(segment, chunks),
-        still_processing=segment.status not in ("ready", "analyzed", "failed"),
+        still_processing=segment.status
+        not in ("ready", "analyzed", "failed", "pending_confirmation"),
+        awaiting_confirmation=segment.status == "pending_confirmation",
         progress_stage=segment.progress_stage,
         progress_label=_stage_label(segment.progress_stage),
     )

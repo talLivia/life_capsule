@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { X, Loader2, Sparkles, Tag, Scissors, FileText, Users, AlertTriangle } from 'lucide-react'
+import { X, Loader2, Sparkles, Tag, Scissors, FileText, Users, AlertTriangle, HelpCircle } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { ApiError, SegmentExtraction } from '@/lib/types'
 
@@ -104,7 +104,7 @@ export function ExtractionModal({
   // finished recording and must not vanish while it is being read.
   useEffect(() => {
     if (!live || !data) return
-    if (data.status === 'pending_confirmation') {
+    if (data.awaiting_confirmation || data.status === 'pending_confirmation') {
       onNeedsConfirmation?.()
       return
     }
@@ -182,6 +182,19 @@ export function ExtractionModal({
 
           {data && !loading && !error && (
             <>
+              {/* Paused on a person, not still working. The manual panel
+                  reaches this too — it has no handoff, so without its own
+                  words it showed the "hang on" message forever. */}
+              {data.awaiting_confirmation && (
+                <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary-500/10 border border-primary-500/30 text-primary-200 text-sm">
+                  <HelpCircle size={16} className="shrink-0" />
+                  <span>
+                    A few questions are ready about this recording — answering them
+                    is what saves the people and relations it found.
+                  </span>
+                </div>
+              )}
+
               {data.still_processing && (
                 // Three things at once, because the producer needs all three:
                 // WHAT is happening (the stage), that it is still happening

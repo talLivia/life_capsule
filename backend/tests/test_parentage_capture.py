@@ -485,3 +485,47 @@ def test_an_unchanged_or_blank_edit_is_not_a_correction(monkeypatch):
     )
     out = asyncio.run(analysis_graph.human_confirm_node(_confirm_state()))
     assert sorted(e["name"] for e in out["extracted_entities"]) == sorted(["ליאן", "ניר"])
+
+
+# ── awaiting a person is not "still processing" ───────────────────────────
+
+
+async def test_a_segment_awaiting_confirmation_is_not_still_processing(
+    db_session, family
+):
+    """The live freeze: `still_processing` was `status not in (ready, analyzed,
+    failed)`, so `pending_confirmation` counted as processing. The extraction
+    screen showed "hang on a moment, we'll ask when this finishes" — forever,
+    while thirty questions sat ready in the payload it had already fetched.
+
+    They are different states and need different words: the automatic work is
+    finished, and a person is what it is waiting for.
+    """
+    from app.services.segment_extraction import get_segment_extraction
+
+    segment = family["segment"]
+    segment.status = "pending_confirmation"
+    segment.pending_confirmation = {
+        "identity_questions": [],
+        "type_questions": [],
+        "relation_questions": [{"index": 0}],
+        "year_questions": [],
+        "parentage_questions": [],
+    }
+    await db_session.flush()
+
+    extraction = await get_segment_extraction(db_session, segment.id, family["user"].id)
+    assert extraction.still_processing is False
+    assert extraction.awaiting_confirmation is True
+
+
+async def test_a_segment_actually_running_is_still_processing(db_session, family):
+    from app.services.segment_extraction import get_segment_extraction
+
+    segment = family["segment"]
+    segment.status = "processing"
+    await db_session.flush()
+
+    extraction = await get_segment_extraction(db_session, segment.id, family["user"].id)
+    assert extraction.still_processing is True
+    assert extraction.awaiting_confirmation is False
