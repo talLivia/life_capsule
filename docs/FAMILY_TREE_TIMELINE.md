@@ -954,3 +954,201 @@ Read-only. Same shell treatment.
 - Frontend `tsc`, `eslint`, `next build` clean.
 - Check the mid-flight `pending_confirmation` count before changing that
   payload (Phase 2b).
+
+---
+
+## 8. Phase 6 — recording review flow + sibling parentage (PLAN, not built)
+
+Two requests folded into one design, because they land on the same surface.
+The sibling-parent question is **not a third mechanism**: it is a fifth
+question class inside the confirmation payload that already exists, rendered in
+the same popup as identity, type, relation and year questions.
+
+> ⚠️ **The extraction-screen message never arrived.** This is written from the
+> three-item summary quoted in the follow-up — *auto-open after recording,
+> progress indicator, separate confirmation popup*. Everything in §8.2 marked
+> **[assumed]** is my reading, not your spec. Correct those on review.
+
+### 8.1 What exists today
+
+```
+record -> presign -> PUT -> /segments/ingest -> Celery -> analysis_graph
+                                                             |
+   transcribe -> chunks -> embed -> topics -> check_entities  |
+                                 -> human_confirm -- interrupt(one payload)
+                                 -> score -> finalize
+```
+
+| piece | today |
+| --- | --- |
+| `RawSegment.status` | `processing` -> `ready` / `pending_confirmation` / `failed`. **No per-stage detail.** |
+| `EntityConfirmModal` | polls `/segments/pending-confirmations` every **8 s**, opens itself when one appears |
+| `ExtractionModal` | read-only, opens **only** when the producer clicks a recording in `RecordingList` |
+| `human_confirm_node` | **exactly one** `interrupt()` per recording, carrying four question classes |
+| ask-once precedent | `Entity.year_asked_at` — a NULL year cannot distinguish "never asked" from "asked, didn't know" |
+
+The single-interrupt rule is a documented decision, not an accident: a sequence
+of modals gives the producer no idea how many are coming, and each answer is
+given without seeing the others. **Both halves below preserve it.**
+
+### 8.2 Recording review flow
+
+**A. Progress indicator.** Add `RawSegment.progress_stage` (nullable string),
+written at the top of each graph node. Chosen over a WebSocket because the app
+already polls, a column survives a reconnect or a page reload, and the graph
+resumes from a checkpoint — a socket would have to re-derive where it was.
+
+Stages map to nodes the producer can actually understand, not internals:
+
+| node | shown as |
+| --- | --- |
+| `transcribe` | Listening to your recording |
+| `create_transcript_chunks`, `embed_transcript` | Reading it back |
+| `extract_topics`, `check_entities` | Finding the people and places |
+| `human_confirm` | Waiting for you |
+| `score_importance`, `finalize_ingest` | Filing it away |
+
+**B. Auto-open.** After ingest returns, the recorder opens the review surface
+itself instead of waiting for the 8 s poll to notice. Poll drops to **2 s while
+a segment of this producer's is in flight**, back to 8 s otherwise — a progress
+bar that updates every 8 s reads as frozen.
+
+**C. Three states, one surface.** Progress -> confirmation -> summary.
+
+```
++- recording submitted -----------------------------+
+|  PROGRESS      stage list, live                   |
+|      |                                            |
+|      +- needs answers -> CONFIRMATION (own popup) |
+|      |                        |                   |
+|      +------------------------+--> SUMMARY        |
+|                                (what was captured)|
++---------------------------------------------------+
+```
+
+`ExtractionModal` already is the summary and `EntityConfirmModal` already is
+the confirmation; this changes **how they are entered**, not what they are.
+
+**Open — [assumed] answers, please correct:**
+
+1. Progress is a **named stage list**, not a percentage bar. A percentage would
+   have to be invented; the stages are real. **[assumed]**
+2. The summary auto-opens **every time**, not only when something needs
+   attention — "auto-open after recording" read literally. **[assumed]**
+3. Progress is **non-blocking**: the producer can dismiss it and keep
+   recording; it reopens when answers are needed. Blocking a producer who just
+   wants to record contradicts §5 "never blocked". **[assumed]**
+4. If a second recording is submitted while the first is still processing, the
+   surface tracks the **most recent** and the older one falls back to the
+   existing poll. **[assumed]**
+
+### 8.3 Sibling parentage — a fifth question class
+
+**Confirmed first, per your instruction: rendering already works and needs
+nothing.** Three tests plus a live-data seed (Phase 4d) show that a sibling
+given the producer's own parents joins the producer's trunk, and that a
+half-sibling with a *different* recorded parent puts that parent in the
+parents' row. **The gap is capture, not drawing.** No sibling in the live
+archive has any parent edge at all — they are recorded as siblings OF THE
+PRODUCER and nothing says whose children they are.
+
+**No extraction-prompt change is needed.** You expected this to touch the
+prompt; it does not. The question is derived from the DATABASE — siblings that
+exist, lack parent edges, and have not been asked — not from anything the model
+reads. That removes a whole risk class: no prompt re-tuning and no re-measuring
+breadth, which CLAUDE.md forbids doing casually anyway.
+
+**Trigger**, evaluated in `human_confirm_node` alongside the other four:
+
+```
+ask about sibling S when ALL hold:
+  - S is in the producer's generation 0 via a confirmed sibling relation
+  - the producer has >= 1 recorded parent   (nothing to offer otherwise)
+  - S has no parent edge of their own
+  - S.parentage_asked_at IS NULL            (ask once, ever)
+```
+
+Deriving from the DB rather than from this recording's proposals is what keeps
+the single interrupt. A sibling confirmed *on this screen* is not yet in the
+database, so it is asked about on the **next** recording — a one-recording lag,
+in exchange for not adding a second pause. It also clears the existing backlog
+of four, which an on-confirm trigger never would.
+
+> *Alternative considered:* ask inline under the sibling proposal on the same
+> screen ("if ניר is your brother — same parents?"). No lag, but it needs
+> conditional UI, a discard path when the relation is rejected, and a second
+> code path for the backlog. Recommending the DB-derived version; say if you
+> want the inline one.
+
+**The question**, one card per sibling, all of them on the one screen:
+
+```
+Whose child is ניר?           (optional — skip and we won't ask again)
+  [x] אילנה     [x] צבי        <- checkbox per recorded parent
+  [ ] someone not mentioned yet -> ____________
+```
+
+Checkboxes rather than "same as you / different", because a half-sibling shares
+*one* parent — a binary cannot express "same father, different mother", which
+is the exact case you raised.
+
+**Answers ->**
+
+| answer | written |
+| --- | --- |
+| one or more boxes ticked | a `parent` edge from each ticked parent to the sibling |
+| a name typed | a normal new entity + a `parent` edge, same path as any relation capture |
+| nothing / skip | `parentage_asked_at = now()`, never asked again |
+
+Ticking nothing but typing a name is legitimate (both parents unmentioned).
+
+**Ask-once needs a column**: migration `0017`, `entities.parentage_asked_at`,
+exactly parallel to `year_asked_at` and for the same reason — "no parent edges"
+cannot distinguish never-asked from asked-and-skipped, and without the
+distinction every future recording re-asks until the producer learns to click
+past the whole screen.
+
+**Open question — provenance.** `entity_relations.source_segment_id` is NOT
+NULL and means "the recording that established this". A parentage answer is
+given *while confirming* a recording that may never mention the parent.
+Pointing at it is slightly false, and the tree offers "play the recording where
+this was said". Three options, no recommendation yet:
+
+- **(a)** point at the current segment and accept it — simplest, mildly untrue;
+- **(b)** point at the segment where the *sibling relation* was established —
+  truer, still not where the parentage was stated;
+- **(c)** add `entity_relations.origin` (`recording` | `confirmation`) so the
+  tree can decline to offer a recording for answers that came from a screen.
+
+**(c)** is the honest one and costs a column. Your call.
+
+### 8.4 How the two halves meet
+
+The parentage question has **no surface of its own**. It arrives in the same
+`pending_confirmation` payload, as `parentage_questions`, and renders as
+another skippable section in the confirmation popup from 8.2C — below
+relations, above years. One screen, one submit, one resume, exactly as today.
+
+### 8.5 Build order
+
+| step | change |
+| --- | --- |
+| 1 | migration `0017` — `parentage_asked_at`, plus `origin` if (c) is chosen |
+| 2 | `progress_stage` column + writes in each node; progress exposed on the segment |
+| 3 | `parentage_questions()` builder + `human_confirm_node` wiring + resume-handler validation (staleness both directions, as the other four do) |
+| 4 | `entity_store` write path for parentage answers |
+| 5 | frontend: progress surface, auto-open, faster in-flight poll |
+| 6 | frontend: parentage section in the confirmation popup |
+| 7 | tests — ask-once, half-sibling subset, skip, backlog, staleness |
+
+Steps 2/5 and 3/4/6 are independent; either can land first.
+
+### 8.6 Explicitly not in this phase
+
+- **No tree rendering changes.** No dashed lines, no inferred edges, no
+  styling for "derived" relations. The tree draws real recorded parent-child
+  edges and nothing else — it already does this correctly.
+- No inference. "Your sibling is probably your parents' child" is never
+  written without the producer ticking the box.
+- No editing of parentage once answered; that is the read-only rule in 5.
+- No back-fill script. The backlog clears through the normal flow.
