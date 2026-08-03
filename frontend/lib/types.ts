@@ -485,3 +485,36 @@ export interface TalkAvailability {
   // setting, never something the family viewer picks per-session.
   chat_mode: ChatMode
 }
+
+// ── Timeline (docs/FAMILY_TREE_TIMELINE.md Phase 5) ──────────────────────
+// Order is the SERVER's — the question file's own order. Never re-sorted here.
+
+export interface TimelinePerson {
+  id: string
+  name: string
+  type: string
+  mentions: number
+  /** Decoration only. A year never moves anybody: a page ordered two ways
+   *  disagrees with itself. */
+  year_start: number | null
+}
+
+export interface TimelinePeriod {
+  category: string
+  category_label: string
+  /** A period the interview no longer contains, appended after the live ones.
+   *  Its recordings are real answers and stay visible. */
+  retired_only: boolean
+  recording_count: number
+  /** DISTINCT questions — three takes on one question is one answered. */
+  question_count: number
+  people: TimelinePerson[]
+}
+
+export interface Timeline {
+  periods: TimelinePeriod[]
+  /** Empty periods are hidden, not rendered blank — but counted, so a short
+   *  page still says how much interview is left. */
+  hidden_empty_periods: number
+  unplaced_recordings: number
+}

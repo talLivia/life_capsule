@@ -338,6 +338,11 @@ export const api = {
     return response.data
   },
 
+  getTimeline: async () => {
+    const response = await apiClient.get('/api/v1/entities/timeline')
+    return response.data
+  },
+
   getFamilyTree: async () => {
     const response = await apiClient.get('/api/v1/entities/tree')
     return response.data

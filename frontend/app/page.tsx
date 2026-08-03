@@ -42,6 +42,11 @@ const SettingsPanel = dynamic(
 )
 // Recording is now an in-shell view (like Settings) rather than a separate
 // /record route — see the `record` view below. The old route redirects here.
+const TimelinePanel = dynamic(
+  () => import('@/components/TimelinePanel').then(m => m.TimelinePanel),
+  { ssr: false, loading: () => <PanelLoader label="Loading your timeline…" /> },
+)
+
 const FamilyTreePanel = dynamic(
   () => import('@/components/FamilyTreePanel').then(m => m.FamilyTreePanel),
   { ssr: false, loading: () => <PanelLoader label="Building your family tree…" /> },
@@ -77,6 +82,7 @@ import {
   Settings,
   Feather,
   Network,
+  CalendarRange,
   Video,
   Search,
 } from 'lucide-react'
@@ -139,7 +145,7 @@ const STATS = [
   { value: '100%', label: 'Their own words' },
 ]
 
-type View = 'home' | 'avatars' | 'chat' | 'voice' | 'history' | 'settings' | 'record' | 'tree'
+type View = 'home' | 'avatars' | 'chat' | 'voice' | 'history' | 'settings' | 'record' | 'tree' | 'timeline'
 
 export default function Home() {
   const { isAuthenticated, user, clearAuth } = useStore()
@@ -254,6 +260,7 @@ export default function Home() {
     // producer learns that family comes from recording, so hiding it would
     // hide the only explanation of how to fill it.
     ...(isProducerUser ? [{ id: 'tree' as View, icon: Network, label: 'Family' }] : []),
+    ...(isProducerUser ? [{ id: 'timeline' as View, icon: CalendarRange, label: 'Timeline' }] : []),
     ...(isVideoClipMode
       ? []
       : [
@@ -558,6 +565,8 @@ export default function Home() {
         )}
 
         {view === 'tree' && <FamilyTreePanel />}
+
+        {view === 'timeline' && <TimelinePanel />}
       </main>
     </div>
   )
