@@ -20,7 +20,7 @@ import asyncio
 import pytest
 from datetime import datetime, timezone
 
-from app.analysis_graph import parentage_questions
+from app.analysis_graph import parentage_questions, side_questions
 from app.models import (
     Entity,
     EntityRelation,
@@ -803,10 +803,10 @@ async def test_deleting_the_recording_that_held_the_answer_reopens_the_question(
     found = await entity_store.parentage_candidates(db_session, family["user"].id)
     assert found["siblings"] == [], "answered, so not asked again"
 
-    cleared = await entity_store.clear_parentage_stamps_for_segment(
+    cleared = await entity_store.clear_ask_once_stamps_for_segment(
         db_session, family["segment"].id
     )
-    assert cleared == 1
+    assert cleared["parentage"] == 1
     assert family["sib"].parentage_asked_at is None
 
 
@@ -825,8 +825,136 @@ async def test_a_skipped_answer_keeps_its_stamp_when_an_unrelated_recording_goes
     )
     assert family["sib"].parentage_asked_at is not None
 
-    cleared = await entity_store.clear_parentage_stamps_for_segment(
+    cleared = await entity_store.clear_ask_once_stamps_for_segment(
         db_session, family["segment"].id
     )
-    assert cleared == 0, "no parent edges came from that segment"
+    assert cleared["parentage"] == 0, "no parent edges came from that segment"
     assert family["sib"].parentage_asked_at is not None
+
+
+# ── which side of the family an aunt or uncle is on ───────────────────────
+
+
+async def test_an_aunt_uncle_with_no_side_is_asked(db_session, family):
+    """An aunt_uncle edge places them in the parents' row and says nothing
+    about which parent they belong to — so the row reads as four parents."""
+    uncle = await family["person"]("Uncle")
+    await family["relate"](uncle, "aunt_uncle", family["root"])
+
+    found = await entity_store.aunt_uncle_candidates(db_session, family["user"].id)
+    assert [r["name"] for r in found["relatives"]] == ["Uncle"]
+    assert {p["name"] for p in found["parents"]} == {"Dad", "Mum"}
+
+
+async def test_an_aunt_uncle_already_linked_to_a_parent_is_not_asked(db_session, family):
+    uncle = await family["person"]("Uncle")
+    await family["relate"](uncle, "aunt_uncle", family["root"])
+    await family["relate"](uncle, "sibling", family["dad"])
+
+    found = await entity_store.aunt_uncle_candidates(db_session, family["user"].id)
+    assert found["relatives"] == []
+
+
+async def test_the_side_question_can_be_answered_on_the_first_recording(
+    db_session, fresh_producer
+):
+    """Same rule as parentage: the recording that names an uncle is the one
+    that creates them, so a database-only question could never fire on it."""
+    user, _segment, _root = fresh_producer
+    proposed = [
+        {"from_name": "Dad", "to_name": "__SELF__", "relation_type": "parent"},
+        {"from_name": "Uncle", "to_name": "__SELF__", "relation_type": "aunt_uncle"},
+    ]
+    found = await entity_store.aunt_uncle_candidates(
+        db_session, user.id, proposed, "__SELF__"
+    )
+    assert [r["name"] for r in found["relatives"]] == ["Uncle"]
+    questions = side_questions(found)
+    assert questions[0]["question"] == "Which side of the family are Uncle on?"
+
+
+async def test_answering_writes_a_sibling_edge_and_keeps_the_aunt_uncle_row(
+    db_session, family
+):
+    """The aunt_uncle row is TRUE — they are the producer's uncle — and the two
+    agree rather than compete, so replacing it would lose a recorded fact."""
+    uncle = await family["person"]("Uncle")
+    await family["relate"](uncle, "aunt_uncle", family["root"])
+
+    written = await entity_store.write_sides(
+        db_session,
+        producer_id=family["user"].id,
+        segment_id=family["segment"].id,
+        asked_names=["Uncle"],
+        answers={"Uncle": "Dad"},
+    )
+    assert written["relations"] == 1 and written["asked"] == 1
+
+    rows = (await db_session.execute(
+        EntityRelation.__table__.select().where(EntityRelation.from_entity_id == uncle.id)
+    )).all()
+    kinds = {r.relation_type for r in rows}
+    assert kinds == {"aunt_uncle", "sibling"}, "both kept"
+    sibling_row = next(r for r in rows if r.relation_type == "sibling")
+    assert sibling_row.to_entity_id == family["dad"].id
+    assert sibling_row.origin == "confirmation"
+
+
+async def test_the_two_rows_do_not_contradict_each_other_in_the_tree(
+    db_session, family
+):
+    """aunt_uncle is one generation up from the producer; sibling is level with
+    a parent already one generation up. Both place them in the same row."""
+    from app.services import family_tree
+
+    db_session.add(RelationType(
+        relation_type="aunt_uncle", category="family", is_tree_edge=True,
+        inverse_type=None, is_symmetric=False, label_en="uncle", label_he="דוד",
+        generation_delta=-1,
+    ))
+    uncle = await family["person"]("Uncle")
+    await family["relate"](uncle, "aunt_uncle", family["root"])
+    await family["relate"](uncle, "sibling", family["dad"])
+
+    tree = await family_tree.build_tree(db_session, family["user"].id)
+    assert tree["contradictions"] == []
+    row = next(g for g in tree["generations"] if g["generation"] == -1)
+    assert "Uncle" in [p["name"] for p in row["people"]]
+
+
+async def test_not_sure_is_recorded_so_it_is_asked_once(db_session, family):
+    uncle = await family["person"]("Uncle")
+    await family["relate"](uncle, "aunt_uncle", family["root"])
+
+    written = await entity_store.write_sides(
+        db_session,
+        producer_id=family["user"].id,
+        segment_id=family["segment"].id,
+        asked_names=["Uncle"],
+        answers={},
+    )
+    assert written["relations"] == 0 and written["asked"] == 1
+    assert uncle.side_asked_at is not None
+
+    found = await entity_store.aunt_uncle_candidates(db_session, family["user"].id)
+    assert found["relatives"] == []
+
+
+async def test_deleting_the_recording_reopens_the_side_question(db_session, family):
+    """The lesson from parentage, applied before it could bite twice."""
+    uncle = await family["person"]("Uncle")
+    await family["relate"](uncle, "aunt_uncle", family["root"])
+    await entity_store.write_sides(
+        db_session,
+        producer_id=family["user"].id,
+        segment_id=family["segment"].id,
+        asked_names=["Uncle"],
+        answers={"Uncle": "Dad"},
+    )
+    assert uncle.side_asked_at is not None
+
+    cleared = await entity_store.clear_ask_once_stamps_for_segment(
+        db_session, family["segment"].id
+    )
+    assert cleared["side"] == 1
+    assert uncle.side_asked_at is None

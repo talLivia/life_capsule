@@ -124,6 +124,8 @@ class AnalysisState(TypedDict, total=False):
     # recorded parents to offer as answers. Resolved from the DATABASE, not
     # from anything the model read — see parentage_questions.
     parentage: Dict[str, Any]
+    # Aunts and uncles still needing a side, plus the parents to offer.
+    sides: Dict[str, Any]
     # Which of those the producer accepted, keyed by the same index the
     # confirmation screen showed. Absent entirely when they skipped — which is
     # a real answer, not a missing one (relations are skippable by decision).
@@ -663,8 +665,12 @@ async def check_entities_node(state: AnalysisState) -> dict:
         # archive already holds. A producer's first recording is the one that
         # names their parents and siblings, so a DB-only question could never
         # fire on it — which is exactly what happened four times running.
+        proposed_dicts = [r.as_dict() for r in proposed]
         parentage = await entity_store.parentage_candidates(
-            db, group_id, [r.as_dict() for r in proposed], entity_extraction.SELF
+            db, group_id, proposed_dicts, entity_extraction.SELF
+        )
+        sides = await entity_store.aunt_uncle_candidates(
+            db, group_id, proposed_dicts, entity_extraction.SELF
         )
 
     return {
@@ -674,6 +680,7 @@ async def check_entities_node(state: AnalysisState) -> dict:
         "proposed_relations": [r.as_dict() for r in proposed],
         "year_settled": sorted(year_settled),
         "parentage": parentage,
+        "sides": sides,
     }
 
 
@@ -891,6 +898,34 @@ def parentage_questions(parentage: Optional[Dict[str, Any]]) -> List[Dict[str, A
 # remembered. A sixth class added here is asked about AND gates the route; a
 # sixth class added anywhere else does not exist. Same fix, and same reason, as
 # sharing `_chosen_option` between resolve_steps and category_is_settled.
+def side_questions(sides: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Which parent each aunt or uncle is a sibling of. ONE grouped question.
+
+    An `aunt_uncle` edge places somebody in the parents' row and says nothing
+    about which of the two parents they belong to, so the row ends up as four
+    boxes with no way to tell the parents from their siblings. This is the
+    question that produces the edge the chart can draw.
+
+    Grouped from the start rather than after four repetitions — see the
+    parentage question, which learned that the expensive way.
+    """
+    sides = sides or {}
+    parents = [_canonical_person(p) for p in sides.get("parents") or []]
+    relatives = [_canonical_person(r, sibling=True) for r in sides.get("relatives") or []]
+    if not parents or not relatives:
+        return []
+
+    names = [r["name"] for r in relatives]
+    listed = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+    return [
+        {
+            "question": f"Which side of the family are {listed} on?",
+            "relatives": relatives,
+            "parents": parents,
+        }
+    ]
+
+
 def normalise_pending_confirmation(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Bring a stored payload up to the shape the current client expects.
 
@@ -945,6 +980,11 @@ def build_confirmation_payload(state: AnalysisState) -> Dict[str, List[Dict[str,
         # these are siblings from earlier recordings who still have no parent.
         # Skipping is recorded (parentage_asked_at) so it is asked once.
         "parentage_questions": parentage_questions(state.get("parentage")),
+        # A SIXTH class, and it cost nothing to add: the router reads this
+        # function and the client counts every array in the payload, so both
+        # picked it up without being touched. That is what the two structural
+        # fixes bought.
+        "side_questions": side_questions(state.get("sides")),
     }
 
 
@@ -969,6 +1009,7 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     pending_relations = payload["relation_questions"]
     pending_years = payload["year_questions"]
     pending_parentage = payload["parentage_questions"]
+    pending_sides = payload["side_questions"]
     if not any(payload.values()):
         # Reached only when the router and this node disagree, which they
         # cannot now that both read build_confirmation_payload. Kept so the
@@ -1104,6 +1145,20 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     # screen asked about. finalize_ingest needs the second even when the first
     # is empty — a skipped question still has to be stamped as asked, or it
     # comes back on every future recording.
+    side_answers = answer.get("sides") or {}
+    accepted_aunt_uncle_names = {
+        r["from_name"] if r["to_name"] == entity_extraction.SELF else r["to_name"]
+        for r in accepted
+        if r.get("relation_type") == entity_store.AUNT_UNCLE_RELATION
+        and entity_extraction.SELF in (r.get("from_name"), r.get("to_name"))
+    }
+    asked_sides = [
+        relative["name"]
+        for question in pending_sides
+        for relative in question["relatives"]
+        if relative.get("recorded") or relative["name"] in accepted_aunt_uncle_names
+    ]
+
     parentage_answers = answer.get("parentage") or {}
     # A sibling this recording only PROPOSED is asked about on the same screen
     # — that is what makes the question work on a first recording. But their
@@ -1134,6 +1189,11 @@ async def human_confirm_node(state: AnalysisState) -> dict:
             **(state.get("parentage") or {}),
             "asked_names": asked_parentage,
             "answers": parentage_answers,
+        },
+        "sides": {
+            **(state.get("sides") or {}),
+            "asked_names": asked_sides,
+            "answers": side_answers,
         },
     }
 
@@ -1215,6 +1275,16 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
             # must run AFTER write_segment_relations, whose replace-by-segment
             # delete is scoped to origin="recording" precisely so these
             # survive a re-analysis.
+            sides = state.get("sides") or {}
+            if sides.get("asked_names"):
+                await entity_store.write_sides(
+                    db,
+                    producer_id=state["group_id"],
+                    segment_id=segment_id,
+                    asked_names=sides.get("asked_names") or [],
+                    answers=sides.get("answers") or {},
+                )
+
             parentage = state.get("parentage") or {}
             if parentage.get("asked_names"):
                 await entity_store.write_parentage(

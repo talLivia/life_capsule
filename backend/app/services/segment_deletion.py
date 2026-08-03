@@ -67,6 +67,8 @@ class DeletionResult:
     # People who can be asked whose child they are again, because the
     # recording holding that answer was deleted.
     parentage_reopened: int = 0
+    # Aunts and uncles whose side can be asked again, same reason.
+    sides_reopened: int = 0
     files_deleted: int = 0
     failures: List[str] = field(default_factory=list)
 
@@ -145,9 +147,11 @@ async def _delete_segments(segment_ids: List[str], group_id: str) -> DeletionRes
             # entity and the answer is on the relation, so a deletion that took
             # the answer would otherwise leave a permanent "already asked" with
             # nothing to show for it.
-            result.parentage_reopened += (
-                await entity_store.clear_parentage_stamps_for_segment(db, segment_id)
+            reopened = await entity_store.clear_ask_once_stamps_for_segment(
+                db, segment_id
             )
+            result.parentage_reopened += reopened["parentage"]
+            result.sides_reopened += reopened["side"]
 
             # Deleting the row cascades to its entity_mentions, then the sweep
             # removes any entity no recording mentions any more. ONE

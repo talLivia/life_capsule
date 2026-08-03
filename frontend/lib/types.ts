@@ -292,6 +292,7 @@ export interface PendingConfirmation {
     /** Not a question — every name this recording produced, so any of them
      *  can be corrected. Never causes the screen to appear on its own. */
     editable_entities?: { name: string; type?: string | null }[]
+    side_questions?: SideQuestion[]
   }
 }
 
@@ -300,6 +301,17 @@ export interface PendingConfirmation {
  *  The only class NOT raised by the recording being confirmed: these are
  *  siblings from earlier recordings who still have no parent recorded, so the
  *  tree places them in the right row and can draw no line to them. */
+/** Which parent an aunt or uncle is a sibling of.
+ *
+ *  An aunt_uncle edge places somebody in the parents' row and says nothing
+ *  about which of the two they belong to — so the row reads as four parents.
+ *  This is the question that produces the edge the chart can draw. */
+export interface SideQuestion {
+  question: string
+  relatives: ParentagePerson[]
+  parents: ParentagePerson[]
+}
+
 export interface ParentagePerson {
   name: string
   /** Null for anyone this recording has only just named — they have no row
@@ -351,6 +363,8 @@ export interface EntityBatchAnswer {
   /** Extracted name -> what it should say. The extractor can be CONFIDENTLY
    *  wrong, and a name it never doubted raises no question to answer. */
   name_edits?: Record<string, string>
+  /** Aunt/uncle name -> the parent they are a sibling of. Skippable. */
+  sides?: Record<string, string>
   identity: Record<string, { same_as_existing: boolean; candidate_uuid?: string }>
   types: Record<string, string>
 }

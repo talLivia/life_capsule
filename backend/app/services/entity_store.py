@@ -730,6 +730,7 @@ async def ensure_self_entity(db: AsyncSession, user) -> Tuple[Optional[Entity], 
 # step-parents and spouses, which is exactly wrong here.
 PARENT_RELATION = "parent"
 SIBLING_RELATION = "sibling"
+AUNT_UNCLE_RELATION = "aunt_uncle"
 
 
 def _proposed_names(
@@ -898,50 +899,6 @@ async def parentage_candidates(
     }
 
 
-async def clear_parentage_stamps_for_segment(
-    db: AsyncSession, segment_id: str
-) -> int:
-    """Un-ask the parentage question for anyone whose ANSWER this segment held.
-
-    An ask-once stamp lives on the entity; the answer it recorded lives in
-    `entity_relations`, scoped to the recording that was open when it was
-    given. Deleting that recording cascades the relations away — and left on
-    its own, the stamp then says "already asked" about a question whose answer
-    no longer exists. The producer can never be asked again, and the tree can
-    never draw the line. Observed exactly once and it cost five recordings.
-
-    Only the people whose parent edges came from THIS segment are cleared. A
-    producer who was asked and skipped keeps their stamp, because nothing they
-    said was destroyed.
-    """
-    affected = set(
-        (
-            await db.execute(
-                select(EntityRelation.to_entity_id).where(
-                    EntityRelation.source_segment_id == segment_id,
-                    EntityRelation.relation_type == PARENT_RELATION,
-                )
-            )
-        ).scalars().all()
-    )
-    if not affected:
-        return 0
-
-    entities = list(
-        (
-            await db.execute(
-                select(Entity).where(
-                    Entity.id.in_(affected), Entity.parentage_asked_at.isnot(None)
-                )
-            )
-        ).scalars().all()
-    )
-    for entity in entities:
-        entity.parentage_asked_at = None
-    await db.flush()
-    return len(entities)
-
-
 async def write_parentage(
     db: AsyncSession,
     *,
@@ -1031,6 +988,253 @@ async def write_parentage(
 
     await db.flush()
     return result
+
+
+async def aunt_uncle_candidates(
+    db: AsyncSession,
+    producer_id: str,
+    proposed_relations: Optional[Sequence[dict]] = None,
+    self_marker: str = "__SELF__",
+) -> Dict[str, list]:
+    """Which aunts and uncles still need a side, and which parents to offer.
+
+    `אמנון -aunt_uncle-> Tal` says they are the producer's uncle. It does not
+    say WHOSE sibling they are, so there is no edge between them and צבי and
+    the parents' row is four boxes with nothing marking the two that are
+    parents.
+
+    Same construction as `parentage_candidates`, for the same reasons: keyed by
+    NAME so a first recording can answer it, and merging the archive with what
+    this recording proposes so the question arrives in the same pass as the
+    relation it depends on.
+
+    Someone qualifies when they have no sibling edge to any of those parents
+    and have never been asked.
+    """
+    self_entity = (
+        await db.execute(
+            select(Entity).where(Entity.producer_id == producer_id, Entity.is_self)
+        )
+    ).scalars().first()
+    if self_entity is None:
+        return {"parents": [], "relatives": []}
+
+    everyone = {
+        e.normalized_name: e
+        for e in (
+            await db.execute(select(Entity).where(Entity.producer_id == producer_id))
+        ).scalars().all()
+    }
+
+    recorded_parents = list(
+        (
+            await db.execute(
+                select(Entity)
+                .join(EntityRelation, EntityRelation.from_entity_id == Entity.id)
+                .where(
+                    EntityRelation.to_entity_id == self_entity.id,
+                    EntityRelation.relation_type == PARENT_RELATION,
+                )
+                .order_by(Entity.name)
+                .distinct()
+            )
+        ).scalars().all()
+    )
+    parents: Dict[str, dict] = {
+        p.normalized_name: {"name": p.name, "entity_id": p.id} for p in recorded_parents
+    }
+    for name in _proposed_names(proposed_relations, self_marker, PARENT_RELATION):
+        key = normalize_entity_name(name)
+        if key and key not in parents:
+            existing = everyone.get(key)
+            parents[key] = {
+                "name": existing.name if existing else name,
+                "entity_id": existing.id if existing else None,
+            }
+    if not parents:
+        return {"parents": [], "relatives": []}
+
+    # Who is already a sibling of one of those parents — they have their answer.
+    parent_ids = {p["entity_id"] for p in parents.values() if p["entity_id"]}
+    settled = set()
+    if parent_ids:
+        rows = (
+            await db.execute(
+                select(EntityRelation.from_entity_id, EntityRelation.to_entity_id).where(
+                    EntityRelation.relation_type == SIBLING_RELATION,
+                    EntityRelation.from_entity_id.in_(parent_ids)
+                    | EntityRelation.to_entity_id.in_(parent_ids),
+                )
+            )
+        ).all()
+        for from_id, to_id in rows:
+            settled.add(to_id if from_id in parent_ids else from_id)
+
+    recorded_rows = (
+        await db.execute(
+            select(EntityRelation.from_entity_id, EntityRelation.to_entity_id).where(
+                EntityRelation.relation_type == AUNT_UNCLE_RELATION,
+                (EntityRelation.from_entity_id == self_entity.id)
+                | (EntityRelation.to_entity_id == self_entity.id),
+            )
+        )
+    ).all()
+    recorded_ids = {
+        (to_id if from_id == self_entity.id else from_id)
+        for from_id, to_id in recorded_rows
+    }
+    recorded_ids.discard(self_entity.id)
+
+    candidates: Dict[str, dict] = {}
+    for entity in everyone.values():
+        if entity.id not in recorded_ids:
+            continue
+        if entity.id in settled or entity.side_asked_at is not None:
+            continue
+        candidates[entity.normalized_name] = {
+            "name": entity.name,
+            "entity_id": entity.id,
+            "recorded": True,
+        }
+    for name in _proposed_names(proposed_relations, self_marker, AUNT_UNCLE_RELATION):
+        key = normalize_entity_name(name)
+        if not key or key in candidates or key in parents:
+            continue
+        existing = everyone.get(key)
+        if existing is not None and (
+            existing.id in settled or existing.side_asked_at is not None
+        ):
+            continue
+        candidates[key] = {
+            "name": existing.name if existing else name,
+            "entity_id": existing.id if existing else None,
+            "recorded": False,
+        }
+
+    if not candidates:
+        return {"parents": [], "relatives": []}
+
+    return {
+        "parents": sorted(parents.values(), key=lambda p: p["name"]),
+        "relatives": sorted(candidates.values(), key=lambda r: r["name"]),
+    }
+
+
+async def write_sides(
+    db: AsyncSession,
+    *,
+    producer_id: str,
+    segment_id: str,
+    asked_names: Sequence[str],
+    answers: Dict[str, str],
+) -> Dict[str, int]:
+    """Record which parent each aunt or uncle is a sibling of.
+
+    `answers` maps relative NAME -> parent NAME. Anyone asked is stamped
+    `side_asked_at` whether or not they answered — "not sure" is an answer, and
+    a question that returns every recording teaches people to skip the screen.
+
+    The existing `aunt_uncle` row is KEPT. It is true — they ARE the producer's
+    uncle — and the two agree rather than compete: `aunt_uncle` is one
+    generation up from the producer and `sibling` is level with a parent
+    already one generation up, so both place the person in the same row and the
+    tree reports no contradiction. Replacing a true statement with a more
+    specific one would lose the recording it came from.
+    """
+    now = datetime.now(timezone.utc)
+    result = {"relations": 0, "asked": 0}
+    asked = list(dict.fromkeys(asked_names))
+    if not asked:
+        return result
+
+    async def resolve(name: str) -> Optional[Entity]:
+        normalized = normalize_entity_name(name)
+        return await _find_entity(db, producer_id, normalized) if normalized else None
+
+    for relative_name in asked:
+        relative = await resolve(relative_name)
+        if relative is None:
+            logger.warning(f"side: no entity for {relative_name!r}")
+            continue
+
+        relative.side_asked_at = now
+        result["asked"] += 1
+
+        parent_name = (answers.get(relative_name) or "").strip()
+        if not parent_name:
+            continue
+        parent = await resolve(parent_name)
+        if parent is None or parent.id == relative.id:
+            continue
+
+        db.add(
+            EntityRelation(
+                from_entity_id=relative.id,
+                to_entity_id=parent.id,
+                relation_type=SIBLING_RELATION,
+                source_segment_id=segment_id,
+                origin="confirmation",
+            )
+        )
+        result["relations"] += 1
+
+    await db.flush()
+    return result
+
+
+async def clear_ask_once_stamps_for_segment(
+    db: AsyncSession, segment_id: str
+) -> Dict[str, int]:
+    """Un-ask anything whose ANSWER this segment held.
+
+    An ask-once stamp lives on the entity; the answer it recorded lives in
+    `entity_relations`, scoped to the recording open when it was given.
+    Deleting that recording cascades the relations away — and left alone, the
+    stamp says "already asked" about a question whose answer no longer exists.
+    The producer can never be asked again and the tree can never draw the line.
+
+    That happened once with parentage and cost five recordings. Both stamps are
+    cleared here so it cannot happen a second time with sides.
+
+    Only people whose relations came from THIS segment are cleared. Someone
+    asked who SKIPPED keeps their stamp: nothing they said was destroyed.
+    """
+    cleared = {"parentage": 0, "side": 0}
+
+    for relation_type, column, key in (
+        (PARENT_RELATION, Entity.parentage_asked_at, "parentage"),
+        (SIBLING_RELATION, Entity.side_asked_at, "side"),
+    ):
+        rows = (
+            await db.execute(
+                select(
+                    EntityRelation.from_entity_id, EntityRelation.to_entity_id
+                ).where(
+                    EntityRelation.source_segment_id == segment_id,
+                    EntityRelation.relation_type == relation_type,
+                    EntityRelation.origin == "confirmation",
+                )
+            )
+        ).all()
+        # The stamped party is the one the question was ABOUT: the child for a
+        # parentage answer, the relative for a side answer.
+        affected = {to_id for _from, to_id in rows} if relation_type == PARENT_RELATION \
+            else {from_id for from_id, _to in rows}
+        if not affected:
+            continue
+        entities = list(
+            (
+                await db.execute(
+                    select(Entity).where(Entity.id.in_(affected), column.isnot(None))
+                )
+            ).scalars().all()
+        )
+        for entity in entities:
+            setattr(entity, column.key, None)
+        cleared[key] = len(entities)
+
+    await db.flush()
+    return cleared
 
 
 async def _find_entity(

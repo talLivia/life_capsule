@@ -492,6 +492,9 @@ class EntityBatchConfirmRequest(BaseModel):
     # disambiguate against. Validated against the names this recording
     # actually produced, so a correction cannot invent an entity.
     name_edits: Dict[str, str] = Field(default_factory=dict)
+    # Aunt/uncle NAME -> which parent they are a sibling of. Skippable: omit
+    # someone to say "not sure", which is recorded as asked and never repeated.
+    sides: Dict[str, str] = Field(default_factory=dict)
 
 
 class PendingConfirmationResponse(BaseModel):

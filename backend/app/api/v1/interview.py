@@ -641,6 +641,9 @@ async def confirm_entities(
     parentage_group = (pending.get("parentage_questions") or [{}])[0]
     parentage_siblings = {s["name"] for s in parentage_group.get("siblings") or []}
     parentage_parents = {p["name"] for p in parentage_group.get("parents") or []}
+    side_group = (pending.get("side_questions") or [{}])[0]
+    side_relatives = {r["name"] for r in side_group.get("relatives") or []}
+    side_parents = {p["name"] for p in side_group.get("parents") or []}
     # Not a question — the full list of names this recording produced, any of
     # which may be corrected.
     editable_names = {e["name"] for e in pending.get("editable_entities") or []}
@@ -658,6 +661,7 @@ async def confirm_entities(
         | (set(payload.years) - set(year_questions))
         | (set(payload.parentage) - parentage_siblings)
         | (set(payload.name_edits) - editable_names)
+        | (set(payload.sides) - side_relatives)
     )
     if unknown:
         raise HTTPException(
@@ -740,6 +744,19 @@ async def confirm_entities(
             "new_parent_name": (given.new_parent_name or "").strip() or None,
         }
 
+    # A side must be one of the parents that question offered — otherwise a
+    # client could make anybody the sibling of anybody.
+    bad_sides = {
+        name: parent
+        for name, parent in payload.sides.items()
+        if parent and parent not in side_parents
+    }
+    if bad_sides:
+        raise HTTPException(
+            status_code=400,
+            detail=f"sides must name a parent this question offered: {sorted(bad_sides)}",
+        )
+
     from app.analysis_graph import resume_segment_analysis
 
     resume_result = await resume_segment_analysis(
@@ -758,6 +775,9 @@ async def confirm_entities(
             # filters again, but a bad id should be refused, not dropped.
             "parentage": parentage_answers,
             # Blank means "leave it" — only real, changed text is a correction.
+            "sides": {
+                name: parent for name, parent in payload.sides.items() if parent
+            },
             "name_edits": {
                 original: corrected.strip()
                 for original, corrected in payload.name_edits.items()

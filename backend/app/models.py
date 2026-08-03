@@ -507,6 +507,10 @@ class Entity(Base):
     # distinguish never-asked from asked-and-skipped, and only the second is
     # an answer. Set whether or not any parent was named. See migration 0017.
     parentage_asked_at = Column(DateTime(timezone=True), nullable=True)
+    # Which side of the family an aunt or uncle is on — asked once. Same shape
+    # and same reason as the two above: "no sibling edge to a parent" cannot
+    # distinguish never-asked from asked-and-skipped. See migration 0019.
+    side_asked_at = Column(DateTime(timezone=True), nullable=True)
     # The producer themselves. Extracted summaries are phrased relative to
     # "the speaker", so relations need a node for that person to point at;
     # the family tree roots here. One per producer (partial unique index).

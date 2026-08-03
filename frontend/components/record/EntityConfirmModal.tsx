@@ -93,6 +93,9 @@ export function EntityConfirmModal({
   // Extracted name -> corrected name. Only entries the producer actually
   // changed are sent; the server ignores blanks and no-ops as well.
   const [nameEdits, setNameEdits] = useState<Record<string, string>>({})
+  // Aunt/uncle name -> the parent they are a sibling of. One choice each:
+  // an uncle is a sibling of one parent, not both.
+  const [sides, setSides] = useState<Record<string, string>>({})
   const answeringRef = useRef(false)
   const [answering, setAnswering] = useState(false)
 
@@ -130,6 +133,7 @@ export function EntityConfirmModal({
     setNewParent({})
     setOtherOpen({})
     setNameEdits({})
+    setSides({})
   }, [pending?.segment_id])
 
   const identityQuestions = useMemo(
@@ -150,6 +154,10 @@ export function EntityConfirmModal({
   )
   const parentageQuestions = useMemo(
     () => pending?.pending_confirmation.parentage_questions ?? [],
+    [pending],
+  )
+  const sideQuestions = useMemo(
+    () => pending?.pending_confirmation.side_questions ?? [],
     [pending],
   )
   const editableEntities = useMemo(
@@ -199,6 +207,11 @@ export function EntityConfirmModal({
         ),
         years: Object.fromEntries(
           Object.entries(years).filter(([, v]) => v.trim()),
+        ),
+        // Anyone left unanswered is "not sure" — recorded as asked so it
+        // is never raised again, with nothing written.
+        sides: Object.fromEntries(
+          Object.entries(sides).filter(([, parent]) => parent),
         ),
         name_edits: Object.fromEntries(
           Object.entries(nameEdits).filter(
@@ -626,6 +639,68 @@ export function EntityConfirmModal({
                   <option key={person.name} value={person.name} />
                 ))}
               </datalist>
+            </fieldset>
+          )
+        })}
+
+        {/* Which parent an aunt or uncle belongs to.
+            Without it, an aunt_uncle edge puts them in the parents' row and
+            says nothing more — so the row is four boxes and nothing marks the
+            two that are actually parents. This produces the edge the chart
+            draws between them and the parent they are a sibling of. */}
+        {sideQuestions.map((group) => {
+          const relatives = group.relatives ?? []
+          const parents = group.parents ?? []
+          if (relatives.length === 0 || parents.length === 0) return null
+          return (
+            <fieldset
+              key="sides"
+              className="flex flex-col gap-3 pt-1 border-t border-white/10"
+            >
+              <legend className="text-sm text-white leading-relaxed mb-1">
+                <span dir="auto">{group.question}</span>
+              </legend>
+              <p className="text-xs text-gray-400 -mt-1 mb-1">
+                Whose brother or sister are they? This is what connects them to the
+                right parent in your tree. Asked once either way.
+              </p>
+              {relatives.map((relative) => (
+                <div key={relative.name} className="flex flex-wrap items-center gap-2">
+                  <span dir="auto" className="text-sm text-white w-24 shrink-0">
+                    {relative.name}
+                  </span>
+                  {parents.map((parent) => {
+                    const chosen = sides[relative.name] === parent.name
+                    return (
+                      <button
+                        key={parent.name}
+                        type="button"
+                        disabled={answering}
+                        onClick={() =>
+                          setSides((current) => ({
+                            ...current,
+                            // Clicking the chosen one again clears it — one
+                            // parent, and a way back to saying nothing.
+                            [relative.name]: chosen ? '' : parent.name,
+                          }))
+                        }
+                        className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
+                          chosen
+                            ? 'border-primary-400 bg-primary-500/15 text-white'
+                            : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
+                        }`}
+                      >
+                        <span dir="auto">{parent.name}</span>
+                      </button>
+                    )
+                  })}
+                  {!sides[relative.name] && (
+                    <span className="text-[11px] text-gray-500">
+                      Not sure — we won&apos;t ask again
+                    </span>
+                  )}
+                </div>
+              ))}
             </fieldset>
           )
         })}
