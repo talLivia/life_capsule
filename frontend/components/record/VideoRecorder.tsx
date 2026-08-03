@@ -26,7 +26,9 @@ interface VideoRecorderProps {
   /** Stable question id — see api.ingestSegment. */
   questionId: string
   questionText: string
-  onAccepted: () => void
+  /** Receives the new segment's id so the parent can open its extraction
+   *  screen immediately, rather than waiting for a poll to notice. */
+  onAccepted: (segmentId?: string) => void
   onCancel?: () => void
 }
 
@@ -339,7 +341,7 @@ export function VideoRecorder({
     try {
       const presign = await api.presignSegmentUpload(questionIndex, mimeTypeRef.current)
       await uploadSegmentBlob(presign.upload_url, blob, presign.content_type, setUploadFraction)
-      await api.ingestSegment({
+      const ingested = await api.ingestSegment({
         interview_session_id: sessionId,
         question_index: questionIndex,
         question_id: questionId,
@@ -348,7 +350,7 @@ export function VideoRecorder({
       })
       setPhase('done')
       toast.success('Answer saved')
-      onAccepted()
+      onAccepted(ingested?.id)
     } catch (err: unknown) {
       const detail = (err as ApiError)?.response?.data?.detail || (err as ApiError)?.message
       toast.error(detail || 'Upload failed — please try again')

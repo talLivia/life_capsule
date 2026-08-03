@@ -75,7 +75,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from app.config import settings
 from app.database import AsyncSessionLocal
@@ -120,6 +120,10 @@ class AnalysisState(TypedDict, total=False):
     # written until the producer confirms, because a silent wrong relation in a
     # family tree is worse than an unanswered question.
     proposed_relations: List[Dict[str, Any]]
+    # Siblings still to be asked whose child they are, plus the producer's
+    # recorded parents to offer as answers. Resolved from the DATABASE, not
+    # from anything the model read — see parentage_questions.
+    parentage: Dict[str, Any]
     # Which of those the producer accepted, keyed by the same index the
     # confirmation screen showed. Absent entirely when they skipped — which is
     # a real answer, not a missing one (relations are skippable by decision).
@@ -238,6 +242,57 @@ async def _load_segment_and_user(db, segment_id: str):
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────
+
+
+# ── progress reporting ────────────────────────────────────────────────────
+#
+# The producer watches the extraction screen while this runs (Phase 6 of
+# docs/FAMILY_TREE_TIMELINE.md). Without a stage they get a spinner for the
+# length of a real extraction, which reads as stuck.
+#
+# Applied by WRAPPING the nodes at graph-construction time rather than by a
+# line at the top of each one. Eight call sites would be eight chances for a
+# new node to be added without a stage, and the wrapper makes that impossible:
+# a node registered through `_staged` has a stage or it does not compile.
+#
+# Labels are what the producer reads, not node names. Several nodes share one
+# label deliberately — "Reading it back" covers chunking and embedding, which
+# are one idea to everybody who is not maintaining this file.
+STAGE_LABELS = {
+    "transcribe": "Listening to your recording",
+    "create_transcript_chunks": "Reading it back",
+    "embed_transcript": "Reading it back",
+    "extract_topics": "Finding the themes",
+    "check_entities": "Finding the people and places",
+    "human_confirm": "Waiting for you",
+    "score_importance": "Filing it away",
+    "finalize_ingest": "Filing it away",
+}
+
+
+async def _set_progress_stage(segment_id: str, stage: Optional[str]) -> None:
+    """Best-effort. A progress label is never worth failing an ingest over."""
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                update(RawSegment)
+                .where(RawSegment.id == segment_id)
+                .values(progress_stage=stage)
+            )
+            await db.commit()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"could not set progress stage {stage!r}: {e}")
+
+
+def _staged(stage: str, node):
+    """Record which node is running, then run it."""
+
+    async def wrapped(state: AnalysisState) -> dict:
+        await _set_progress_stage(state["segment_id"], stage)
+        return await node(state)
+
+    wrapped.__name__ = getattr(node, "__name__", stage)
+    return wrapped
 
 
 async def transcribe_node(state: AnalysisState) -> dict:
@@ -583,6 +638,11 @@ async def check_entities_node(state: AnalysisState) -> dict:
         year_settled = await entity_store.names_with_year_settled(
             db, group_id, [e.name for e in extracted]
         )
+        # Nothing to do with THIS recording: these are siblings confirmed by
+        # earlier ones that still have no parent recorded. Resolved here for
+        # the same reason year_settled is — the database is already open, and
+        # human_confirm stays a pure function over state.
+        parentage = await entity_store.parentage_candidates(db, group_id)
 
     return {
         "names_to_check": to_check,
@@ -590,6 +650,7 @@ async def check_entities_node(state: AnalysisState) -> dict:
         "extracted_entities": [e.as_dict() for e in extracted],
         "proposed_relations": [r.as_dict() for r in proposed],
         "year_settled": sorted(year_settled),
+        "parentage": parentage,
     }
 
 
@@ -710,6 +771,44 @@ def relation_questions(proposed: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
+def parentage_questions(parentage: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Whose child is each sibling — ASKED AT MOST ONCE PER SIBLING, EVER.
+
+    A sibling is recorded as a sibling OF THE PRODUCER, which says nothing
+    about whose child they are. The family tree can therefore place them in
+    the right generation and still draw no line to them, which is correct and
+    looks broken. This is the question that fills that in.
+
+    Derived from the DATABASE (entity_store.parentage_candidates), never from
+    the model. Nothing about the extraction prompt changes to support it, so
+    none of the breadth measurements in CLAUDE.md are put at risk.
+
+    Deliberately about siblings confirmed by EARLIER recordings, not the ones
+    being proposed on this same screen. A sibling proposed here is not in the
+    database yet, and waiting for the answer would mean a second interrupt —
+    the one thing human_confirm_node exists to avoid. The cost is that a newly
+    confirmed sibling is asked about on the NEXT recording; the benefit is
+    that the rule holds and the existing backlog gets asked at all.
+
+    Checkboxes per parent rather than "same as you / different", because a
+    half-sibling shares ONE parent and a yes/no cannot say which.
+    """
+    parentage = parentage or {}
+    parents = parentage.get("parents") or []
+    siblings = parentage.get("siblings") or []
+    if not parents or not siblings:
+        return []
+    return [
+        {
+            "entity_id": sibling["id"],
+            "name": sibling["name"],
+            "question": f'Whose child is "{sibling["name"]}"? (optional)',
+            "parents": parents,
+        }
+        for sibling in siblings
+    ]
+
+
 async def human_confirm_node(state: AnalysisState) -> dict:
     """ONE interrupt per recording, carrying every question it raises.
 
@@ -731,7 +830,14 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     pending_years = year_questions(
         state.get("extracted_entities") or [], set(state.get("year_settled") or [])
     )
-    if not (identity_questions or pending_types or pending_relations or pending_years):
+    pending_parentage = parentage_questions(state.get("parentage"))
+    if not (
+        identity_questions
+        or pending_types
+        or pending_relations
+        or pending_years
+        or pending_parentage
+    ):
         return {}
 
     answer = interrupt(
@@ -747,6 +853,11 @@ async def human_confirm_node(state: AnalysisState) -> dict:
             # year has a real empty outcome — no year stored, timeline
             # unaffected — so nothing is lost by leaving it blank.
             "year_questions": pending_years,
+            # Skippable too, and the ONLY class not raised by this recording:
+            # these are siblings from earlier recordings who still have no
+            # parent. Skipping is recorded (parentage_asked_at) so it is asked
+            # once and never again.
+            "parentage_questions": pending_parentage,
         }
     )
 
@@ -824,6 +935,12 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         or raw_relation_answers.get(i) is True
     ]
 
+    # Parentage: carry both the answers and the full list of siblings the
+    # screen asked about. finalize_ingest needs the second even when the first
+    # is empty — a skipped question still has to be stamped as asked, or it
+    # comes back on every future recording.
+    parentage_answers = answer.get("parentage") or {}
+
     return {
         "names_to_check": [],
         "entity_resolutions": resolutions,
@@ -831,6 +948,11 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         # Overwritten with the accepted subset, so finalize_ingest writes
         # exactly what the producer approved and nothing else.
         "proposed_relations": accepted,
+        "parentage": {
+            **(state.get("parentage") or {}),
+            "asked_ids": [q["entity_id"] for q in pending_parentage],
+            "answers": parentage_answers,
+        },
     }
 
 
@@ -907,12 +1029,28 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
                 ],
                 self_marker=entity_extraction.SELF,
             )
+            # Parentage last: it may create a parent entity of its own, and it
+            # must run AFTER write_segment_relations, whose replace-by-segment
+            # delete is scoped to origin="recording" precisely so these
+            # survive a re-analysis.
+            parentage = state.get("parentage") or {}
+            if parentage.get("asked_ids"):
+                await entity_store.write_parentage(
+                    db,
+                    producer_id=state["group_id"],
+                    segment_id=segment_id,
+                    asked_sibling_ids=parentage.get("asked_ids") or [],
+                    answers=parentage.get("answers") or {},
+                )
             # ONE commit for the entities AND the status. entity_store
             # deliberately does not commit, so a recording can never be marked
             # ready behind a half-written entity set — which would be
             # indistinguishable from one that genuinely mentioned nobody.
             segment.status = "ready"
             segment.pending_confirmation = None
+            # The run is over; a stale stage would leave the extraction screen
+            # claiming work is still happening.
+            segment.progress_stage = None
             await db.commit()
         except Exception as e:
             await db.rollback()
@@ -956,6 +1094,7 @@ async def fail_node(state: AnalysisState) -> dict:
         if segment is not None:
             segment.status = "failed"
             segment.pending_confirmation = None
+            segment.progress_stage = None
             await db.commit()
     logger.error(f"analysis_graph failed for segment {segment_id}: {state.get('error')}")
     return {"status": "failed"}
@@ -980,14 +1119,14 @@ def _has_confirmation_questions(state: AnalysisState) -> str:
 
 def build_graph(checkpointer):
     graph = StateGraph(AnalysisState)
-    graph.add_node("transcribe", transcribe_node)
-    graph.add_node("create_transcript_chunks", create_transcript_chunks_node)
-    graph.add_node("embed_transcript", embed_transcript_node)
-    graph.add_node("extract_topics", extract_topics_node)
-    graph.add_node("check_entities", check_entities_node)
-    graph.add_node("human_confirm", human_confirm_node)
-    graph.add_node("score_importance", score_importance_node)
-    graph.add_node("finalize_ingest", finalize_ingest_node)
+    graph.add_node("transcribe", _staged("transcribe", transcribe_node))
+    graph.add_node("create_transcript_chunks", _staged("create_transcript_chunks", create_transcript_chunks_node))
+    graph.add_node("embed_transcript", _staged("embed_transcript", embed_transcript_node))
+    graph.add_node("extract_topics", _staged("extract_topics", extract_topics_node))
+    graph.add_node("check_entities", _staged("check_entities", check_entities_node))
+    graph.add_node("human_confirm", _staged("human_confirm", human_confirm_node))
+    graph.add_node("score_importance", _staged("score_importance", score_importance_node))
+    graph.add_node("finalize_ingest", _staged("finalize_ingest", finalize_ingest_node))
     graph.add_node("fail", fail_node)
 
     graph.add_edge(START, "transcribe")
@@ -1051,6 +1190,7 @@ async def _sync_segment_from_result(segment_id: str, result: Dict[str, Any]) -> 
         else:
             segment.pending_confirmation = None
             segment.status = result.get("status", "failed")
+            segment.progress_stage = None
         await db.commit()
 
 

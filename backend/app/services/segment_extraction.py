@@ -70,6 +70,21 @@ class SegmentExtraction:
     # extraction is still worth showing, but an empty entity list would
     # otherwise read as "no people found", which is a very different claim.
     entities_unavailable: bool = False
+    # Which graph node is running, and what to call it on screen. The label is
+    # resolved here rather than in the client so the node list has exactly one
+    # home — a client copy would drift the first time a node is renamed.
+    progress_stage: Optional[str] = None
+    progress_label: Optional[str] = None
+
+
+def _stage_label(stage: Optional[str]) -> Optional[str]:
+    """Human wording for a graph node. Imported lazily: analysis_graph pulls in
+    the whole LangGraph/LLM stack, and this module is on the read path."""
+    if not stage:
+        return None
+    from app.analysis_graph import STAGE_LABELS
+
+    return STAGE_LABELS.get(stage)
 
 
 async def get_segment_extraction(
@@ -116,6 +131,8 @@ async def get_segment_extraction(
         topic_tags=list(segment.topic_tags or []),
         unit_count=_count_units(segment, chunks),
         still_processing=segment.status not in ("ready", "analyzed", "failed"),
+        progress_stage=segment.progress_stage,
+        progress_label=_stage_label(segment.progress_stage),
     )
 
     try:

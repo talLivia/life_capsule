@@ -341,6 +341,13 @@ class RawSegment(Base):
     # lifecycle; this column just needs to exist and be indexed for the
     # polling queries Prompts 4-5 run against it.
     status = Column(String, default="pending_upload", index=True)
+    # Which node of the analysis graph is running right now, so the producer
+    # watching the extraction screen sees movement instead of a spinner.
+    # Deliberately NOT part of `status`: status is the lifecycle other code
+    # branches on, and adding half a dozen transient values to it would mean
+    # every `status == "..."` check has a new way to be wrong. NULL when
+    # nothing is running — this is a liveness signal, not history.
+    progress_stage = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -496,6 +503,10 @@ class Entity(Base):
     # differently: the second is a real answer, and re-asking on every future
     # recording that mentions the entity would ignore it. See migration 0015.
     year_asked_at = Column(DateTime(timezone=True), nullable=True)
+    # Same shape as year_asked_at, same reason: "has no parent edges" cannot
+    # distinguish never-asked from asked-and-skipped, and only the second is
+    # an answer. Set whether or not any parent was named. See migration 0017.
+    parentage_asked_at = Column(DateTime(timezone=True), nullable=True)
     # The producer themselves. Extracted summaries are phrased relative to
     # "the speaker", so relations need a node for that person to point at;
     # the family tree roots here. One per producer (partial unique index).
@@ -640,4 +651,10 @@ class EntityRelation(Base):
         nullable=False,
         index=True,
     )
+    # "recording" — the words in source_segment_id stated this relation.
+    # "confirmation" — the producer gave it as an answer while confirming that
+    # recording, which may never mention the person at all. The tree offers to
+    # play the recording a relation came from; that offer is only honest for
+    # the first kind. See migration 0017.
+    origin = Column(String, nullable=False, server_default="recording", default="recording")
     created_at = Column(DateTime(timezone=True), server_default=func.now())

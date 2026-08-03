@@ -957,7 +957,7 @@ Read-only. Same shell treatment.
 
 ---
 
-## 8. Phase 6 — recording review flow + sibling parentage (PLAN, not built)
+## 8. ✅ Phase 6 — recording review flow + sibling parentage — BUILT 2026-08-03
 
 Two requests folded into one design, because they land on the same surface.
 The sibling-parent question is **not a third mechanism**: it is a fifth
@@ -991,56 +991,110 @@ The single-interrupt rule is a documented decision, not an accident: a sequence
 of modals gives the producer no idea how many are coming, and each answer is
 given without seeing the others. **Both halves below preserve it.**
 
-### 8.2 Recording review flow
+### 8.2 Recording review flow — CONFIRMED 2026-08-03
 
-**A. Progress indicator.** Add `RawSegment.progress_stage` (nullable string),
-written at the top of each graph node. Chosen over a WebSocket because the app
-already polls, a column survives a reconnect or a page reload, and the graph
-resumes from a checkpoint — a socket would have to re-derive where it was.
+Full spec received; the `[assumed]` version this replaces was written from a
+three-word summary. Two guesses were wrong and are corrected below: the flow is
+**gated on the extraction screen**, not fire-and-forget, and there is **no
+concurrency to design for** — nothing supports batch upload, so exactly one
+extraction is ever in flight.
 
-Stages map to nodes the producer can actually understand, not internals:
+**Today:** after a recording or upload the interview advances immediately,
+extraction runs silently, and confirmation questions surface only if the
+producer later clicks "extracted from this" — disconnected from the recording
+they were about.
+
+**New flow:**
+
+1. On completion of a recording or upload, the extraction screen opens by
+   itself — same content as the manual panel.
+2. A progress indicator runs while extraction does, so the producer can tell
+   the app is working rather than stuck.
+3. On finish: pending questions open as a **separate popup**, never merged into
+   the extraction screen's content. With nothing to confirm the extraction
+   screen closes itself and the interview advances.
+4. The manual "extracted from this" button stays, for reviewing past
+   recordings.
+
+#### Decision 1 — the screens do not stack
+
+The extraction screen **closes, then** the confirmation popup opens.
+
+- One surface at a time. Two stacked dialogs make it ambiguous which one the
+  Escape key and the backdrop click belong to.
+- Stacking would nest two `backdrop-filter` layers — the exact structure behind
+  the transparent-dialog investigation in 4c/4d. The overlay is 95% opaque, so
+  the screen behind would be invisible anyway: the stack costs a known risk and
+  buys nothing anyone can see.
+- The confirmation popup already carries its own context — each question shows
+  the name and the evidence phrase — so it does not need the extraction screen
+  visible behind it.
+
+**After submit the extraction screen reopens** with the finished result, then
+closes itself and the interview advances. That is not a decorative extra step:
+entities are only written at `finalize_ingest`, which runs *after* the answers
+come back, so this is the first moment the screen can show what was actually
+captured. The reopened screen is the payoff for the questions.
+
+#### Decision 2 — partial reveal, not a spinner
+
+The screen fills in as results land, in pipeline order, rather than showing a
+generic processing state.
+
+This is not a UI trick: **the pipeline already persists in stages**, and
+`/segments/{id}/extraction` reads straight from the database with no status
+gate, so polling it mid-run returns exactly what exists so far.
+
+| lands | committed by | when it becomes visible |
+| --- | --- | --- |
+| transcript | `transcribe_node` — commits immediately | early |
+| topic tags | `extract_topics_node` — commits | middle |
+| entities, relations | `finalize_ingest` — **after** confirmation | only at the end |
+
+So the honest sequence is **transcript → topics → [confirmation] → entities**.
+
+Why partial beats generic:
+
+- The transcript is what a producer most wants to check — *did it hear me
+  right?* — and it is the first thing ready.
+- A spinner held for the length of a real extraction reads as stuck, which is
+  the exact failure mode the spec names.
+- Partial reveal makes the progress claim self-evidencing. A stage label has to
+  be trusted; a transcript appearing on screen does not.
+- It also explains the popup that follows: entities are absent from the screen
+  precisely because they are what is about to be asked about.
+
+Nothing is shown that later changes. Transcript and topics are final once
+written; entities are not displayed until they exist.
+
+#### Never blocked
+
+The extraction screen is dismissible. Closing it early advances the interview,
+extraction continues, and the confirmation popup appears when ready — exactly
+as it does today through the poll. That keeps §5's "a producer who just wants
+to record must be able to skip" true, which a hard gate would not.
+
+On the nothing-to-confirm path the screen auto-closes after a short dwell so
+the finished state is perceptible instead of a flash.
+
+#### Mechanics
+
+- `RawSegment.progress_stage`, a nullable string written at the top of each
+  node. Chosen over a WebSocket because the app already polls, a column
+  survives a reload, and the graph resumes from a checkpoint a socket would
+  have to re-derive.
+- Poll at **2 s while a segment is in flight**, 8 s otherwise. A progress
+  indicator that updates every 8 s reads as frozen.
+- One extraction at a time — no queue, no per-segment tracking map.
 
 | node | shown as |
 | --- | --- |
 | `transcribe` | Listening to your recording |
 | `create_transcript_chunks`, `embed_transcript` | Reading it back |
-| `extract_topics`, `check_entities` | Finding the people and places |
+| `extract_topics` | Finding the themes |
+| `check_entities` | Finding the people and places |
 | `human_confirm` | Waiting for you |
 | `score_importance`, `finalize_ingest` | Filing it away |
-
-**B. Auto-open.** After ingest returns, the recorder opens the review surface
-itself instead of waiting for the 8 s poll to notice. Poll drops to **2 s while
-a segment of this producer's is in flight**, back to 8 s otherwise — a progress
-bar that updates every 8 s reads as frozen.
-
-**C. Three states, one surface.** Progress -> confirmation -> summary.
-
-```
-+- recording submitted -----------------------------+
-|  PROGRESS      stage list, live                   |
-|      |                                            |
-|      +- needs answers -> CONFIRMATION (own popup) |
-|      |                        |                   |
-|      +------------------------+--> SUMMARY        |
-|                                (what was captured)|
-+---------------------------------------------------+
-```
-
-`ExtractionModal` already is the summary and `EntityConfirmModal` already is
-the confirmation; this changes **how they are entered**, not what they are.
-
-**Open — [assumed] answers, please correct:**
-
-1. Progress is a **named stage list**, not a percentage bar. A percentage would
-   have to be invented; the stages are real. **[assumed]**
-2. The summary auto-opens **every time**, not only when something needs
-   attention — "auto-open after recording" read literally. **[assumed]**
-3. Progress is **non-blocking**: the producer can dismiss it and keep
-   recording; it reopens when answers are needed. Blocking a producer who just
-   wants to record contradicts §5 "never blocked". **[assumed]**
-4. If a second recording is submitted while the first is still processing, the
-   surface tracks the **most recent** and the older one falls back to the
-   existing poll. **[assumed]**
 
 ### 8.3 Sibling parentage — a fifth question class
 
@@ -1074,11 +1128,12 @@ database, so it is asked about on the **next** recording — a one-recording lag
 in exchange for not adding a second pause. It also clears the existing backlog
 of four, which an on-confirm trigger never would.
 
-> *Alternative considered:* ask inline under the sibling proposal on the same
-> screen ("if ניר is your brother — same parents?"). No lag, but it needs
-> conditional UI, a discard path when the relation is rejected, and a second
-> code path for the backlog. Recommending the DB-derived version; say if you
-> want the inline one.
+> *Alternative considered and REJECTED 2026-08-03:* ask inline under the
+> sibling proposal on the same screen. No lag, but it needs conditional UI, a
+> discard path when the relation is rejected, and a second code path for the
+> backlog. The one-recording lag was accepted instead, explicitly to keep
+> one-interrupt-per-recording intact. Do not revisit without a reason to
+> break that rule.
 
 **The question**, one card per sibling, all of them on the one screen:
 
@@ -1120,7 +1175,11 @@ this was said". Three options, no recommendation yet:
 - **(c)** add `entity_relations.origin` (`recording` | `confirmation`) so the
   tree can decline to offer a recording for answers that came from a screen.
 
-**(c)** is the honest one and costs a column. Your call.
+**RESOLVED 2026-08-03 — (c).** `entity_relations.origin` is added. An answer
+given on a confirmation screen is not something a recording says, and the
+tree offers to play the recording where a relation was stated; pointing at a
+segment that never mentions the parent would make that offer a lie. The
+column costs one migration and keeps the provenance honest.
 
 ### 8.4 How the two halves meet
 
@@ -1129,7 +1188,22 @@ The parentage question has **no surface of its own**. It arrives in the same
 another skippable section in the confirmation popup from 8.2C — below
 relations, above years. One screen, one submit, one resume, exactly as today.
 
-### 8.5 Build order
+### 8.5 Build order — all landed
+
+Verified against the live archive: `parentage_candidates` returns all four
+siblings with אילנה and צבי offered as parents, so the question fires on the
+real backlog rather than only in tests. 14 new tests, 724 passing.
+
+Two things the build changed from the plan, both discovered in the writing:
+
+- **`write_segment_relations` now deletes only `origin="recording"` rows.** It
+  replaces this segment's relations on every re-analysis, which would have
+  wiped a parentage answer the producer typed. Re-reading a transcript can
+  never re-produce that answer, so it must not be in scope of the replace.
+  `origin` earns its place twice over — provenance *and* this.
+- **Progress is applied by wrapping the nodes at graph-construction time**, not
+  by a line inside each. Eight call sites are eight chances for a new node to
+  land without a stage; a wrapper makes that impossible.
 
 | step | change |
 | --- | --- |

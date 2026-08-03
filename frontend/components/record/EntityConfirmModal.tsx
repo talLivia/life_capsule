@@ -32,7 +32,19 @@ const NEW_ENTITY = '__new__'
  *    entities it was genuinely torn about appear at all — asking about
  *    everything trains people to click through without reading.
  */
-export function EntityConfirmModal() {
+export function EntityConfirmModal({
+  refreshKey = 0,
+  onResolved,
+}: {
+  /** Bumped when the extraction screen hands over, so the questions appear at
+   *  once instead of on the next background poll — several seconds of nothing
+   *  on screen otherwise. */
+  refreshKey?: number
+  /** The recording whose questions were just answered. The caller reopens its
+   *  extraction screen: entities are only written after these answers land,
+   *  so this is the first moment it can show what was actually captured. */
+  onResolved?: (segmentId: string) => void
+} = {}) {
   const [pending, setPending] = useState<PendingConfirmation | null>(null)
   const [identity, setIdentity] = useState<Record<string, string>>({})
   const [types, setTypes] = useState<Record<string, string>>({})
@@ -42,6 +54,11 @@ export function EntityConfirmModal() {
   // Free text, sent as typed — the server parses it and refuses what it
   // cannot resolve, rather than the client guessing.
   const [years, setYears] = useState<Record<string, string>>({})
+  // Sibling entity id -> ticked parent ids, and a name for a parent nobody
+  // has mentioned. Keyed by id because these are people already in the
+  // archive, not names just pulled out of this recording.
+  const [parentage, setParentage] = useState<Record<string, string[]>>({})
+  const [newParent, setNewParent] = useState<Record<string, string>>({})
   const answeringRef = useRef(false)
   const [answering, setAnswering] = useState(false)
 
@@ -64,7 +81,9 @@ export function EntityConfirmModal() {
       cancelled = true
       clearInterval(id)
     }
-  }, [])
+    // refreshKey re-runs the effect, which polls immediately — that is the
+    // handoff from the extraction screen, and it must not wait for the timer.
+  }, [refreshKey])
 
   // Clear every selection whenever a different recording's screen appears —
   // carrying an answer across recordings would attach it to the wrong name.
@@ -73,6 +92,8 @@ export function EntityConfirmModal() {
     setTypes({})
     setRelations({})
     setYears({})
+    setParentage({})
+    setNewParent({})
   }, [pending?.segment_id])
 
   const identityQuestions = useMemo(
@@ -89,6 +110,10 @@ export function EntityConfirmModal() {
   )
   const yearQuestions = useMemo(
     () => pending?.pending_confirmation.year_questions ?? [],
+    [pending],
+  )
+  const parentageQuestions = useMemo(
+    () => pending?.pending_confirmation.parentage_questions ?? [],
     [pending],
   )
 
@@ -130,6 +155,21 @@ export function EntityConfirmModal() {
         years: Object.fromEntries(
           Object.entries(years).filter(([, v]) => v.trim()),
         ),
+        // Only siblings the producer actually answered for. An untouched one
+        // is absent, which the server reads as a skip — it still stamps them
+        // as asked, so the question does not return, but nothing is written.
+        parentage: Object.fromEntries(
+          parentageQuestions
+            .map((q) => {
+              const ticked = parentage[q.entity_id] ?? []
+              const typed = (newParent[q.entity_id] ?? '').trim()
+              return [q.entity_id, { parent_ids: ticked, new_parent_name: typed || undefined }]
+            })
+            .filter(([, a]) => {
+              const answer = a as { parent_ids: string[]; new_parent_name?: string }
+              return answer.parent_ids.length > 0 || answer.new_parent_name
+            }),
+        ),
       })
       // Say what the answer DID. A type answer used to be accepted and then
       // discarded by the "existing value wins" rule with no feedback at all;
@@ -143,7 +183,11 @@ export function EntityConfirmModal() {
       for (const bad of outcome?.rejected_years ?? []) {
         toast.error(`Couldn't read "${bad.given}" as a year — ${bad.reason}. Not saved.`)
       }
+      const resolvedId = pending.segment_id
       setPending(null)
+      // Entities are written only once these answers land, so the extraction
+      // screen can finally show what was captured. The caller reopens it.
+      onResolved?.(resolvedId)
       // Another RECORDING may also be waiting — this screen covers one.
       try {
         const list: PendingConfirmation[] = await api.getPendingConfirmations()
@@ -293,6 +337,72 @@ export function EntityConfirmModal() {
                   )}
                 </span>
               </button>
+            ))}
+          </fieldset>
+        )}
+
+        {/* Whose child is each sibling. The only section NOT about the
+            recording being confirmed — these are siblings from earlier ones
+            who still have no parent recorded, which is why the tree can place
+            them in the right row and draw no line to them.
+
+            Checkboxes, not "same as you / different": a half-sibling shares
+            ONE parent, and a yes/no cannot say which. */}
+        {parentageQuestions.length > 0 && (
+          <fieldset className="flex flex-col gap-3 pt-1 border-t border-white/10">
+            <legend className="text-sm text-white leading-relaxed mb-1">
+              Whose children are they? — optional
+            </legend>
+            <p className="text-xs text-gray-400 -mt-1 mb-1">
+              You&apos;ve mentioned these people as your siblings, but not whose
+              children they are — so they can&apos;t be joined to anyone in your
+              family tree. Skip and we won&apos;t ask again.
+            </p>
+            {parentageQuestions.map((q) => (
+              <div key={`parentage-${q.entity_id}`} className="flex flex-col gap-1.5">
+                <span dir="auto" className="text-sm text-white">{q.name}</span>
+                <div className="flex flex-wrap gap-2">
+                  {q.parents.map((parent) => {
+                    const ticked = (parentage[q.entity_id] ?? []).includes(parent.id)
+                    return (
+                      <button
+                        key={parent.id}
+                        type="button"
+                        disabled={answering}
+                        onClick={() =>
+                          setParentage((s) => {
+                            const current = s[q.entity_id] ?? []
+                            return {
+                              ...s,
+                              [q.entity_id]: ticked
+                                ? current.filter((id) => id !== parent.id)
+                                : [...current, parent.id],
+                            }
+                          })
+                        }
+                        className={`px-3 py-1.5 rounded-lg border text-sm transition-colors ${
+                          ticked
+                            ? 'border-primary-400 bg-primary-500/15 text-white'
+                            : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
+                        }`}
+                      >
+                        <span dir="auto">{parent.name}</span>
+                      </button>
+                    )
+                  })}
+                  <input
+                    type="text"
+                    dir="auto"
+                    value={newParent[q.entity_id] ?? ''}
+                    onChange={(e) =>
+                      setNewParent((s) => ({ ...s, [q.entity_id]: e.target.value }))
+                    }
+                    disabled={answering}
+                    placeholder="someone else…"
+                    className="w-40 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
+                  />
+                </div>
+              </div>
             ))}
           </fieldset>
         )}

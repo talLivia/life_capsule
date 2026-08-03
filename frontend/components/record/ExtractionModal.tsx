@@ -23,9 +23,30 @@ interface ExtractionModalProps {
   segmentId: string
   title: string
   onClose: () => void
+  /** Opened by the recorder rather than by the producer clicking. Turns on
+   *  polling, the progress readout, and closing itself when there is nothing
+   *  left to show. Off for the manual button, which reviews a finished
+   *  recording and should just sit there. */
+  live?: boolean
+  /** The pipeline has paused for answers. The extraction screen gets out of
+   *  the way so the confirmation popup has the screen to itself — see
+   *  "the screens do not stack" in docs/FAMILY_TREE_TIMELINE.md 8.2. */
+  onNeedsConfirmation?: () => void
 }
 
-export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalProps) {
+/** Fast enough that the stage readout looks alive. Only while live. */
+const PROGRESS_POLL_MS = 2000
+/** Long enough for the finished state to register as a result rather than a
+ *  flash, short enough not to be a step the producer has to sit through. */
+const DONE_DWELL_MS = 1600
+
+export function ExtractionModal({
+  segmentId,
+  title,
+  onClose,
+  live = false,
+  onNeedsConfirmation,
+}: ExtractionModalProps) {
   const [data, setData] = useState<SegmentExtraction | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -46,6 +67,51 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
   useEffect(() => {
     load()
   }, [load])
+
+  /**
+   * Poll while the pipeline runs, so results appear as they land.
+   *
+   * This is not a progress animation over an opaque wait — the pipeline
+   * genuinely persists in stages (transcribe commits the transcript,
+   * extract_topics commits the tags) and this endpoint reads straight from
+   * the database, so each poll returns exactly what exists so far. Entities
+   * are the exception and arrive last, because they are only written after
+   * the confirmation questions are answered.
+   *
+   * Refetches quietly — `load` would flip `loading` and blank the panel every
+   * two seconds.
+   */
+  useEffect(() => {
+    if (!live || !data?.still_processing) return
+    let cancelled = false
+    const id = setInterval(async () => {
+      try {
+        const next = await api.getSegmentExtraction(segmentId)
+        if (!cancelled) setData(next)
+      } catch {
+        /* a dropped poll is not worth showing an error over — the next one
+           will either succeed or the producer will close the screen */
+      }
+    }, PROGRESS_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [live, data?.still_processing, segmentId])
+
+  // Hand over to the confirmation popup, or close when there is nothing left
+  // to say. Only when opened by the recorder: the manual button reviews a
+  // finished recording and must not vanish while it is being read.
+  useEffect(() => {
+    if (!live || !data) return
+    if (data.status === 'pending_confirmation') {
+      onNeedsConfirmation?.()
+      return
+    }
+    if (data.still_processing) return
+    const id = setTimeout(onClose, DONE_DWELL_MS)
+    return () => clearTimeout(id)
+  }, [live, data, onClose, onNeedsConfirmation])
 
   // Escape closes. A read-only panel should never trap someone who opened it
   // out of curiosity.
@@ -105,10 +171,14 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
             <>
               {data.still_processing && (
                 // "We haven't looked yet" and "we found nothing" look
-                // identical otherwise, and they mean opposite things.
+                // identical otherwise, and they mean opposite things. When the
+                // screen opened itself we can say which stage is running,
+                // which is the difference between working and stuck.
                 <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-sm">
                   <Loader2 size={16} className="animate-spin shrink-0" />
-                  Still being processed — what&apos;s below may be incomplete.
+                  {data.progress_label
+                    ? `${data.progress_label}…`
+                    : 'Still being processed — what’s below may be incomplete.'}
                 </div>
               )}
 

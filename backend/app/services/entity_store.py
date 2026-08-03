@@ -164,8 +164,15 @@ async def write_segment_relations(
     failing the ingest — the recording and its entities are already saved, and
     losing one proposed relation costs less than losing the segment.
     """
+    # Scoped to origin="recording" on purpose. A re-analysis re-derives what
+    # the WORDS said, so it must replace those; it must NOT destroy a parentage
+    # answer the producer typed on the confirmation screen, which no amount of
+    # re-reading the transcript would ever produce again.
     await db.execute(
-        delete(EntityRelation).where(EntityRelation.source_segment_id == segment_id)
+        delete(EntityRelation).where(
+            EntityRelation.source_segment_id == segment_id,
+            EntityRelation.origin == "recording",
+        )
     )
     await db.flush()
     if not relations:
@@ -692,6 +699,210 @@ async def ensure_self_entity(db: AsyncSession, user) -> Tuple[Optional[Entity], 
             raise
         return existing, False
     return entity, True
+
+
+# ── sibling parentage ─────────────────────────────────────────────────────
+#
+# Phase 6 of docs/FAMILY_TREE_TIMELINE.md. A sibling is recorded as a sibling
+# OF THE PRODUCER, and nothing in that says whose child they are — so the
+# family tree can place them in the right row and still draw no line to them.
+# The producer is asked once, and the answer is written as ordinary parent
+# relations.
+#
+# These two relation names are hardcoded, unlike everything else that reads
+# the `relation_types` vocabulary from the database. That is deliberate: the
+# question being asked is literally "is your parent also their parent", which
+# is about those two relations specifically. It is not generic over the
+# vocabulary, and pretending otherwise by deriving it from `generation_delta`
+# would also sweep in step-parents and spouses, which is exactly wrong here.
+PARENT_RELATION = "parent"
+SIBLING_RELATION = "sibling"
+
+
+async def parentage_candidates(db: AsyncSession, producer_id: str) -> Dict[str, list]:
+    """The producer's recorded parents, and the siblings still to ask about.
+
+    Returns `{"parents": [...], "siblings": [...]}`, each a list of
+    `{"id", "name"}`. Empty siblings means there is nothing to ask.
+
+    A sibling qualifies when all of these hold:
+      * they are the producer's sibling by a confirmed relation;
+      * they have no parent of their own recorded;
+      * they have never been asked (`parentage_asked_at IS NULL`).
+
+    With no recorded parents for the producer there is nothing to offer as an
+    answer, so the question is not asked at all rather than asked with an
+    empty list of options.
+    """
+    self_entity = (
+        await db.execute(
+            select(Entity).where(Entity.producer_id == producer_id, Entity.is_self)
+        )
+    ).scalars().first()
+    if self_entity is None:
+        return {"parents": [], "siblings": []}
+
+    parents = list(
+        (
+            await db.execute(
+                select(Entity)
+                .join(EntityRelation, EntityRelation.from_entity_id == Entity.id)
+                .where(
+                    EntityRelation.to_entity_id == self_entity.id,
+                    EntityRelation.relation_type == PARENT_RELATION,
+                )
+                .order_by(Entity.name)
+                .distinct()
+            )
+        ).scalars().all()
+    )
+    if not parents:
+        return {"parents": [], "siblings": []}
+
+    # Sibling is symmetric and stored as ONE directed row, so the producer may
+    # be on either end. Checking only one direction would miss half of them.
+    sibling_rows = (
+        await db.execute(
+            select(EntityRelation.from_entity_id, EntityRelation.to_entity_id).where(
+                EntityRelation.relation_type == SIBLING_RELATION,
+                (EntityRelation.from_entity_id == self_entity.id)
+                | (EntityRelation.to_entity_id == self_entity.id),
+            )
+        )
+    ).all()
+    sibling_ids = {
+        (to_id if from_id == self_entity.id else from_id)
+        for from_id, to_id in sibling_rows
+    }
+    sibling_ids.discard(self_entity.id)
+    if not sibling_ids:
+        return {"parents": [], "siblings": []}
+
+    # Anyone who already has a parent recorded is not asked about — the tree
+    # can already draw them, whether that parent is the producer's or not.
+    with_parents = set(
+        (
+            await db.execute(
+                select(EntityRelation.to_entity_id).where(
+                    EntityRelation.to_entity_id.in_(sibling_ids),
+                    EntityRelation.relation_type == PARENT_RELATION,
+                )
+            )
+        ).scalars().all()
+    )
+
+    siblings = list(
+        (
+            await db.execute(
+                select(Entity)
+                .where(
+                    Entity.id.in_(sibling_ids - with_parents),
+                    Entity.parentage_asked_at.is_(None),
+                )
+                .order_by(Entity.name)
+            )
+        ).scalars().all()
+    )
+    if not siblings:
+        return {"parents": [], "siblings": []}
+
+    return {
+        "parents": [{"id": p.id, "name": p.name} for p in parents],
+        "siblings": [{"id": s.id, "name": s.name} for s in siblings],
+    }
+
+
+async def write_parentage(
+    db: AsyncSession,
+    *,
+    producer_id: str,
+    segment_id: str,
+    asked_sibling_ids: Sequence[str],
+    answers: Dict[str, dict],
+) -> Dict[str, int]:
+    """Apply the parentage answers. Flushes, never commits.
+
+    `answers` is keyed by sibling entity id:
+        {"<sibling id>": {"parent_ids": [...], "new_parent_name": "מרים"}}
+
+    EVERY sibling in `asked_sibling_ids` is stamped `parentage_asked_at`,
+    answered or not. Skipping is an answer — "I do not know" or "not now" —
+    and without recording it the same question returns on every future
+    recording until the producer learns to click past the whole screen. This
+    is the same rule `year_asked_at` follows, for the same reason.
+
+    Relations are written with `origin="confirmation"`: the producer said this
+    on a screen, not in the recording, and the tree must not offer to play a
+    recording that never mentions the person.
+    """
+    now = datetime.now(timezone.utc)
+    result = {"relations": 0, "new_parents": 0, "asked": 0}
+
+    asked = list(dict.fromkeys(asked_sibling_ids))
+    if not asked:
+        return result
+
+    siblings = {
+        e.id: e
+        for e in (
+            await db.execute(
+                select(Entity).where(
+                    Entity.id.in_(asked), Entity.producer_id == producer_id
+                )
+            )
+        ).scalars().all()
+    }
+
+    # Only the producer's own recorded parents may be ticked. A client naming
+    # any other entity id would otherwise be able to attach an arbitrary
+    # person as somebody's parent.
+    offered = {p["id"] for p in (await parentage_candidates(db, producer_id))["parents"]}
+
+    for sibling_id in asked:
+        sibling = siblings.get(sibling_id)
+        if sibling is None:
+            logger.warning(f"parentage answer for unknown sibling {sibling_id}")
+            continue
+
+        sibling.parentage_asked_at = now
+        result["asked"] += 1
+
+        answer = answers.get(sibling_id) or {}
+        parent_ids = [pid for pid in (answer.get("parent_ids") or []) if pid in offered]
+
+        new_name = (answer.get("new_parent_name") or "").strip()
+        if new_name:
+            normalized = normalize_entity_name(new_name)
+            parent = await _find_entity(db, producer_id, normalized) if normalized else None
+            if parent is None and normalized:
+                parent = Entity(
+                    producer_id=producer_id,
+                    name=new_name,
+                    normalized_name=normalized,
+                    type="person",
+                )
+                db.add(parent)
+                await db.flush()
+                result["new_parents"] += 1
+            if parent is not None:
+                parent_ids.append(parent.id)
+
+        for parent_id in dict.fromkeys(parent_ids):
+            if parent_id == sibling_id:
+                continue  # ck_entity_relations_not_self
+            db.add(
+                EntityRelation(
+                    from_entity_id=parent_id,
+                    to_entity_id=sibling_id,
+                    relation_type=PARENT_RELATION,
+                    source_segment_id=segment_id,
+                    origin="confirmation",
+                )
+            )
+            result["relations"] += 1
+
+    await db.flush()
+    return result
 
 
 async def _find_entity(

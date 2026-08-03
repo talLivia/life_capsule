@@ -378,6 +378,11 @@ class SegmentExtractionResponse(BaseModel):
     entities: List[ExtractedEntityResponse] = []
     still_processing: bool = False
     entities_unavailable: bool = False
+    # Which node of the analysis graph is running, and what to call it on
+    # screen. Both None once the run is over. The label is resolved server-side
+    # so the client never has to keep a copy of the node list in step.
+    progress_stage: Optional[str] = None
+    progress_label: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -390,6 +395,26 @@ class IdentityAnswer(BaseModel):
     # than one candidate. Validated against that question's own candidates —
     # a uuid from a different question is rejected, not silently applied.
     candidate_uuid: Optional[str] = None
+
+
+class ParentageAnswer(BaseModel):
+    """Whose child one sibling is.
+
+    A LIST of parents rather than a yes/no, because a half-sibling shares one
+    parent — "same father, different mother" is unsayable in a binary, and it
+    is exactly the case this question exists for.
+
+    Both fields may be given together: two ticked parents plus a name covers
+    "my two, and one more nobody has mentioned".
+    """
+
+    # Entity ids of the producer's own recorded parents. Validated against the
+    # parents that question actually offered — an id from anywhere else is
+    # rejected rather than quietly attaching a stranger as somebody's parent.
+    parent_ids: List[str] = Field(default_factory=list)
+    # A parent never mentioned in any recording. Becomes an ordinary entity
+    # with an ordinary parent relation, exactly as any other capture would.
+    new_parent_name: Optional[str] = None
 
 
 class EntityBatchConfirmRequest(BaseModel):
@@ -430,6 +455,15 @@ class EntityBatchConfirmRequest(BaseModel):
     # is a 400, since a third value could only come from a client inventing
     # one and would land in a column with a CHECK constraint on it.
     types: Dict[str, str] = Field(default_factory=dict)
+    # Sibling ENTITY ID -> whose child they are. Skippable like relations and
+    # years: omit a sibling entirely to say nothing, and the only consequence
+    # is that they are stamped as asked and never asked again.
+    #
+    # Keyed by entity id, not by name, because unlike every other class here
+    # these questions are about people ALREADY in the archive rather than
+    # names just extracted from this recording — the id is what identifies
+    # them, and two siblings could share a first name.
+    parentage: Dict[str, "ParentageAnswer"] = Field(default_factory=dict)
 
 
 class PendingConfirmationResponse(BaseModel):

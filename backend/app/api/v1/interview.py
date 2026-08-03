@@ -592,6 +592,9 @@ async def confirm_entities(
         str(q["index"]): q for q in pending.get("relation_questions") or []
     }
     year_questions = {q["name"]: q for q in pending.get("year_questions") or []}
+    parentage_questions = {
+        q["entity_id"]: q for q in pending.get("parentage_questions") or []
+    }
 
     # Staleness, both directions. An answer to a name this screen never asked
     # about means the client is answering a payload the pipeline has moved
@@ -604,6 +607,7 @@ async def confirm_entities(
         # a question this recording never raised.
         | (set(payload.relations) - set(relation_questions))
         | (set(payload.years) - set(year_questions))
+        | (set(payload.parentage) - set(parentage_questions))
     )
     if unknown:
         raise HTTPException(
@@ -670,6 +674,23 @@ async def confirm_entities(
                 {"name": name, "given": given, "reason": outcome.reason or "not understood"}
             )
 
+    parentage_answers: dict = {}
+    for entity_id, given in payload.parentage.items():
+        offered = {p["id"] for p in parentage_questions[entity_id].get("parents") or []}
+        unknown_parents = set(given.parent_ids) - offered
+        if unknown_parents:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"parent_ids for {entity_id} must be parents offered by that "
+                    f"question; not offered: {sorted(unknown_parents)}"
+                ),
+            )
+        parentage_answers[entity_id] = {
+            "parent_ids": list(given.parent_ids),
+            "new_parent_name": (given.new_parent_name or "").strip() or None,
+        }
+
     from app.analysis_graph import resume_segment_analysis
 
     resume_result = await resume_segment_analysis(
@@ -682,6 +703,11 @@ async def confirm_entities(
             # relation and an absent key are the same thing.
             "relations": dict(payload.relations),
             "years": parsed_years,
+            # Validated at the edge, like years: a ticked parent must be one
+            # the question actually offered. Otherwise a client could name any
+            # entity id and attach a stranger as somebody's parent — the store
+            # filters again, but a bad id should be refused, not dropped.
+            "parentage": parentage_answers,
         },
     )
 

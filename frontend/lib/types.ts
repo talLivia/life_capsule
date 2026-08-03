@@ -146,6 +146,11 @@ export interface SegmentExtraction {
   entities: ExtractedEntity[]
   still_processing: boolean
   entities_unavailable: boolean
+  /** Which analysis node is running, and what to call it. Both null once the
+   *  run is over. The label is resolved server-side so the node list has one
+   *  home — a copy here would drift the first time one is renamed. */
+  progress_stage?: string | null
+  progress_label?: string | null
 }
 
 // ── Interview flow (docs/INTERVIEW_RESTRUCTURE.md step 4) ────────────────
@@ -265,7 +270,22 @@ export interface PendingConfirmation {
     type_questions: TypeQuestion[]
     relation_questions?: RelationQuestion[]
     year_questions?: YearQuestion[]
+    parentage_questions?: ParentageQuestion[]
   }
+}
+
+/** Whose child is this sibling?
+ *
+ *  The only class NOT raised by the recording being confirmed: these are
+ *  siblings from earlier recordings who still have no parent recorded, so the
+ *  tree places them in the right row and can draw no line to them. */
+export interface ParentageQuestion {
+  entity_id: string
+  name: string
+  question: string
+  /** The producer's own recorded parents, offered as options. A LIST, not a
+   *  yes/no, because a half-sibling shares one parent. */
+  parents: { id: string; name: string }[]
 }
 
 export interface EntityBatchAnswer {
@@ -283,6 +303,10 @@ export interface EntityBatchAnswer {
   // Keyed by entity name, matching the pending payload. Every question must
   // be answered — the server rejects a partial submit rather than defaulting,
   // because both plausible defaults are wrong in opposite directions.
+  /** Sibling ENTITY ID -> whose child they are. Skippable: omit a sibling to
+   *  say nothing. Keyed by id rather than name because, unlike every other
+   *  class, these are people already in the archive. */
+  parentage?: Record<string, { parent_ids: string[]; new_parent_name?: string }>
   identity: Record<string, { same_as_existing: boolean; candidate_uuid?: string }>
   types: Record<string, string>
 }
