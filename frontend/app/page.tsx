@@ -535,7 +535,10 @@ export default function Home() {
 
         {/* ── RECORD VIEW ── (was the standalone /record route) */}
         {view === 'record' && (
-          <div className="max-w-4xl mx-auto animate-fade-in">
+          // No width here. RecordPanel sets its own max-w-7xl to match /chat;
+          // a max-w-4xl wrapper silently clamped it and no change inside the
+          // component could ever have widened it.
+          <div className="animate-fade-in">
             <RecordPanel />
           </div>
         )}

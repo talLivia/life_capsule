@@ -165,12 +165,18 @@ export function useInterviewFlow(): UseInterviewFlow {
       const currentIndex = openCategory.current_step_id
         ? openCategory.steps.findIndex(s => s.id === openCategory.current_step_id)
         : openCategory.steps.length - 1
-      // Backwards and sideways only. Jumping ahead of the live position is
-      // not offered; the server would refuse the recording anyway.
-      if (target > currentIndex) return
+      // Backwards and sideways only — unless free navigation is on, which
+      // means everything is reachable: any category AND any question in it.
+      //
+      // This is the SECOND guard on the same action; the accordion has one
+      // too. Fixing only that one left the click offered and then silently
+      // dropped here. And the old comment was wrong about why: can_record
+      // checks that the CATEGORY is reachable and nothing about position, so
+      // the server would have accepted the recording all along.
+      if (target > currentIndex && !flow?.free_navigation) return
       setViewingOverride(stepId)
     },
-    [openCategory]
+    [openCategory, flow?.free_navigation]
   )
 
   const viewingIndex = useMemo(
