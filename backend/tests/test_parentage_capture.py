@@ -698,3 +698,81 @@ async def test_a_sibling_who_already_has_a_parent_is_not_re_offered_via_a_propos
         "__SELF__",
     )
     assert found["siblings"] == []
+
+
+# ── a stored payload outlives the code that wrote it ──────────────────────
+
+
+def test_an_old_per_sibling_payload_is_upgraded_not_dropped():
+    """pending_confirmation is persisted JSON, so a segment can pause under one
+    build and be answered under another. Parentage went from one question per
+    sibling to one grouped question, and the client written for the second
+    crashed on `group.siblings.length` — taking down every other question on
+    the screen with it.
+
+    Upgraded rather than discarded: a producer paused mid-flow should not lose
+    their questions because we changed our mind about the shape.
+    """
+    from app.analysis_graph import normalise_pending_confirmation
+
+    stored = {
+        "identity_questions": [],
+        "type_questions": [],
+        "relation_questions": [{"index": 0}],
+        "year_questions": [],
+        "parentage_questions": [
+            {
+                "entity_id": "s1",
+                "name": "Sib",
+                "question": 'Whose child is "Sib"? (optional)',
+                "parents": [{"id": "p1", "name": "Dad"}, {"id": "p2", "name": "Mum"}],
+                "known_people": [{"id": "k", "name": "Rivka"}],
+            },
+            {
+                "entity_id": "s2",
+                "name": "Other",
+                "question": 'Whose child is "Other"? (optional)',
+                "parents": [{"id": "p1", "name": "Dad"}, {"id": "p2", "name": "Mum"}],
+                "known_people": [{"id": "k", "name": "Rivka"}],
+            },
+        ],
+    }
+
+    upgraded = normalise_pending_confirmation(stored)
+    questions = upgraded["parentage_questions"]
+    assert len(questions) == 1, "four separate questions become one grouped one"
+    assert questions[0]["question"] == "Are Sib and Other all children of Dad and Mum?"
+    assert [s["name"] for s in questions[0]["siblings"]] == ["Sib", "Other"]
+    # An entity that came back from a database query is one whose sibling
+    # relation is already recorded.
+    assert all(s["recorded"] for s in questions[0]["siblings"])
+    # "id" becomes "entity_id" — one spelling downstream.
+    assert questions[0]["parents"][0]["entity_id"] == "p1"
+    assert questions[0]["known_people"][0]["entity_id"] == "k"
+    # nothing else touched
+    assert upgraded["relation_questions"] == [{"index": 0}]
+
+
+def test_a_current_payload_passes_through_untouched():
+    from app.analysis_graph import normalise_pending_confirmation
+
+    current = {
+        "parentage_questions": [
+            {
+                "question": "Are A all children of B?",
+                "siblings": [{"name": "A", "entity_id": None, "recorded": False}],
+                "parents": [{"name": "B", "entity_id": "b"}],
+                "known_people": [],
+            }
+        ]
+    }
+    assert normalise_pending_confirmation(current) is current
+
+
+def test_a_payload_with_no_parentage_is_left_alone():
+    from app.analysis_graph import normalise_pending_confirmation
+
+    assert normalise_pending_confirmation({}) == {}
+    assert normalise_pending_confirmation(None) == {}
+    payload = {"identity_questions": [{"name": "X"}]}
+    assert normalise_pending_confirmation(payload) is payload

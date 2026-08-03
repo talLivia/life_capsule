@@ -449,19 +449,26 @@ export function EntityConfirmModal({
             gets the per-person branch, because a half-sibling shares ONE
             parent and no yes/no can say which. */}
         {parentageQuestions.map((group) => {
+          // Defensive on purpose. This payload is persisted JSON and can
+          // have been written by an older build; a shape we do not
+          // recognise must render nothing, never take the screen down and
+          // with it every other question on it.
+          const siblings = group.siblings ?? []
+          const parents = group.parents ?? []
+          if (siblings.length === 0 || parents.length === 0) return null
           const allShared =
-            group.siblings.length > 0 &&
-            group.siblings.every(
+            siblings.length > 0 &&
+            siblings.every(
               (sibling) =>
-                (parentage[sibling.name] ?? []).length === group.parents.length,
+                (parentage[sibling.name] ?? []).length === parents.length,
             )
           const answerAll = () =>
             setParentage((current) => {
               const next = { ...current }
-              for (const sibling of group.siblings) {
+              for (const sibling of siblings) {
                 next[sibling.name] = allShared
                   ? []
-                  : group.parents.map((parent) => parent.name)
+                  : parents.map((parent) => parent.name)
               }
               return next
             })
@@ -494,7 +501,7 @@ export function EntityConfirmModal({
               </button>
 
               <div className="flex flex-col gap-2 pl-1">
-                {group.siblings.map((sibling) => {
+                {siblings.map((sibling) => {
                   const shared = parentage[sibling.name] ?? []
                   const typed = (newParent[sibling.name] ?? '').trim()
                   const open = otherOpen[sibling.name]
@@ -504,7 +511,7 @@ export function EntityConfirmModal({
                         <span dir="auto" className="text-sm text-white w-24 shrink-0">
                           {sibling.name}
                         </span>
-                        {group.parents.map((parent) => {
+                        {parents.map((parent) => {
                           const ticked = shared.includes(parent.name)
                           return (
                             <button
@@ -594,7 +601,7 @@ export function EntityConfirmModal({
                   match, so one different character makes a second person
                   instead of linking to the first. */}
               <datalist id="parentage-known-people">
-                {group.known_people.map((person) => (
+                {(group.known_people ?? []).map((person) => (
                   <option key={person.name} value={person.name} />
                 ))}
               </datalist>

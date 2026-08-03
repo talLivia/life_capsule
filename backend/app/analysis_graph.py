@@ -794,6 +794,21 @@ def relation_questions(proposed: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
+def _canonical_person(person: Dict[str, Any], *, sibling: bool = False) -> Dict[str, Any]:
+    """One spelling for a person in the parentage payload.
+
+    `entity_id` is None for anyone this recording has only just named. For a
+    sibling, `recorded` says whether their sibling relation already exists —
+    an older payload has no such field, and an entity that came back from a
+    database query is one that did.
+    """
+    entity_id = person.get("entity_id", person.get("id"))
+    out: Dict[str, Any] = {"name": person["name"], "entity_id": entity_id}
+    if sibling:
+        out["recorded"] = person.get("recorded", entity_id is not None)
+    return out
+
+
 def parentage_questions(parentage: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Whose child is each sibling — ASKED AT MOST ONCE PER SIBLING, EVER.
 
@@ -817,9 +832,14 @@ def parentage_questions(parentage: Optional[Dict[str, Any]]) -> List[Dict[str, A
     half-sibling shares ONE parent and a yes/no cannot say which.
     """
     parentage = parentage or {}
-    parents = parentage.get("parents") or []
-    siblings = parentage.get("siblings") or []
-    known_people = parentage.get("known_people") or []
+    # Canonicalised because these dicts arrive from three places with two
+    # spellings: freshly from entity_store, from a LangGraph checkpoint written
+    # by an older build, and from a persisted pending_confirmation. The old
+    # shape said "id"; the current one says "entity_id". Normalising once here
+    # means nothing downstream has to know that.
+    parents = [_canonical_person(p) for p in parentage.get("parents") or []]
+    siblings = [_canonical_person(s, sibling=True) for s in parentage.get("siblings") or []]
+    known_people = [_canonical_person(p) for p in parentage.get("known_people") or []]
     if not parents or not siblings:
         return []
 
@@ -871,6 +891,41 @@ def parentage_questions(parentage: Optional[Dict[str, Any]]) -> List[Dict[str, A
 # remembered. A sixth class added here is asked about AND gates the route; a
 # sixth class added anywhere else does not exist. Same fix, and same reason, as
 # sharing `_chosen_option` between resolve_steps and category_is_settled.
+def normalise_pending_confirmation(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Bring a stored payload up to the shape the current client expects.
+
+    `pending_confirmation` is persisted JSON, so a segment can pause under one
+    build and be answered under another. Parentage went from one question per
+    sibling to one grouped question, and a client written for the second
+    crashed on the first.
+
+    Upgraded rather than dropped: the questions are still worth asking, and the
+    producer paused mid-flow should not lose them because we changed our mind
+    about the shape. Anything already current passes straight through.
+    """
+    if not payload:
+        return payload or {}
+    questions = payload.get("parentage_questions") or []
+    if not questions or "siblings" in questions[0]:
+        return payload
+
+    first = questions[0]
+    upgraded = parentage_questions(
+        {
+            "parents": first.get("parents") or [],
+            # One entry per sibling in the old shape; the name is on the
+            # question itself rather than in a list.
+            "siblings": [
+                {"name": q["name"], "entity_id": q.get("entity_id"), "recorded": True}
+                for q in questions
+                if q.get("name")
+            ],
+            "known_people": first.get("known_people") or [],
+        }
+    )
+    return {**payload, "parentage_questions": upgraded}
+
+
 def build_confirmation_payload(state: AnalysisState) -> Dict[str, List[Dict[str, Any]]]:
     """Every question this recording raises. Empty lists where it raises none."""
     return {

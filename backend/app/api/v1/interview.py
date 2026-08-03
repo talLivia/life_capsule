@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.users import require_current_user
 from app.config import settings
+from app.analysis_graph import normalise_pending_confirmation
 from app.database import get_db
 from app import interview_config
 from app.interview_config import get_questions
@@ -579,7 +580,11 @@ async def list_pending_confirmations(
             segment_id=segment.id,
             interview_session_id=segment.interview_session_id,
             question_asked=segment.question_asked,
-            pending_confirmation=segment.pending_confirmation or {},
+            # Stored payloads outlive the code that wrote them — see
+            # normalise_pending_confirmation.
+            pending_confirmation=normalise_pending_confirmation(
+                segment.pending_confirmation
+            ),
         )
         for segment, _session in result.all()
     ]
@@ -624,7 +629,8 @@ async def confirm_entities(
     if segment.status != "pending_confirmation" or not segment.pending_confirmation:
         raise HTTPException(status_code=409, detail="This segment has no pending confirmation")
 
-    pending = segment.pending_confirmation
+    # Validated against the SAME shape the client was served.
+    pending = normalise_pending_confirmation(segment.pending_confirmation)
     identity_questions = {q["name"]: q for q in pending.get("identity_questions") or []}
     type_questions = {q["name"]: q for q in pending.get("type_questions") or []}
     relation_questions = {

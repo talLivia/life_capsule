@@ -1558,3 +1558,33 @@ to finish it. Several stuck segments earlier in the day are best explained this
 way.
 
 Editing `docs/` or `frontend/` is safe — neither is under the watcher.
+
+### 9.8 A stored payload outlives the code that wrote it — fixed 2026-08-03
+
+Segment c21ce503 paused with the per-sibling parentage shape and was then served
+to a client written for the grouped one. `group.siblings.length` threw, and the
+whole confirmation screen went down — taking the relation and year questions on
+it with it.
+
+`pending_confirmation` is persisted JSON: a segment can pause under one build
+and be answered under another. §7 of this document already said to check
+mid-flight payloads before changing that shape. That check was not done.
+
+Three parts, none of them a one-off patch:
+
+1. **`_canonical_person`** inside the question builder. These dicts arrive from
+   three places with two spellings — fresh from `entity_store`, from a LangGraph
+   checkpoint written by an older build, and from a persisted payload. The old
+   shape said `id`, the current one `entity_id`. Normalised once, so nothing
+   downstream has to know.
+2. **`normalise_pending_confirmation`** upgrades an old payload on read, applied
+   at both points that read one: serving it, and validating an answer against
+   it. Upgraded rather than dropped — a producer paused mid-flow should not lose
+   their questions because we changed our mind about the shape.
+3. **The client renders nothing for a shape it does not recognise**, instead of
+   crashing. A payload it cannot read must cost that section, never the screen.
+
+Verified on the real stuck payload: four per-sibling questions became one
+grouped question — *"Are חן, ניר, עדי and רז all children of אילנה and צבי?"* —
+with all four marked `recorded`, and the relation, year and editable-name
+classes untouched.
