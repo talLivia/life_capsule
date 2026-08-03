@@ -490,6 +490,12 @@ class Entity(Base):
     # year, and guessing one is worse than leaving it open.
     year_start = Column(Integer, nullable=True)
     year_end = Column(Integer, nullable=True)
+    # When the producer was ASKED for a year — set whether or not they gave
+    # one. `year_start IS NULL` cannot distinguish "nobody has asked" from
+    # "asked, and they said they do not know", and those must behave
+    # differently: the second is a real answer, and re-asking on every future
+    # recording that mentions the entity would ignore it. See migration 0015.
+    year_asked_at = Column(DateTime(timezone=True), nullable=True)
     # The producer themselves. Extracted summaries are phrased relative to
     # "the speaker", so relations need a node for that person to point at;
     # the family tree roots here. One per producer (partial unique index).

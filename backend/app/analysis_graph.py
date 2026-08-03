@@ -83,6 +83,7 @@ from app.models import InterviewSession, RawSegment, TranscriptChunk, User
 from app.services import embeddings, entity_extraction, entity_store
 from app.services.entity_extraction import ExtractedEntity, ExtractedRelation
 from app.services.entity_names import names_are_similar as _names_are_similar
+from app.services.entity_names import normalize_entity_name
 from app.services.llm import llm_service
 from app.services.storage import storage_service
 from app.services.stt import stt_service
@@ -128,6 +129,9 @@ class AnalysisState(TypedDict, total=False):
     # Type changes the producer's answers actually caused, as
     # [{name, was, now}] — surfaced by the confirm endpoint so an answer is
     # visibly applied rather than silently absorbed.
+    # Normalised names that already have a year, or were already asked for one
+    # and skipped. Resolved in check_entities_node where the DB is open.
+    year_settled: List[str]
     applied_type_changes: List[Dict[str, Any]]
     error: str
 
@@ -572,11 +576,20 @@ async def check_entities_node(state: AnalysisState) -> dict:
             }
         )
 
+    # Which of these names must never be asked for a year again. Resolved
+    # HERE, where the database is already open, rather than in human_confirm
+    # which is a pure function over state.
+    async with AsyncSessionLocal() as db:
+        year_settled = await entity_store.names_with_year_settled(
+            db, group_id, [e.name for e in extracted]
+        )
+
     return {
         "names_to_check": to_check,
         "entity_resolutions": auto_resolutions,
         "extracted_entities": [e.as_dict() for e in extracted],
         "proposed_relations": [r.as_dict() for r in proposed],
+        "year_settled": sorted(year_settled),
     }
 
 
@@ -632,25 +645,34 @@ def type_questions(extracted: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
-# Which entities are worth asking a year for. Deliberately narrow: asking
-# about every name would train the producer to click through without reading,
-# which is the failure `alternative_type` exists to avoid on the type side.
+# Which entities can carry a year. Everything the extractor is actually asked
+# to classify — a person has a birth year, a place a year you moved there, an
+# organisation a year you joined it.
 #
-# `event` only today, per the brief. NOTE this makes year capture DORMANT on
-# the current archive — it holds zero event entities, because the extractor is
-# a NAMED-entity extractor and a life period has no name (see
-# FAMILY_TREE_TIMELINE §2.1). Widening to `person` for tree lifespans is a
-# one-line change here and nowhere else.
-YEAR_QUESTION_TYPES = ("event",)
+# `other` is excluded on purpose. It is the fallback for a name the extractor
+# could not classify at all, and asking for the year of something we do not
+# understand is noise in a screen whose whole value is that it only asks what
+# genuinely needs an answer.
+YEAR_QUESTION_TYPES = ("person", "place", "organisation", "event")
 
 
-def year_questions(extracted: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """The year questions this recording raises.
+def year_questions(
+    extracted: List[Dict[str, Any]], settled: Optional[set] = None
+) -> List[Dict[str, Any]]:
+    """The year questions this recording raises. ASKED AT MOST ONCE PER ENTITY.
 
-    Asked ONLY where there is no year yet: a question whose answer would be
-    discarded is worse than no question, which is the lesson from the type
-    answers that were silently dropped.
+    `settled` holds the normalised names that must not be asked again — either
+    the entity already has a year, or the producer was already asked and did
+    not give one. Skipping is a real answer ("I do not know"), so a name that
+    has been offered once is never offered again, however many later
+    recordings mention it. Without that, widening beyond `event` would put the
+    same questions in front of the producer on every single recording until
+    they learned to click past the whole screen.
+
+    Also skipped when this batch already carries a year for the entity, which
+    is only reachable on a re-run of an already-answered confirmation.
     """
+    settled = settled or set()
     return [
         {
             "name": e["name"],
@@ -658,7 +680,9 @@ def year_questions(extracted: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "question": f'Roughly what year was "{e["name"]}"? (optional)',
         }
         for e in extracted
-        if e.get("type") in YEAR_QUESTION_TYPES and not e.get("year_start")
+        if e.get("type") in YEAR_QUESTION_TYPES
+        and not e.get("year_start")
+        and normalize_entity_name(e["name"]) not in settled
     ]
 
 
@@ -704,7 +728,9 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     identity_questions = list(state.get("names_to_check") or [])
     pending_types = type_questions(state.get("extracted_entities") or [])
     pending_relations = relation_questions(state.get("proposed_relations") or [])
-    pending_years = year_questions(state.get("extracted_entities") or [])
+    pending_years = year_questions(
+        state.get("extracted_entities") or [], set(state.get("year_settled") or [])
+    )
     if not (identity_questions or pending_types or pending_relations or pending_years):
         return {}
 
@@ -758,6 +784,8 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     # into an int, or refused it and told them. Nothing unparsed reaches here,
     # so there is no guessing left to do at this point.
     year_answers = answer.get("years") or {}
+    # Every entity the screen ASKED about, answered or not.
+    asked_year_names = {q["name"] for q in pending_years}
     entities = []
     for entity in state.get("extracted_entities") or []:
         entity = dict(entity)
@@ -771,8 +799,12 @@ async def human_confirm_node(state: AnalysisState) -> dict:
                 # indistinguishable and the answer is silently discarded.
                 entity["type_confirmed"] = True
             entity["alternative_type"] = None
-        if entity["name"] in year_answers:
-            entity["year_start"] = year_answers[entity["name"]]
+        if entity["name"] in asked_year_names:
+            # Stamped whether or not they answered — the stamp is what stops
+            # the question coming back on every later recording.
+            entity["year_asked"] = True
+            if entity["name"] in year_answers:
+                entity["year_start"] = year_answers[entity["name"]]
         entities.append(entity)
 
     # Relations: keep only what was explicitly ACCEPTED. Anything else —

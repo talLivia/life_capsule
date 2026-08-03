@@ -173,6 +173,10 @@ class ExtractedEntity:
     # extractor — the transcript rarely dates anything, and a year guessed
     # from context would silently reorder a life on the timeline.
     year_start: Optional[int] = None
+    # True when the confirmation screen PUT the year question to the producer,
+    # regardless of whether they answered. Stamps entities.year_asked_at so the
+    # same question never reappears on a later recording.
+    year_asked: bool = False
 
     @property
     def needs_type_confirmation(self) -> bool:
@@ -194,6 +198,7 @@ class ExtractedEntity:
             "summary": self.summary,
             "type_confirmed": self.type_confirmed,
             "year_start": self.year_start,
+            "year_asked": self.year_asked,
         }
 
     @classmethod
@@ -205,6 +210,7 @@ class ExtractedEntity:
             summary=data.get("summary"),
             type_confirmed=bool(data.get("type_confirmed")),
             year_start=data.get("year_start"),
+            year_asked=bool(data.get("year_asked")),
         )
 
 

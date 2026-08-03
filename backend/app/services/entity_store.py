@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -109,6 +110,33 @@ async def get_relation_vocabulary(db: AsyncSession, category: str = "family") ->
             f"database will not have it."
         )
     return list(rows)
+
+
+async def names_with_year_settled(
+    db: AsyncSession, producer_id: str, names: Sequence[str]
+) -> set:
+    """Normalised names that must NOT be asked for a year again.
+
+    Two distinct reasons, both meaning "settled": the entity already HAS a
+    year, or the producer was already ASKED and did not give one. The second
+    is why year_asked_at exists — skipping is an answer ("I do not know"), and
+    a NULL year alone cannot tell it apart from never having been asked.
+    """
+    keys = {normalize_entity_name(n) for n in names}
+    keys.discard("")
+    if not keys:
+        return set()
+    rows = (
+        await db.execute(
+            select(Entity.normalized_name)
+            .where(
+                Entity.producer_id == producer_id,
+                Entity.normalized_name.in_(keys),
+                (Entity.year_start.isnot(None)) | (Entity.year_asked_at.isnot(None)),
+            )
+        )
+    ).scalars().all()
+    return set(rows)
 
 
 async def write_segment_relations(
@@ -534,10 +562,12 @@ async def _get_or_create_entity(
             )
         )
         _maybe_set_year(existing, extracted.year_start)
+        _mark_year_asked(existing, extracted.year_asked)
         return existing, False
 
     entity = Entity(
         year_start=extracted.year_start,
+        year_asked_at=datetime.now(timezone.utc) if extracted.year_asked else None,
         producer_id=producer_id,
         # Verbatim, not normalised: `name` is what gets shown back to the
         # producer, and it should be what they actually said. The normalised
@@ -674,6 +704,17 @@ async def _find_entity(
             .where(Entity.normalized_name == normalized)
         )
     ).scalar_one_or_none()
+
+
+def _mark_year_asked(entity: Entity, asked: bool) -> None:
+    """Stamp that the producer was offered this entity's year question.
+
+    Set once and never cleared, whether or not they answered — that stamp is
+    the whole mechanism preventing the same question reappearing on every
+    later recording that happens to mention the same name.
+    """
+    if asked and entity.year_asked_at is None:
+        entity.year_asked_at = datetime.now(timezone.utc)
 
 
 def _maybe_set_year(entity: Entity, year: Optional[int]) -> None:

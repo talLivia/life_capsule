@@ -591,15 +591,26 @@ judgement call comes back to the producer:
 Refusals are **reported to the producer**, never dropped and never rounded —
 the same lesson as the discarded type answers.
 
-**⚠️ This is dormant on the current archive.** `YEAR_QUESTION_TYPES` is
-`("event",)` per the brief, and the archive holds **zero event entities**
-because the extractor is a *named*-entity extractor and a life period has no
-name (§2.1). Nothing will ask for a year until event entities exist. Widening
-to `person` for tree lifespans is a one-line change in that constant and
-nowhere else.
+**WIDENED 2026-08-03** from `event` to `person`, `place`, `organisation` and
+`event` — a person has a birth year, a place a year you moved there, an
+organisation a year you joined it. `other` stays excluded: it is the fallback
+for a name the extractor could not classify, and asking the year of something
+we do not understand is noise on a screen whose value is only asking what
+genuinely needs an answer.
 
-Years fill in but never overwrite: the screen only asks where there is no year
-yet, so ingest order cannot re-decide one the producer already gave.
+**Widening made "ask once" load-bearing**, and it needed migration `0015`
+(`entities.year_asked_at`). `year_start IS NULL` is true both for an entity
+nobody has been asked about and for one the producer was asked about and
+skipped — and those must behave differently. Skipping is a real answer ("I do
+not know"); without the stamp, every later recording mentioning ניר would ask
+again until the producer learned to click past the whole screen.
+
+The stamp is set when the question is PUT, answered or not, and never moved.
+Deliberately not backfilled, so the 14 existing entities each get exactly one
+offer rather than being excluded forever.
+
+Years fill in but never overwrite: ingest order cannot re-decide one the
+producer already gave.
 
 28 new tests (684 total), most of them feeding the parser things it must
 refuse.
