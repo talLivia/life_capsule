@@ -61,8 +61,12 @@ export interface UseInterviewFlow {
  * total genuinely depends on an answer the producer has not given, and any
  * number — even "9+" — implies a ceiling that does not exist.
  *
- * The noun follows the step KIND: a screening prompt is a שלב (step), a real
- * content question is a שאלה. Same counter, honest about what is being asked.
+ * The noun follows the step KIND: a screening prompt is a "Step", a real
+ * content question is a "Question". Same counter, honest about which is being
+ * asked — calling a yes/no screening prompt a "Question" reads wrong.
+ *
+ * UI chrome is English throughout this panel. The interview CONTENT is Hebrew
+ * and stays so; only the labels around it are translated.
  */
 function buildProgressLabel(
   category: FlowCategory | null,
@@ -72,10 +76,10 @@ function buildProgressLabel(
   if (!category.settled || category.total == null || category.position == null) {
     return null
   }
-  const noun = step.kind === 'gate' ? 'שלב' : 'שאלה'
+  const noun = step.kind === 'gate' ? 'Step' : 'Question'
   const index = category.steps.findIndex(s => s.id === step.id)
   const position = index >= 0 ? index + 1 : category.position
-  return `${noun} ${position} מתוך ${category.total}`
+  return `${noun} ${position} of ${category.total}`
 }
 
 export function useInterviewFlow(): UseInterviewFlow {

@@ -27,16 +27,19 @@ export function GateStep({ step, onAnswer, answering }: GateStepProps) {
   const options = step.options ?? []
 
   return (
-    <div className="glass-card p-6 flex flex-col gap-5" dir="rtl">
+    <div className="glass-card p-6 flex flex-col gap-5">
       <div>
         <span className="text-xs uppercase tracking-wide text-primary-400 font-semibold">
-          שאלת סינון
+          Screening question
         </span>
-        <h2 className="text-xl md:text-2xl font-bold text-white mt-1.5 leading-snug">
+        {/* dir="auto" because the TEXT is interview content (Hebrew) while
+            the chrome around it is English — the element picks its own
+            direction from what it actually contains. */}
+        <h2 dir="auto" className="text-xl md:text-2xl font-bold text-white mt-1.5 leading-snug">
           {step.text}
         </h2>
         <p className="text-xs text-gray-500 mt-2">
-          אין צורך בהקלטה — בחר תשובה כדי להמשיך
+          No recording needed — choose an answer to continue
         </p>
       </div>
 
@@ -52,7 +55,7 @@ export function GateStep({ step, onAnswer, answering }: GateStepProps) {
               className={selected ? 'btn-primary' : 'btn-secondary'}
             >
               {answering && selected && <Loader2 size={15} className="animate-spin" />}
-              {option.label}
+              <span dir="auto">{option.label}</span>
             </button>
           )
         })}
@@ -62,7 +65,7 @@ export function GateStep({ step, onAnswer, answering }: GateStepProps) {
           wrong. Changing it never deletes anything already recorded. */}
       {step.answer && (
         <p className="text-xs text-gray-500">
-          אפשר לשנות את התשובה — הקלטות שכבר נשמרו לא יימחקו.
+          You can change this answer — nothing you&apos;ve already recorded is deleted.
         </p>
       )}
     </div>

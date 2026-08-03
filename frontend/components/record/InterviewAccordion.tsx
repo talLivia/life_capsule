@@ -34,7 +34,7 @@ export function InterviewAccordion({
   onSelectStep,
 }: InterviewAccordionProps) {
   return (
-    <div className="flex flex-col gap-2" dir="rtl">
+    <div className="flex flex-col gap-2">
       {categories.map(category => {
         const isOpen = category.id === openCategoryId
         const inert = !category.reachable
@@ -54,7 +54,7 @@ export function InterviewAccordion({
               onClick={inert ? undefined : () => onOpenCategory(category.id)}
               aria-expanded={isOpen}
               aria-disabled={inert}
-              className={`w-full flex items-center gap-2.5 px-3.5 py-3 text-right ${
+              className={`w-full flex items-center gap-2.5 px-3.5 py-3 text-left ${
                 inert ? 'cursor-default opacity-45' : 'hover:bg-white/5'
               }`}
             >
@@ -68,7 +68,11 @@ export function InterviewAccordion({
                 )}
               </span>
 
+              {/* Category names come from the question file and are Hebrew;
+                  dir="auto" lets each label read correctly without forcing
+                  RTL on the English chrome around it. */}
               <span
+                dir="auto"
                 className={`flex-1 text-sm ${
                   category.current
                     ? 'font-semibold text-white'
@@ -113,7 +117,7 @@ export function InterviewAccordion({
                       <button
                         type="button"
                         onClick={selectable ? () => onSelectStep(step.id) : undefined}
-                        className={`w-full flex items-start gap-2 px-2 py-1.5 rounded-lg text-right text-xs leading-relaxed transition-colors ${
+                        className={`w-full flex items-start gap-2 px-2 py-1.5 rounded-lg text-left text-xs leading-relaxed transition-colors ${
                           isViewing
                             ? 'bg-primary-500/15 text-primary-100'
                             : selectable
@@ -128,7 +132,7 @@ export function InterviewAccordion({
                             <span className="block w-[11px] text-center">·</span>
                           )}
                         </span>
-                        <span className="flex-1 line-clamp-2">{step.text}</span>
+                        <span dir="auto" className="flex-1 line-clamp-2">{step.text}</span>
                         {step.kind === 'question' && (step.takes ?? 0) > 1 && (
                           <span className="flex-shrink-0 text-[10px] text-gray-500 mt-[2px]">
                             ×{step.takes}

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ChevronRight, Feather, Gift, Loader2, PartyPopper, Plus, ShieldOff } from 'lucide-react'
+import { ChevronLeft, Feather, Gift, Loader2, PartyPopper, Plus, ShieldOff } from 'lucide-react'
 import { EntityConfirmModal } from '@/components/record/EntityConfirmModal'
 import { GateStep } from '@/components/record/GateStep'
 import { InterviewAccordion } from '@/components/record/InterviewAccordion'
@@ -176,9 +176,11 @@ export function RecordPanel() {
             />
           ) : viewingStep ? (
             <>
-              <div dir="rtl">
+              <div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs uppercase tracking-wide text-primary-400 font-semibold">
+                  {/* The category label is interview CONTENT (Hebrew), so it
+                      picks its own direction; the chrome around it is English. */}
+                  <span dir="auto" className="text-xs uppercase tracking-wide text-primary-400 font-semibold">
                     {openCategory?.label}
                   </span>
                   {/* No counter at all until the category is settled — the
@@ -188,11 +190,11 @@ export function RecordPanel() {
                   )}
                   {isReviewing && (
                     <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/8 text-gray-400">
-                      צפייה בתשובה קודמת
+                      Reviewing an earlier answer
                     </span>
                   )}
                 </div>
-                <h1 className="text-2xl md:text-3xl font-bold text-white mt-1.5 leading-snug">
+                <h1 dir="auto" className="text-2xl md:text-3xl font-bold text-white mt-1.5 leading-snug">
                   {viewingStep.text}
                 </h1>
               </div>
@@ -232,10 +234,10 @@ export function RecordPanel() {
           {/* Back only. There is no Next: finishing a recording advances the
               flow by itself, and jumping ahead is not offered here or
               accepted by the server. */}
-          <div className="flex items-center pt-1" dir="rtl">
+          <div className="flex items-center pt-1">
             <button onClick={goBack} disabled={!canGoBack} className="btn-secondary">
-              <ChevronRight size={16} />
-              לשאלה הקודמת
+              <ChevronLeft size={16} />
+              Previous question
             </button>
           </div>
         </main>
@@ -250,8 +252,8 @@ export function RecordPanel() {
             onSelectStep={selectStep}
           />
           {flow.free_navigation && (
-            <p className="text-[11px] text-gray-500 mt-3 px-1" dir="rtl">
-              ניווט חופשי פעיל — אפשר לפתוח כל קטגוריה.
+            <p className="text-[11px] text-gray-500 mt-3 px-1">
+              Free navigation is on — you can open any category.
             </p>
           )}
         </aside>

@@ -295,6 +295,14 @@ class RawSegment(Base):
     # POSITIONAL, and therefore NOT a stable identifier: editing the question
     # set moves it. Use question_id below for anything that must still mean the
     # same thing after the set changes.
+    #
+    # ⚠️ Since the accordion landed it is also NO LONGER GLOBALLY UNIQUE across
+    # an interview — it is the step's position WITHIN ITS CATEGORY, so two
+    # categories both have a question_index 0. Nothing reads it as a global
+    # position (its remaining job is separating takes of one question, and
+    # full_archive_retrieval groups takes per question, not across the set),
+    # but the name oversells what it now means. Worth renaming to
+    # question_position_in_category when something else touches this column.
     question_index = Column(Integer, nullable=False)
     # The STABLE id from interview_questions.json ("childhood_home", ...) —
     # what a life period must be derived from, since question_index silently
