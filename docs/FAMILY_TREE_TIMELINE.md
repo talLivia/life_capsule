@@ -209,6 +209,22 @@ questions each. Nothing may hardcode today's categories, their names, their
 count, or their `question_index` ranges. After the JSON is updated the timeline
 must pick up the new categories **with zero code changes**.
 
+### ✅ Re-checked 2026-08-03 against the 16-category schema
+
+The constraint HELD through the restructure. `interview_config` is still the
+only runtime reader of the question file, nothing hardcodes a category name or
+count, and the interview went 5 → 16 categories and 12 → 129 questions with no
+code change to any of it — which is the property this section demanded.
+
+Two small drifts in the table below, neither affecting the rule:
+* `get_categories()` now also returns `steps` (the gating tree), alongside
+  `category` / `category_label` / `question_ids`.
+* the `category_label` render site moved when `/record` was rebuilt — it is now
+  `RecordPanel.tsx` (`openCategory.label`) and `InterviewAccordion.tsx`, not
+  `RecordPanel.tsx:224`.
+
+**But §3's queries did NOT survive — see the correction there.**
+
 ### Blast radius — grepped 2026-08-02, and it is small
 
 | What | Where | Verdict |
@@ -339,6 +355,57 @@ ORDER BY s.created_at;
 and the title with no new serving path. **Do not trim clips for this** —
 player-side seeking was measured and rejected (see PROJECT_STATUS "Turn
 latency"), and per-moment ffmpeg would be far worse. Play the recording.
+
+### 🚨 CORRECTION 2026-08-03 — these queries drop every retired recording
+
+Re-checked against the 16-category schema after the interview restructure
+cut over. **The queries above are wrong as written**, and the earlier cutover
+verification did not catch it because it used a different code path.
+
+`get_categories()['question_ids']` contains **live ids only**. Every one of the
+12 outgoing questions is now retired, so `WHERE s.question_id = ANY(:question_ids)`
+matches nothing at all. Measured:
+
+```
+PATH A  per-recording category_for_question_id()   (what the cutover check did)
+        career 2, childhood 3, military_service 4, post_military 4, relationships 3
+        => 16 of 16 recordings placed
+
+PATH B  iterate get_categories(), match its question_ids   (what §3 does)
+        => 0 of 16 recordings placed, all 16 categories empty
+```
+
+Two distinct causes, both needing a fix in Phase 5:
+
+**1. Retired ids are not in any category's id set.** A recording of a
+withdrawn question resolves fine through `category_for_question_id`, but the
+timeline never asks that — it asks each category for its questions. Fix:
+expose the retired ids per category, e.g. a `retired_question_ids` field
+alongside `question_ids`, and have the timeline match on the union. Keeping
+them in a SEPARATE field matters: `question_ids` must stay live-only so
+nothing can accidentally offer a retired question to a producer.
+
+**2. A retired-only category is never yielded at all.** `post_military` has no
+equivalent in the new set, so `get_categories()` does not emit it and its 4
+recordings have nowhere to appear — even once cause 1 is fixed. Per §8.2 those
+recordings are meant to stay visible until the producer rehomes them, so the
+timeline must append retired-only categories after the live ones. They have no
+position in the new chronology, which is honest: they are historical.
+
+Sketch, staying data-driven:
+
+```python
+buckets = {c["category"]: c for c in interview_config.get_categories(lang)}   # live, ordered
+for item in interview_config.get_retired():                                   # historical
+    buckets.setdefault(item["category"], {"category": item["category"],
+                                          "category_label": item["category"],
+                                          "question_ids": [], "retired_only": True})
+# per bucket, match on live ids + retired ids carrying that category
+```
+
+**Do not "fix" this by putting retired ids into `question_ids`.** That single
+field then means two different things depending on the caller, which is the
+class of bug the whole `question_id` design exists to avoid.
 
 ### These queries were run, not just written
 
