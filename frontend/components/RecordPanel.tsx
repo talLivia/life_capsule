@@ -2,122 +2,94 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ChevronLeft, ChevronRight, Feather, Loader2, ShieldOff, PartyPopper, Gift, ListChecks, Plus } from 'lucide-react'
-import { toast } from 'react-hot-toast'
+import { ChevronRight, Feather, Gift, Loader2, PartyPopper, Plus, ShieldOff } from 'lucide-react'
 import { EntityConfirmModal } from '@/components/record/EntityConfirmModal'
+import { GateStep } from '@/components/record/GateStep'
+import { InterviewAccordion } from '@/components/record/InterviewAccordion'
 import { RecordingList } from '@/components/record/RecordingList'
 import { SegmentUpload } from '@/components/record/SegmentUpload'
 import { VideoRecorder } from '@/components/record/VideoRecorder'
 import { api } from '@/lib/api'
+import { useInterviewFlow } from '@/lib/useInterviewFlow'
 import { useStore } from '@/store/useStore'
-import type { ApiError, InterviewSessionState } from '@/lib/types'
+import type { RawSegment } from '@/lib/types'
 
 /**
- * The story-recording interview, as an in-shell VIEW (rendered by the producer
- * studio's `record` view) rather than a standalone `/record` route. The auth
- * gate is handled by the shell, so this only keeps the producer-only guard.
- * The recording flow itself is unchanged from the former route — only the
- * outer full-screen wrappers were relaxed so it sits inside the app shell.
+ * The story-recording interview, as an in-shell view.
+ *
+ * Rebuilt around the category accordion (docs/INTERVIEW_RESTRUCTURE.md step 5).
+ * What changed from the linear flow it replaces:
+ *
+ *   * There is no Next button. Finishing a recording refetches the flow, and
+ *     the server's recomputed position IS the advance — so the panel cannot
+ *     disagree with the backend about where the producer is.
+ *   * Progress is per category, and shows nothing at all until the category
+ *     is settled (§8.4) — no invented denominator.
+ *   * Screening questions render as their own kind of step, without a camera.
+ *
+ * Position, completeness and reachability all come from the server. This file
+ * decides layout and nothing else.
  */
-/** How many interview questions have at least one recording. Counts DISTINCT
- *  question_index — a question with three takes is still one question
- *  answered. */
-function countAnswered(segments: { question_index: number }[]): number {
-  return new Set(segments.map(s => s.question_index)).size
+
+/** Takes for the question on screen. The flow knows HOW MANY takes exist, but
+ *  the player needs the rows themselves, which only the segments list has. */
+function useTakesFor(sessionId: string | undefined, questionId: string | undefined) {
+  const [takes, setTakes] = useState<RawSegment[]>([])
+
+  const load = useCallback(async () => {
+    if (!sessionId || !questionId) {
+      setTakes([])
+      return
+    }
+    try {
+      const segments: RawSegment[] = await api.listSessionSegments(sessionId)
+      setTakes(segments.filter(s => s.question_id === questionId))
+    } catch {
+      setTakes([])
+    }
+  }, [sessionId, questionId])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  return { takes, reloadTakes: load }
 }
 
 export function RecordPanel() {
   const { user } = useStore()
-  const [state, setState] = useState<InterviewSessionState | null>(null)
-  const [currentIndex, setCurrentIndex] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
-  // True for exactly one render: the moment the LAST unanswered question
-  // gets accepted. Distinct from the ongoing "answeredCount >= total" state
-  // (which stays true forever after, including while revisiting past
-  // answers) — this is what actually shows a "you're done, here's what's
-  // next" screen instead of silently leaving the user on the same last
-  // question with no forward path (Next was already disabled there).
-  const [justCompleted, setJustCompleted] = useState(false)
-  // Opening the recorder on a question that ALREADY has takes. Cleared
-  // whenever the question changes, so navigating away and back lands on the
-  // list rather than a live camera the producer didn't ask for.
-  const [addingTake, setAddingTake] = useState(false)
-
   const isProducer = user?.role === 'producer'
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const data: InterviewSessionState = await api.getInterviewSession()
-      setState(data)
-      setCurrentIndex(data.session.current_question_index)
-    } catch (err: unknown) {
-      const detail = (err as ApiError)?.response?.data?.detail || (err as ApiError)?.message
-      setLoadError(detail || 'Could not load the interview')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  const {
+    flow, loading, error, reload,
+    openCategory, viewingStep, isReviewing, progressLabel,
+    openCategoryId, setOpenCategory, selectStep, goBack, canGoBack,
+    answerGate, answering, onRecordingAccepted,
+  } = useInterviewFlow()
 
+  const questionId = viewingStep?.kind === 'question' ? viewingStep.id : undefined
+  const { takes, reloadTakes } = useTakesFor(flow?.interview_session_id, questionId)
+
+  // Opening the recorder on a question that ALREADY has takes. Cleared when
+  // the step changes, so navigating back lands on the takes rather than a
+  // live camera the producer did not ask for.
+  const [addingTake, setAddingTake] = useState(false)
   useEffect(() => {
-    if (isProducer) load()
-  }, [isProducer, load])
-
-  const goTo = async (index: number) => {
-    if (!state) return
-    setCurrentIndex(index)
     setAddingTake(false)
-    try {
-      const updated = await api.updateInterviewSession(state.session.id, index)
-      setState(s => (s ? { ...s, session: updated } : s))
-    } catch {
-      toast.error('Could not save your position — you can keep going')
-    }
-  }
+  }, [viewingStep?.id])
 
   const handleAccepted = async () => {
-    if (!state) return
-    // Refresh segments so the "already answered" state is accurate if the
-    // user navigates back here later.
-    const nextIndex = Math.min(currentIndex + 1, state.questions.length - 1)
-    const atEnd = currentIndex === state.questions.length - 1
-    const wasIncomplete = countAnswered(state.segments) < state.questions.length
-    // Auto-advance only when this question had NOTHING before — that's the
-    // sequential first pass, where moving on is what the producer wants.
-    // A deliberate "add another take" must stay put and show the new take
-    // beside the old one; advancing there would answer a question they
-    // didn't ask and hide the very thing they just recorded.
-    const wasFirstTake =
-      state.segments.filter(s => s.question_index === currentIndex).length === 0
-    setAddingTake(false)  // the new take is saved; show it in the list
-    try {
-      const data: InterviewSessionState = await api.getInterviewSession()
-      setState(data)
-      if (wasIncomplete && countAnswered(data.segments) >= data.questions.length) {
-        setJustCompleted(true)
-      }
-    } catch {
-      /* segment is already saved server-side; a refresh failure here is non-fatal */
-    }
-    if (!wasFirstTake) return
-    if (!atEnd) {
-      goTo(nextIndex)
-    } else {
-      setCurrentIndex(nextIndex)
-    }
+    setAddingTake(false)
+    await reloadTakes()
+    await onRecordingAccepted()
   }
 
-  // ── Role gate (auth is handled by the shell) ──
   if (!isProducer) {
     return (
       <div className="flex items-center justify-center py-24 px-6">
         <div className="max-w-sm text-center flex flex-col items-center gap-4">
           <ShieldOff size={28} className="text-gray-500" />
-          <h1 className="text-lg font-bold text-white">
-            This section is for the account owner
-          </h1>
+          <h1 className="text-lg font-bold text-white">This section is for the account owner</h1>
           <p className="text-sm text-gray-400">
             Recording is only available to the producer account that owns this story archive.
           </p>
@@ -134,157 +106,156 @@ export function RecordPanel() {
     )
   }
 
-  if (loadError || !state) {
+  if (error || !flow) {
     return (
       <div className="flex items-center justify-center py-24 px-6">
         <div className="max-w-sm text-center flex flex-col items-center gap-4">
-          <p className="text-sm text-gray-300">{loadError || 'Something went wrong'}</p>
-          <button onClick={load} className="btn-primary">Try again</button>
+          <p className="text-sm text-gray-300">{error || 'Something went wrong'}</p>
+          <button onClick={reload} className="btn-primary">Try again</button>
         </div>
       </div>
     )
   }
 
-  const total = state.questions.length
-  const question = state.questions[currentIndex]
-  // A question can now have SEVERAL recordings, so this is a list.
-  const recordings = state.segments.filter(s => s.question_index === currentIndex)
-  const showRecorder = recordings.length === 0 || addingTake
-  const isLast = currentIndex === total - 1
-  const isFirst = currentIndex === 0
-  // DISTINCT questions answered — never the number of segment rows. With
-  // siblings allowed, three takes on one question would have read as
-  // "3 of 12 answered" and could trip the "you've answered everything"
-  // screen while most questions were still blank. That miscount fails
-  // SILENTLY, which is why it changes in the same commit as the backend.
-  const answeredCount = countAnswered(state.segments)
-  const interviewComplete = answeredCount >= total
-
-  if (justCompleted) {
+  if (flow.complete) {
     return (
-      <div className="flex items-center justify-center py-24 px-6 animate-fade-in">
-        <div className="max-w-md text-center flex flex-col items-center gap-5">
-          <PartyPopper size={32} className="text-primary-400" />
-          <div>
-            <h1 className="text-2xl font-black gradient-text mb-2">You&apos;ve answered every question</h1>
-            <p className="text-sm text-gray-400">
-              Your story is saved. Invite a family member from Settings so they can talk with
-              it, or come back anytime to review or re-record any answer.
-            </p>
-          </div>
-          <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+      <div className="animate-fade-in">
+        <EntityConfirmModal />
+        <div className="flex items-center justify-center py-24 px-6">
+          <div className="max-w-md text-center flex flex-col items-center gap-5">
+            <PartyPopper size={32} className="text-primary-400" />
+            <div>
+              <h1 className="text-2xl font-black gradient-text mb-2">
+                You&apos;ve answered every question
+              </h1>
+              <p className="text-sm text-gray-400">
+                Your story is saved. Invite a family member from Settings so they can talk
+                with it, or reopen any category below to review or re-record an answer.
+              </p>
+            </div>
             <Link href="/" className="btn-primary justify-center">
               <Gift size={16} />
               Go invite family
             </Link>
-            <button onClick={() => setJustCompleted(false)} className="btn-secondary justify-center">
-              <ListChecks size={16} />
-              Review my answers
-            </button>
           </div>
+        </div>
+        <div className="max-w-md mx-auto px-6 pb-16">
+          <InterviewAccordion
+            categories={flow.categories}
+            openCategoryId={openCategoryId}
+            viewingStepId={viewingStep?.id ?? null}
+            onOpenCategory={setOpenCategory}
+            onSelectStep={selectStep}
+          />
         </div>
       </div>
     )
   }
 
+  const showRecorder = takes.length === 0 || addingTake
+
   return (
     <div className="animate-fade-in">
       <EntityConfirmModal />
-      <header className="max-w-3xl mx-auto px-6 pt-10 pb-6">
-        <div className="flex items-center gap-2 text-primary-400 mb-3">
+
+      <header className="max-w-6xl mx-auto px-6 pt-10 pb-5">
+        <div className="flex items-center gap-2 text-primary-400">
           <Feather size={16} />
           <span className="text-sm font-medium">Your Story</span>
         </div>
-        <div className="flex items-center justify-between mb-2">
-          <p className="text-sm text-gray-400">
-            Question {currentIndex + 1} of {total}
-          </p>
-          <p className="text-xs text-gray-500">
-            {answeredCount} of {total} answered
-          </p>
-        </div>
-        <div className="w-full h-1.5 rounded-full bg-surface-700 overflow-hidden">
-          <div
-            className="h-full rounded-full bg-gradient-to-r from-primary-600 to-accent-500 transition-all duration-300"
-            style={{ width: `${((currentIndex + 1) / total) * 100}%` }}
-          />
-        </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-6 pb-16 flex flex-col gap-6">
-        {interviewComplete && (
-          <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary-500/10 border border-primary-500/30 text-primary-300 text-sm">
-            <PartyPopper size={16} />
-            You&apos;ve answered every question — feel free to revisit any of them below.
-          </div>
-        )}
+      <div className="max-w-6xl mx-auto px-6 pb-16 grid grid-cols-1 lg:grid-cols-5 gap-6 items-start">
+        {/* ── The step being answered ─────────────────────────────────── */}
+        <main className="lg:col-span-3 flex flex-col gap-5 order-2 lg:order-1">
+          {viewingStep?.kind === 'gate' ? (
+            <GateStep
+              step={viewingStep}
+              onAnswer={value => answerGate(viewingStep.id, value)}
+              answering={answering}
+            />
+          ) : viewingStep ? (
+            <>
+              <div dir="rtl">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs uppercase tracking-wide text-primary-400 font-semibold">
+                    {openCategory?.label}
+                  </span>
+                  {/* No counter at all until the category is settled — the
+                      total genuinely is not knowable before then (§8.4). */}
+                  {progressLabel && (
+                    <span className="text-xs text-gray-500">· {progressLabel}</span>
+                  )}
+                  {isReviewing && (
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/8 text-gray-400">
+                      צפייה בתשובה קודמת
+                    </span>
+                  )}
+                </div>
+                <h1 className="text-2xl md:text-3xl font-bold text-white mt-1.5 leading-snug">
+                  {viewingStep.text}
+                </h1>
+              </div>
 
-        <div>
-          <span className="text-xs uppercase tracking-wide text-primary-400 font-semibold">
-            {question.category_label}
-          </span>
-          <h1 className="text-2xl md:text-3xl font-bold text-white mt-1 leading-snug">
-            {question.text}
-          </h1>
-        </div>
+              {showRecorder ? (
+                <VideoRecorder
+                  key={`${viewingStep.id}-${takes.length}`}
+                  sessionId={flow.interview_session_id}
+                  questionIndex={openCategory?.steps.findIndex(s => s.id === viewingStep.id) ?? 0}
+                  questionId={viewingStep.id}
+                  questionText={viewingStep.text}
+                  onAccepted={handleAccepted}
+                  onCancel={takes.length > 0 ? () => setAddingTake(false) : undefined}
+                />
+              ) : (
+                <RecordingList recordings={takes} onDeleted={handleAccepted} />
+              )}
 
-        {/* With no recordings yet, the recorder IS the screen — asking a
-            producer to click "add" against an empty list would be a step
-            with only one possible answer. Once something is recorded, the
-            takes come first and recording another is a deliberate choice. */}
-        {showRecorder ? (
-          <VideoRecorder
-            key={`${question.id}-${recordings.length}`}
-            sessionId={state.session.id}
-            questionIndex={currentIndex}
-            questionId={question.id}
-            questionText={question.text}
-            onAccepted={handleAccepted}
-            onCancel={recordings.length > 0 ? () => setAddingTake(false) : undefined}
-          />
-        ) : (
-          <RecordingList recordings={recordings} onDeleted={load} />
-        )}
+              <div className="flex flex-wrap items-center gap-3">
+                {!showRecorder && (
+                  <button onClick={() => setAddingTake(true)} className="btn-secondary">
+                    <Plus size={16} />
+                    {takes.length === 1 ? 'Add another answer' : 'Add another take'}
+                  </button>
+                )}
+                <SegmentUpload
+                  sessionId={flow.interview_session_id}
+                  questionIndex={openCategory?.steps.findIndex(s => s.id === viewingStep.id) ?? 0}
+                  questionId={viewingStep.id}
+                  questionText={viewingStep.text}
+                  onAccepted={handleAccepted}
+                />
+              </div>
+            </>
+          ) : null}
 
-        {/* Uploading is offered in BOTH states — on an empty question it's
-            an alternative to recording, and beside existing takes it's
-            another way to add one. Recording is the primary action, so it
-            stays the bigger button. */}
-        <div className="flex flex-wrap items-center gap-3">
-          {!showRecorder && (
-            <button onClick={() => setAddingTake(true)} className="btn-secondary">
-              <Plus size={16} />
-              {recordings.length === 1 ? 'Add another answer' : 'Add another take'}
+          {/* Back only. There is no Next: finishing a recording advances the
+              flow by itself, and jumping ahead is not offered here or
+              accepted by the server. */}
+          <div className="flex items-center pt-1" dir="rtl">
+            <button onClick={goBack} disabled={!canGoBack} className="btn-secondary">
+              <ChevronRight size={16} />
+              לשאלה הקודמת
             </button>
-          )}
-          <SegmentUpload
-            sessionId={state.session.id}
-            questionIndex={currentIndex}
-            questionId={question.id}
-            questionText={question.text}
-            onAccepted={handleAccepted}
-          />
-        </div>
+          </div>
+        </main>
 
-        <div className="flex items-center justify-between pt-2">
-          <button
-            onClick={() => goTo(currentIndex - 1)}
-            disabled={isFirst}
-            className="btn-secondary"
-          >
-            <ChevronLeft size={16} />
-            Previous question
-          </button>
-          <button
-            onClick={() => goTo(currentIndex + 1)}
-            disabled={isLast}
-            className="btn-secondary"
-          >
-            Next question
-            <ChevronRight size={16} />
-          </button>
-        </div>
-      </main>
+        {/* ── Categories ──────────────────────────────────────────────── */}
+        <aside className="lg:col-span-2 order-1 lg:order-2 lg:sticky lg:top-6">
+          <InterviewAccordion
+            categories={flow.categories}
+            openCategoryId={openCategoryId}
+            viewingStepId={viewingStep?.id ?? null}
+            onOpenCategory={setOpenCategory}
+            onSelectStep={selectStep}
+          />
+          {flow.free_navigation && (
+            <p className="text-[11px] text-gray-500 mt-3 px-1" dir="rtl">
+              ניווט חופשי פעיל — אפשר לפתוח כל קטגוריה.
+            </p>
+          )}
+        </aside>
+      </div>
     </div>
   )
 }

@@ -98,7 +98,7 @@ export const api = {
     return response.data
   },
 
-  updateProfile: async (data: { email?: string; username?: string; full_name?: string; password?: string; chat_mode?: 'avatar' | 'video_clips' | 'video_clips_v2' }) => {
+  updateProfile: async (data: { email?: string; username?: string; full_name?: string; password?: string; chat_mode?: 'avatar' | 'video_clips' | 'video_clips_v2'; free_navigation?: boolean }) => {
     const response = await apiClient.put('/api/v1/users/me', data)
     return response.data
   },
@@ -317,6 +317,27 @@ export const api = {
     video_key: string
   }) => {
     const response = await apiClient.post('/api/v1/interview/segments/ingest', params)
+    return response.data
+  },
+
+  listSessionSegments: async (sessionId: string) => {
+    const response = await apiClient.get(`/api/v1/interview/segments/session/${sessionId}`)
+    return response.data
+  },
+
+  getInterviewFlow: async () => {
+    const response = await apiClient.get('/api/v1/interview/flow')
+    return response.data
+  },
+
+  /** Answer a screening/branching question. Returns the WHOLE updated flow —
+   *  answering can reveal a branch, complete a category and move the current
+   *  position at once, so re-fetching separately would show a stale frame. */
+  answerGate: async (gateId: string, value: string) => {
+    const response = await apiClient.post('/api/v1/interview/flow/gate', {
+      gate_id: gateId,
+      value,
+    })
     return response.data
   },
 

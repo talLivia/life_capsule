@@ -16,6 +16,9 @@ interface User {
   // is never read, since /talk always renders based on the LINKED
   // producer's setting (see TalkAvailability.chat_mode instead).
   chat_mode?: ChatMode
+  // Unlocks /record's accordion so any category can be opened out of order.
+  // Producer-only; see docs/INTERVIEW_RESTRUCTURE.md §7A.
+  free_navigation?: boolean
 }
 
 interface AppState {

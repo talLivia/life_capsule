@@ -115,6 +115,9 @@ export interface RawSegment {
   interview_session_id: string
   question_asked: string
   question_index: number
+  /** Stable question id. Takes are grouped by this, never by question_index,
+   *  which is positional and moves when the question set is edited. */
+  question_id?: string | null
   video_url?: string | null
   video_key?: string | null
   transcript?: string | null
@@ -143,6 +146,57 @@ export interface SegmentExtraction {
   entities: ExtractedEntity[]
   still_processing: boolean
   entities_unavailable: boolean
+}
+
+// ── Interview flow (docs/INTERVIEW_RESTRUCTURE.md step 4) ────────────────
+// Rendered as-is by the accordion. Position, reachability and completeness
+// are all DERIVED server-side — the client recomputes none of it, so there
+// is no second opinion that can disagree.
+
+export interface GateOption {
+  value: string
+  label: string
+}
+
+export interface FlowStep {
+  kind: 'question' | 'gate'
+  id: string
+  text: string
+  done: boolean
+  /** question steps only — a question can hold several takes */
+  takes?: number | null
+  /** gate steps only. Data-driven: render one control per option, never
+   *  assume a yes/no pair. */
+  options?: GateOption[] | null
+  answer?: string | null
+}
+
+export interface FlowCategory {
+  id: string
+  label: string
+  /** Only REACHABLE steps — an unanswered gate ends the list. */
+  steps: FlowStep[]
+  /** No reachable gate is still unanswered, so the shape is known. Distinct
+   *  from `complete`: a settled category can still have questions to record. */
+  settled: boolean
+  position?: number | null
+  /** null until `settled`. Do NOT substitute a guess — the agreed rule is
+   *  that no counter shows at all until the total is real (§8.4). */
+  total?: number | null
+  done_count: number
+  current_step_id?: string | null
+  complete: boolean
+  current: boolean
+  /** Whether the accordion may open it. Server-decided, not a styling hint. */
+  reachable: boolean
+}
+
+export interface InterviewFlow {
+  interview_session_id: string
+  free_navigation: boolean
+  current_category_id?: string | null
+  complete: boolean
+  categories: FlowCategory[]
 }
 
 export interface InterviewSessionState {

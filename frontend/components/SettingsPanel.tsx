@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Save, Loader2, User, KeyRound, Trash2, Sparkles, Film } from 'lucide-react'
+import { Save, Loader2, User, KeyRound, Trash2, Sparkles, Film, Compass } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
 import { useStore } from '@/store/useStore'
@@ -24,9 +24,30 @@ export function SettingsPanel() {
   const [savingProfile, setSavingProfile] = useState(false)
   const [savingPassword, setSavingPassword] = useState(false)
   const [savingChatMode, setSavingChatMode] = useState(false)
+  const [savingFreeNav, setSavingFreeNav] = useState(false)
 
   const isGuest = token === 'guest' || user?.id === 'demo-user'
   const chatMode = user?.chat_mode || 'avatar'
+
+  const freeNavigation = Boolean(user?.free_navigation)
+
+  // Mirrors setChatMode: same updateProfile path, same auth refresh, same
+  // guest guard. See docs/INTERVIEW_RESTRUCTURE.md §7A for why this exists —
+  // it is the escape hatch for rehoming footage and for adding content to a
+  // category that was previously screened out, not a convenience toggle.
+  const setFreeNavigation = async (enabled: boolean) => {
+    if (isGuest || enabled === freeNavigation) return
+    setSavingFreeNav(true)
+    try {
+      const updated = await api.updateProfile({ free_navigation: enabled })
+      if (token) setAuth(token, updated)
+      toast.success(enabled ? 'Free navigation on' : 'Free navigation off')
+    } catch (err: unknown) {
+      toast.error((err as ApiError)?.response?.data?.detail || 'Could not update navigation')
+    } finally {
+      setSavingFreeNav(false)
+    }
+  }
 
   const setChatMode = async (mode: ChatMode) => {
     if (isGuest || mode === chatMode) return
@@ -274,6 +295,42 @@ export function SettingsPanel() {
               </p>
             </button>
           </div>
+        </div>
+      )}
+
+      {user?.role === 'producer' && (
+        <div className="card flex flex-col gap-4 mt-6">
+          <div className="flex items-center gap-2">
+            <Compass size={16} className="text-primary-400" />
+            <h2 className="text-xl font-bold text-white">Recording navigation</h2>
+          </div>
+          <div className="divider" />
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={freeNavigation}
+              disabled={isGuest || savingFreeNav}
+              onChange={e => setFreeNavigation(e.target.checked)}
+              className="mt-1 w-4 h-4 accent-primary-500 flex-shrink-0"
+            />
+            <span>
+              <span className="font-semibold text-white block">
+                Let me jump between categories
+              </span>
+              <span className="text-xs text-gray-400 block mt-1">
+                Off by default, so the interview walks you through in order. Turn it on to
+                open any category and record or upload into it out of sequence — useful for
+                filling in a section you skipped earlier.
+              </span>
+              {/* Says what it does NOT do, because "unlock everything" is the
+                  natural but wrong reading — the server refuses a question
+                  behind an unanswered screening question either way. */}
+              <span className="text-xs text-gray-500 block mt-1.5">
+                Screening questions still apply — you&apos;ll be asked those before a
+                category&apos;s questions open up.
+              </span>
+            </span>
+          </label>
         </div>
       )}
 

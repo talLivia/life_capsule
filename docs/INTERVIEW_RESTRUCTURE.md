@@ -591,11 +591,42 @@ producer re-navigate? Check the live count before deciding.
    gate stays unrecordable either way, and there is a test for exactly that.
 
    18 new tests (635 total).
-5. **The accordion panel + the Settings checkbox.** §7 and §7A, on top of a
-   backend that already answers "where am I, what is complete, what is
-   reachable". The checkbox ships WITH the accordion, not after it — §8.2 and
-   §8.3 both resolve to "the producer uses free navigation", so the accordion
-   is incomplete without it.
+5. ✅ **The accordion panel + the Settings checkbox — DONE 2026-08-03.**
+
+   `InterviewAccordion`, `GateStep`, `useInterviewFlow`, and `RecordPanel`
+   rebuilt around them; the linear Next/Previous flow is gone. Runs on v1
+   today (5 categories, no gates) and gets richer at cutover with no further
+   change.
+
+   - **No Next button.** Finishing a recording refetches the flow, and the
+     server's recomputed position IS the advance — the panel cannot disagree
+     with the backend about where the producer is.
+   - **Back only**, and it moves what is being *viewed*, never a cursor —
+     there is no cursor. Forward jumps are neither offered nor accepted.
+   - **Unreached categories have no click handler at all**, rather than a
+     disabled-looking one that still responds.
+   - **Only the open category lists its steps.** Showing all of them would put
+     129 questions on screen, which is the running total the per-category rule
+     exists to avoid.
+   - **Gate options render from the data**, one control each. No yes/no pair
+     appears anywhere in the components, so the 3-way status question and a
+     future 4-way one need no code change.
+
+   **§8.4 as decided — option (c).** No counter at all until the category is
+   settled; `progressLabel` returns null and nothing renders. Once settled it
+   reads `שלב N מתוך M` for a gate step and `שאלה N מתוך M` for a content
+   question, so a yes/no screening prompt is not called a "question".
+
+   **Settings checkbox** mirrors the existing chat-mode control exactly (same
+   `updateProfile` path, same guest guard). Its copy says what free navigation
+   does *not* do — screening questions still apply — because "unlock
+   everything" is the natural but wrong reading, and the server refuses a
+   question behind an unanswered gate either way.
+
+   `RawSegmentResponse` gained `question_id` so takes group by the stable id
+   rather than the positional index.
+
+   635 tests pass; `tsc`, `eslint` and `next build` clean.
 6. **Cutover + verification.** Replace `interview_questions.json`, confirm all
    16 existing recordings still resolve to a category and the timeline
    grouping is unchanged.

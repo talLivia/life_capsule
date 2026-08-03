@@ -24,6 +24,9 @@ class UserUpdate(BaseModel):
     # CHAT_MODES in app/api/v1/users.py rather than a Literal here, so the
     # 400 response can name the invalid value explicitly.
     chat_mode: Optional[str] = None
+    # Unlocks /record's accordion so any category can be opened out of order.
+    # See docs/INTERVIEW_RESTRUCTURE.md §7A.
+    free_navigation: Optional[bool] = None
 
 
 class UserResponse(UserBase):
@@ -33,6 +36,7 @@ class UserResponse(UserBase):
     recording_language: str
     producer_id: Optional[str] = None
     chat_mode: str
+    free_navigation: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -233,6 +237,10 @@ class RawSegmentResponse(BaseModel):
     interview_session_id: str
     question_asked: str
     question_index: int
+    # The stable question id (migration 0013). The accordion groups takes by
+    # THIS, not by question_index, which is positional and moves when the
+    # question set is edited. Nullable for uploads outside the guided set.
+    question_id: Optional[str] = None
     video_url: Optional[str] = None
     video_key: Optional[str] = None
     transcript: Optional[str] = None

@@ -284,6 +284,12 @@ async def update_current_user(
                 )
             user.chat_mode = update_data.chat_mode
 
+        # A plain boolean with no vocabulary to validate — unlike chat_mode,
+        # there is nothing here a client could get wrong beyond the type,
+        # which pydantic already rejects.
+        if update_data.free_navigation is not None:
+            user.free_navigation = update_data.free_navigation
+
         await db.commit()
         await db.refresh(user)
 
