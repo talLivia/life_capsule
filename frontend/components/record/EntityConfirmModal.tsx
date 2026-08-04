@@ -61,7 +61,14 @@ function countQuestions(
 export function EntityConfirmModal({
   refreshKey = 0,
   onResolved,
+  openedFromBell = false,
+  onClose,
 }: {
+  /** Opened deliberately from the bell rather than by its own poll. It then
+   *  renders even with nothing outstanding, because a producer who clicked it
+   *  is owed an answer either way. */
+  openedFromBell?: boolean
+  onClose?: () => void
   /** Bumped when the extraction screen hands over, so the questions appear at
    *  once instead of on the next background poll — several seconds of nothing
    *  on screen otherwise. */
@@ -270,7 +277,21 @@ export function EntityConfirmModal({
     }
   }
 
-  if (!pending || questionCount === 0) return null
+  if (!pending || questionCount === 0) {
+    if (!openedFromBell) return null
+    return (
+      <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4 animate-fade-in">
+        <div className="w-full max-w-md glass-card p-6 flex flex-col items-center gap-3 text-center">
+          <Check size={22} className="text-primary-400" />
+          <h2 className="text-lg font-bold text-white">Nothing to check</h2>
+          <p className="text-sm text-gray-400">
+            Every question about your recordings has been answered.
+          </p>
+          <button onClick={onClose} className="btn-primary mt-1">Close</button>
+        </div>
+      </div>
+    )
+  }
 
   const optionClass = (selected: boolean) =>
     `flex items-start gap-3 w-full text-left px-4 py-3 rounded-xl border transition-all duration-150 ${

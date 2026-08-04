@@ -2,6 +2,7 @@ import './globals.css'
 import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import { Toaster } from 'react-hot-toast'
+import { PendingConfirmationsProvider } from '@/components/providers/PendingConfirmationsProvider'
 import { QueryProvider } from '@/components/providers/QueryProvider'
 import { StoreHydration } from '@/components/providers/StoreHydration'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
@@ -97,6 +98,7 @@ export default function RootLayout({
         </a>
         <StoreHydration />
         <QueryProvider>
+        <PendingConfirmationsProvider>
           <ErrorBoundary>
             <div id="main-content">{children}</div>
           </ErrorBoundary>
@@ -106,6 +108,7 @@ export default function RootLayout({
               className: 'dark:bg-gray-800 dark:text-gray-100',
             }}
           />
+        </PendingConfirmationsProvider>
         </QueryProvider>
       </body>
     </html>

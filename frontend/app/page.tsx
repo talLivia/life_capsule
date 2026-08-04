@@ -8,6 +8,8 @@ import { AvatarList } from '@/components/AvatarList'
 import { ConnectionStatus } from '@/components/ui/ConnectionStatus'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
 import { AuthModal } from '@/components/AuthModal'
+import { NotificationBell } from '@/components/NotificationBell'
+import { EntityConfirmModal } from '@/components/record/EntityConfirmModal'
 import { api } from '@/lib/api'
 import { toast } from 'react-hot-toast'
 import { useStore } from '@/store/useStore'
@@ -252,6 +254,9 @@ export default function Home() {
   // modes the story clips carry the producer's real face/voice, so hide those
   // tabs entirely (the avatar is auto-resolved under the hood — see below).
   const isProducerUser = user?.role === 'producer'
+  // Opened from the bell. RecordPanel still mounts its own auto-opening copy
+  // until the popup is removed in phase 3 of docs/GUIDED_INTERVIEW.md.
+  const [questionsOpen, setQuestionsOpen] = useState(false)
   const navItems: { id: View; icon: typeof Sparkles; label: string; disabled?: boolean }[] = [
     { id: 'home', icon: Sparkles, label: 'Home' },
     // Recording lives inside the shell now (was the /record route). Producer-only.
@@ -322,6 +327,7 @@ export default function Home() {
           <div className="flex items-center gap-3">
             {/* "Record" now lives in the nav bar (left) as an in-shell view. */}
             <ConnectionStatus />
+            {isProducerUser && <NotificationBell onOpen={() => setQuestionsOpen(true)} />}
             <ThemeToggle />
             {user && (
               <div className="flex items-center gap-2">
@@ -340,6 +346,10 @@ export default function Home() {
         {/* nav glass blur border */}
         <div className="absolute inset-0 -z-10 bg-surface-900/70 backdrop-blur-xl border-b border-white/6" />
       </nav>
+
+      {questionsOpen && (
+        <EntityConfirmModal openedFromBell onClose={() => setQuestionsOpen(false)} />
+      )}
 
       <main className="pt-16">
         {/* ── HOME VIEW ── */}

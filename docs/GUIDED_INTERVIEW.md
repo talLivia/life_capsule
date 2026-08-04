@@ -500,18 +500,20 @@ no way to answer anything.
 | **5** | Nudge on leaving `/record` with pending questions | — | View-change hook |
 | **6** | `/record` UI: collapsible panel, takes accordion, progress bar, explainer | `interview_flow` | UI |
 | **7** | Read aloud + record disabled while playing | `tts.py` | Playback, cache |
-| **8** | Pause / Resume | — | UI state |
+
+
+Phase 8 (Pause) was dropped — see 16.A.
 
 Phases 1–5 are the behavioural change and are independently useful — they close
 the existing gap where dismissing the popup loses its questions permanently.
-Phases 6–8 are presentation and can land in any order.
+Phases 6–7 are presentation and can land in any order.
 
 ## 16. Open decisions
 
 | # | Decision | Recommendation |
 | --- | --- | --- |
 | 6.A | Progress over all 129 questions, or over reachable ones? | Reachable, recomputed as gates are answered — 129 is discouraging and wrong once gates rule some out |
-| 16.A | **What does Pause actually do now?** With capture manual and no timer running, nothing is in flight to pause. It becomes a soft lock — a visible "nothing is listening" reassurance — rather than a functional control. Worth keeping? | Keep, but as an explicit "not recording" state rather than implying something was suspended |
+| 16.A | Pause | **RESOLVED 2026-08-04 — DROPPED.** It existed to interrupt an automatic flow and there is no automatic flow. A button that suspends nothing is another control to explain. If a visible "nothing is listening" state is wanted later, that is a label, not a button. Phase 8 is removed from the build order. |
 | 16.B | Does the nudge fire on leaving `/record` only, or on any navigation with pending questions? | `/record` only at first; anywhere risks becoming wallpaper |
-| 16.C | Should the bell auto-open once, the first time questions ever appear, so the mechanism is discovered? | Yes — once per producer, never again |
+| 16.C | Bell auto-open | **RESOLVED 2026-08-04 — YES, once per producer, never again.** Otherwise nobody discovers the mechanism exists. Persisted client-side; a flag that resets on a new device costs one extra open, which is harmless. |
 | 16.D | Read-aloud: pre-generate all 129 per language, or synthesise on demand and cache? | Pre-generate — one cost, no latency, and it fails loudly at build time rather than quietly for a storyteller |
