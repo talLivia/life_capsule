@@ -1,6 +1,18 @@
 # The Interview — guided hands-free recording
 
-**Plan written 2026-08-04. Nothing built.**
+> ## ⚠️ Part One is SUPERSEDED (2026-08-04)
+>
+> The separate interview screen was dropped before any of it was built. The
+> same experience is being folded into `/record` instead — **see PART TWO at
+> the end of this file, which is the live plan.**
+>
+> Part One is kept because its reasoning is still load-bearing: the bell
+> design, the poll-versus-WebSocket call, the evidence-phrase requirement and
+> the hard constraint all carry forward. Its CAPTURE design does not, and §11
+> lists exactly what dissolved and why.
+
+
+**Part One written 2026-08-04. Nothing built. Superseded the same day.**
 
 A NEW screen alongside `/record`, not a replacement. `/record` keeps every
 behaviour it has today — browsing questions, recording, uploading, deleting,
@@ -351,3 +363,155 @@ all.
 | 4.C | **Gates: voice, button, or skip gated categories?** | Button — the one two-button moment |
 | 5.A | Leaving mid-recording: upload the partial answer or discard it? | Upload; a truncated answer beats none |
 | 6.A | Progress percentage over all 129, or over reachable questions? | Reachable, recomputed as gates are answered |
+
+---
+
+# PART TWO — folded into `/record` (2026-08-04, SUPERSEDES Part One)
+
+The separate screen is dropped. The same guided experience is built into
+`/record`, which already exists.
+
+## 10. Why
+
+A second capture surface means every future question class gets built twice.
+That is precisely the duplication that produced the silent bugs of 2026-08-03:
+a router that never learned about three question classes, a client render guard
+that counted only two, a payload shape that crashed a screen it had outgrown.
+Each was a second place that had to be updated and was not.
+
+And almost none of the guided experience actually required a new screen. What
+made it feel like one was a set of UI properties — one question at a time, a
+sense of progress, the question read aloud, nothing interrupting — and every
+one of those is reachable by changing the screen that already exists.
+
+**Part One is kept as history**, not deleted. Its analysis of the bell, the
+poll-versus-WebSocket call, the evidence-phrase requirement and the hard
+constraint all carry forward unchanged. Its capture design does not.
+
+## 11. What dissolves — and it is most of Part One
+
+Manual capture on an existing screen removes the hard parts wholesale.
+
+| Part One | Status now | Why |
+| --- | --- | --- |
+| §2 Silence timer, 7s blink, 30s auto-advance, RMS detector | **Gone** | The storyteller presses record and stop, as today. Nothing runs on a timer, so nothing has to decide when they finished. |
+| §2.3 TTS audio inside the recording | **Gone, and better** | Read-aloud is only offered BEFORE recording and disables the record button while it plays. The guarantee is now structural — enforced by control state, not by getting a sequence right. Stronger than Part One's recommendation. |
+| §2.4 Silent segment becoming an answer | **Gone** | No auto-advance, and `/record` still has its review step. |
+| §3.4 Popup and bell both firing | **Gone** | The popup is removed. Everything goes to the bell, so there is nothing to tell apart. |
+| §4 Resume point, `last_presented_question_id` | **Gone** | `interview_flow` already derives position with no stored cursor. The progress bar reads the same derived state. |
+| §4.4 Gates | **Gone** | `/record` already handles gates through `GateStep`. No new interaction. |
+| Origin marker column | **Gone** | It existed to power the resume point and split popup from bell. Neither survives. |
+| Session orchestrator, automatic segmentation | **Gone** | — |
+| §5 Upload concurrency, mid-recording exit, two tabs, sleep | **Gone** | These were properties of an unattended session. `/record`'s existing behaviour covers all of them. |
+
+**Consequence worth stating plainly: there is no migration.** Part One opened
+with two new columns; this needs none. Nothing in the schema changes, and
+nothing in ingestion, extraction, the six question classes or any write path
+changes either.
+
+## 12. What carries forward unchanged
+
+- **§3.1–3.3 The bell** — its purpose, the promote-the-existing-poll call over
+  a WebSocket, one poller for the whole app, faster while a segment is in
+  flight.
+- **The evidence phrase**, and it is now *load-bearing rather than nice to
+  have*. With the popup gone, nobody answers while the recording is fresh —
+  every answer happens later, with less context. "You said: 'my uncles are
+  אמנון and קובי'" is the only thing carrying that context.
+- **§5 The deleted-recording case** — `pending_confirmation` lives on the
+  segment row, so deleting a recording removes its questions. The badge must be
+  derived from a live query, never cached, or it counts things that no longer
+  exist.
+- **§7 The hard constraint**, verbatim.
+- **§6.5 Hebrew TTS quality** — still worth checking early, but the stakes drop:
+  if it is poor you lose one optional button, not the feature.
+- **§6.7 Progress percentage** — still an open decision (6.A).
+
+## 13. What is new
+
+### 13.1 `/record` UI
+
+| Change | Note |
+| --- | --- |
+| **Collapsible question panel** | Slides right and disappears, leaving a single-question view. Expanding restores it. The panel already has its own scroll container. |
+| **Takes as an accordion** | One video area; further takes listed below as collapsed rows that expand into the player. With one take, no list at all. |
+| **Progress bar** | Percentage through the questionnaire, at the top. |
+| **Read question aloud** | TTS, available only before recording starts; disables record while playing. |
+| **Pause / Resume** | Toggle; record greys out while paused. |
+| **Persistent explainer** | Always-visible summary of what each control does. |
+
+### 13.2 The bell
+
+As Part One §3, minus the origin filter. A top-bar component on every screen,
+count badge, full-screen list, answerable one at a time, persisting across
+navigation.
+
+### 13.3 Second entry point
+
+A **Show questions** button inside the extraction panel when that recording has
+pending questions. The extraction payload already carries
+`awaiting_confirmation`, so this needs no new field.
+
+### 13.4 The nudge
+
+Non-blocking, never a modal: on leaving the recording screen with pending
+questions, or after a long session — *"20 questions are waiting for you."*
+
+## 14. The risk in this change, and where it actually lives
+
+**Removing the popup is the substantive change here, not the UI work.** You have
+already named the behavioural risk — people never answer — and the nudge is the
+mitigation.
+
+The implementation risk is elsewhere, and it is not in your list:
+
+**The extraction screen was built to hand off to the popup.** That machinery is
+live and interlocking: `ExtractionModal` locks itself while work is in flight
+and unlocks only by handing off (`onNeedsConfirmation`) or by confirming there
+is nothing to ask; `RecordPanel` owns the sequence through `reviewingSegmentId`
+and `confirmNudge`; `EntityConfirmModal` signals back through `onResolved` so
+the extraction screen can reopen and show what was finally captured.
+
+Remove the popup naively and **the extraction screen sits locked forever**,
+waiting for a handoff that never comes. That is the single thing most likely to
+go wrong.
+
+The correct unwind: when a segment reaches `awaiting_confirmation`, the
+extraction screen closes itself and the bell takes over — the same terminal
+state it already has for "nothing to ask", reached by a different route. The
+lock, the timeout escape and the failure escape all stay.
+
+**Second-order:** `EntityConfirmModal` currently polls globally and opens
+itself. It becomes a rendered-on-demand list with no auto-open. Its polling
+moves to the shared provider; its question SECTIONS are reused as-is, which is
+what keeps the hard constraint honest.
+
+## 15. Build order
+
+The bell must exist **before** the popup is removed, or there is a window with
+no way to answer anything.
+
+| Phase | Work | Reused | New |
+| --- | --- | --- | --- |
+| **1** | Shared pending-confirmations provider: one poller, count, list, faster while in flight | Endpoint, poll logic | Provider |
+| **2** | Bell in the top bar + full-screen list reusing `EntityConfirmModal`'s sections | Sections, answer contract | Badge, shell |
+| **3** | Remove the popup's auto-open; unwind the extraction handoff per §14 | — | Careful deletion |
+| **4** | **Show questions** in the extraction panel | `awaiting_confirmation` | Button |
+| **5** | Nudge on leaving `/record` with pending questions | — | View-change hook |
+| **6** | `/record` UI: collapsible panel, takes accordion, progress bar, explainer | `interview_flow` | UI |
+| **7** | Read aloud + record disabled while playing | `tts.py` | Playback, cache |
+| **8** | Pause / Resume | — | UI state |
+
+Phases 1–5 are the behavioural change and are independently useful — they close
+the existing gap where dismissing the popup loses its questions permanently.
+Phases 6–8 are presentation and can land in any order.
+
+## 16. Open decisions
+
+| # | Decision | Recommendation |
+| --- | --- | --- |
+| 6.A | Progress over all 129 questions, or over reachable ones? | Reachable, recomputed as gates are answered — 129 is discouraging and wrong once gates rule some out |
+| 16.A | **What does Pause actually do now?** With capture manual and no timer running, nothing is in flight to pause. It becomes a soft lock — a visible "nothing is listening" reassurance — rather than a functional control. Worth keeping? | Keep, but as an explicit "not recording" state rather than implying something was suspended |
+| 16.B | Does the nudge fire on leaving `/record` only, or on any navigation with pending questions? | `/record` only at first; anywhere risks becoming wallpaper |
+| 16.C | Should the bell auto-open once, the first time questions ever appear, so the mechanism is discovered? | Yes — once per producer, never again |
+| 16.D | Read-aloud: pre-generate all 129 per language, or synthesise on demand and cache? | Pre-generate — one cost, no latency, and it fails loudly at build time rather than quietly for a storyteller |
