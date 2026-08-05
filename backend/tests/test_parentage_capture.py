@@ -958,3 +958,112 @@ async def test_deleting_the_recording_reopens_the_side_question(db_session, fami
     )
     assert cleared["side"] == 1
     assert uncle.side_asked_at is None
+
+
+# ── Correcting a WRONG proposed relation ─────────────────────────────────────
+#
+# The gap these cover, found in live testing: the screen can confirm a proposed
+# relation or ignore it, and there is no way to say "that relation is wrong,
+# here is the right one". A producer who improvises the correction — declining
+# "בני is my brother" and using the parentage question's "someone else" field
+# to say בני is ניר's child — had the answer accepted by the UI and then
+# silently dropped.
+
+
+async def test_parentage_survives_declining_the_sibling_proposal(monkeypatch):
+    """An EXPLICIT parentage answer must not be thrown away because the
+    sibling proposal it corrects was declined.
+
+    This is the whole point of declining it. "בני is not my brother, he is
+    ניר's child" is one statement, and the producer expresses it in two
+    controls: untick the sibling, then name the real parent. Reading the second
+    only when the first was ACCEPTED makes the pair unusable — and worse,
+    silently, because the UI accepts the answer and reports success.
+    """
+    import app.analysis_graph as ag
+
+    answer = {
+        "identity": {},
+        "types": {},
+        # The proposal is declined: בני is not the producer's brother.
+        "relations": {},
+        "years": {},
+        "sides": {},
+        "name_edits": {},
+        # ...but they said whose child he IS.
+        "parentage": {"בני": {"parent_names": [], "new_parent_name": "ניר"}},
+    }
+    monkeypatch.setattr(ag, "interrupt", lambda _payload: answer)
+
+    state = {
+        "segment_id": "seg-1",
+        "names_to_check": [],
+        "extracted_entities": [
+            {"name": "בני", "type": "person", "alternative_type": None, "summary": "s"},
+        ],
+        "proposed_relations": [
+            {
+                "from_name": "בני",
+                "to_name": ag.entity_extraction.SELF,
+                "relation_type": "sibling",
+                "index": 0,
+            }
+        ],
+        "parentage": {
+            "siblings": [{"name": "בני"}],
+            "parents": [{"name": "אילנה"}, {"name": "צבי"}],
+            "known_people": [{"name": "ניר"}],
+        },
+    }
+
+    result = await ag.human_confirm_node(state)
+
+    assert result["proposed_relations"] == [], "the declined sibling is not stored"
+    assert "בני" in result["parentage"]["asked_names"], (
+        "an explicitly answered parentage question must reach write_parentage "
+        "even when the sibling proposal it corrects was declined"
+    )
+    assert result["parentage"]["answers"]["בני"]["new_parent_name"] == "ניר"
+
+
+async def test_declining_a_sibling_without_answering_still_writes_nothing(monkeypatch):
+    """The guard's original purpose, which must survive the fix.
+
+    Declining "ניר is my brother" and leaving the grouped parentage question
+    alone must not record ניר's parents anyway. Silence is still silence — it
+    is only an explicit answer that now carries through.
+    """
+    import app.analysis_graph as ag
+
+    monkeypatch.setattr(
+        ag,
+        "interrupt",
+        lambda _payload: {
+            "identity": {}, "types": {}, "relations": {}, "years": {},
+            "sides": {}, "name_edits": {}, "parentage": {},
+        },
+    )
+
+    state = {
+        "segment_id": "seg-2",
+        "names_to_check": [],
+        "extracted_entities": [
+            {"name": "ניר", "type": "person", "alternative_type": None, "summary": "s"},
+        ],
+        "proposed_relations": [
+            {
+                "from_name": "ניר",
+                "to_name": ag.entity_extraction.SELF,
+                "relation_type": "sibling",
+                "index": 0,
+            }
+        ],
+        "parentage": {
+            "siblings": [{"name": "ניר"}],
+            "parents": [{"name": "אילנה"}, {"name": "צבי"}],
+            "known_people": [],
+        },
+    }
+
+    result = await ag.human_confirm_node(state)
+    assert result["parentage"]["asked_names"] == []

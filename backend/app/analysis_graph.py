@@ -1171,11 +1171,32 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         if r.get("relation_type") == entity_store.SIBLING_RELATION
         and entity_extraction.SELF in (r.get("from_name"), r.get("to_name"))
     }
+
+    def _answered_parentage(name: str) -> bool:
+        """Did the producer say something specific about this person?
+
+        The acceptance rule above is right about SILENCE and wrong about an
+        explicit answer, which is how a real correction was silently thrown
+        away: told "בני is your brother — and is he אילנה and צבי's child?",
+        a producer whose בני is actually a NEPHEW declines the sibling and
+        names the real parent through "someone else". That is one statement
+        made with two controls, and reading the second only when the first was
+        accepted discards it — while the UI reports success.
+
+        So an explicit answer carries through on its own. Silence still does
+        not: leaving the grouped question alone after declining the sibling
+        writes nothing, which is what the guard was for.
+        """
+        given = parentage_answers.get(name) or {}
+        return bool(given.get("parent_names") or (given.get("new_parent_name") or "").strip())
+
     asked_parentage = [
         sibling["name"]
         for question in pending_parentage
         for sibling in question["siblings"]
-        if sibling.get("recorded") or sibling["name"] in accepted_sibling_names
+        if sibling.get("recorded")
+        or sibling["name"] in accepted_sibling_names
+        or _answered_parentage(sibling["name"])
     ]
 
     return {
