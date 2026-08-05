@@ -223,6 +223,95 @@ export function EntityConfirmModal({
   // absent rather than offering a dropdown that would be refused on submit.
   const canCorrect = correctionTypes.length > 0
 
+  /**
+   * ONE CARD PER PERSON, carrying everything asked about them.
+   *
+   * The screen used to be seven blocks in payload order — identity, then
+   * type, then relations, then names, then parentage, then sides, then years
+   * — so resolving one person meant scrolling between five of them and
+   * remembering which row you were on. Five of the seven were already keyed by
+   * entity name and only rendered apart.
+   *
+   * The spine is every name mentioned by anything on this screen, not just
+   * `editable_entities`: a parentage or side question can be about somebody
+   * from an EARLIER recording, who has no entry there at all. Their card still
+   * has to exist, just without a name field — this screen edits what the
+   * extractor produced, and an archive person was not produced here.
+   *
+   * A relation anchors to the end that ISN'T the producer, and to `from_name`
+   * when neither is, so it appears exactly once rather than on both cards. The
+   * anchor comes from the ORIGINAL proposal, so correcting an endpoint cannot
+   * make the card jump to a different person mid-edit.
+   */
+  const groups = useMemo(() => {
+    const order: string[] = []
+    const seen = new Set<string>()
+    const add = (name?: string | null) => {
+      if (!name || name === SELF || seen.has(name)) return
+      seen.add(name)
+      order.push(name)
+    }
+
+    // Extraction order first — it is the order the recording named people in,
+    // which is the order the producer told the story.
+    editableEntities.forEach(e => add(e.name))
+    identityQuestions.forEach(q => add(q.name))
+    typeQuestions.forEach(q => add(q.name))
+    yearQuestions.forEach(q => add(q.name))
+    relationQuestions.forEach(q =>
+      add(q.to_name === SELF ? q.from_name : q.to_name),
+    )
+    parentageQuestions.forEach(g => (g.siblings ?? []).forEach(s => add(s.name)))
+    sideQuestions.forEach(g => (g.relatives ?? []).forEach(r => add(r.name)))
+
+    const editableByName = new Map(editableEntities.map(e => [e.name, e]))
+
+    return order.map(name => {
+      const relations = relationQuestions.filter(
+        q => (q.to_name === SELF ? q.from_name : q.to_name) === name,
+      )
+      // A sibling only gets the parent picker when the SAME screen is asking
+      // about their parentage — the grouped question decides who that is.
+      const parentageGroup =
+        parentageQuestions.find(g =>
+          (g.siblings ?? []).some(s => s.name === name),
+        ) ?? null
+      const sideGroup =
+        sideQuestions.find(g => (g.relatives ?? []).some(r => r.name === name)) ?? null
+
+      return {
+        name,
+        entity: editableByName.get(name) ?? null,
+        identity: identityQuestions.find(q => q.name === name) ?? null,
+        type: typeQuestions.find(q => q.name === name) ?? null,
+        year: yearQuestions.find(q => q.name === name) ?? null,
+        relations,
+        parentageGroup,
+        sideGroup,
+      }
+    })
+  }, [
+    editableEntities,
+    identityQuestions,
+    typeQuestions,
+    yearQuestions,
+    relationQuestions,
+    parentageQuestions,
+    sideQuestions,
+  ])
+
+  /** Cards that actually ask something, and the rest.
+   *
+   *  A name field alone is not a question — it is there in case the extractor
+   *  misheard. Giving those a full card each turns an eight-person recording
+   *  into eight cards when two of them ask anything, and makes the screen
+   *  far longer than the "N things to check" heading promises. They keep the
+   *  compact strip they already had. */
+  const asking = groups.filter(
+    g => g.identity || g.type || g.year || g.relations.length > 0 || g.parentageGroup || g.sideGroup,
+  )
+  const nameOnly = groups.filter(g => !asking.includes(g) && g.entity)
+
   // The server rejects a partial submit of identity/type, so the button must
   // not offer one. Relations are deliberately NOT counted here: they are
   // skippable, and including them would make the button demand answers the
@@ -401,337 +490,473 @@ export function EntityConfirmModal({
           </button>
         </div>
 
-        {identityQuestions.map((q) => (
-          <fieldset key={`id-${q.name}`} className="flex flex-col gap-2">
-            <legend className="text-sm text-white leading-relaxed mb-1">{q.question}</legend>
-            {q.candidates.map((c) => (
-              <button
-                key={c.uuid}
-                type="button"
-                onClick={() => setIdentity((s) => ({ ...s, [q.name]: c.uuid }))}
-                disabled={answering}
-                className={optionClass(identity[q.name] === c.uuid)}
-              >
-                {radio(identity[q.name] === c.uuid)}
-                <span>
-                  <span className="block text-sm font-medium text-white">{c.name}</span>
-                  {c.summary && (
-                    <span className="block text-xs text-gray-400 mt-0.5">{c.summary}</span>
-                  )}
-                </span>
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => setIdentity((s) => ({ ...s, [q.name]: NEW_ENTITY }))}
-              disabled={answering}
-              className={optionClass(identity[q.name] === NEW_ENTITY)}
+        {asking.map((group) => {
+          const entity = group.entity
+          const nameValue = nameEdits[group.name] ?? group.name
+          const nameChanged = nameValue.trim() !== group.name
+          const parents = group.parentageGroup?.parents ?? []
+          const shared = parentage[group.name] ?? []
+          const typedParent = (newParent[group.name] ?? '').trim()
+          const sideParents = group.sideGroup?.parents ?? []
+
+          return (
+            <section
+              key={`person-${group.name}`}
+              className="flex flex-col gap-3 p-4 rounded-xl border border-white/10 bg-surface-800/40"
             >
-              {radio(identity[q.name] === NEW_ENTITY)}
-              <span className="flex items-center gap-1.5 text-sm font-medium text-white">
-                <UserPlus size={14} />
-                {q.candidates.length === 1 ? 'No, someone different' : 'Someone new, not listed'}
-              </span>
-            </button>
-          </fieldset>
-        ))}
-
-        {typeQuestions.map((q) => (
-          <fieldset key={`type-${q.name}`} className="flex flex-col gap-2">
-            <legend className="text-sm text-white leading-relaxed mb-1">{q.question}</legend>
-            <div className="flex gap-2">
-              {[q.type, q.alternative_type].map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setTypes((s) => ({ ...s, [q.name]: option }))}
-                  disabled={answering}
-                  className={`${optionClass(types[q.name] === option)} flex-1 items-center`}
-                >
-                  {radio(types[q.name] === option)}
-                  <span className="text-sm font-medium text-white capitalize">{option}</span>
-                </button>
-              ))}
-            </div>
-          </fieldset>
-        ))}
-
-        {relationQuestions.length > 0 && (
-          <fieldset className="flex flex-col gap-2 pt-1 border-t border-white/10">
-            {/* Visually separated because it is a DIFFERENT KIND of question:
-                everything above must be answered, this may be skipped. Saying
-                so beats leaving the producer to infer it from the button
-                staying enabled. */}
-            <legend className="flex items-center justify-between gap-3 w-full text-sm text-white leading-relaxed mb-1">
-              <span>Did we get these relationships right? — optional</span>
-              {relationQuestions.length > 1 && (
-                // The common case is "all of them", and making that eight
-                // clicks is how a screen gets skipped wholesale.
-                <button
-                  type="button"
-                  disabled={answering}
-                  onClick={() =>
-                    setRelations(current => {
-                      const allAccepted = relationQuestions.every(q => current[q.index])
-                      const next: Record<number, boolean> = { ...current }
-                      for (const q of relationQuestions) next[q.index] = !allAccepted
-                      return next
-                    })
-                  }
-                  className="text-xs text-primary-300 hover:text-primary-200 shrink-0"
-                >
-                  {relationQuestions.every(q => relations[q.index])
-                    ? 'Clear all'
-                    : 'Yes to all'}
-                </button>
-              )}
-            </legend>
-            <p className="text-xs text-gray-400 -mt-1 mb-1">
-              Tick the ones that are right. Anything you leave alone is simply not saved.
-            </p>
-            {relationQuestions.map((q) => (
-              <div key={`rel-${q.index}`} className="flex flex-col gap-1.5">
-              <button
-                type="button"
-                onClick={() =>
-                  setRelations((s) => ({ ...s, [q.index]: !s[q.index] }))
-                }
-                // A corrected proposal is already accepted; ticking it as
-                // well would say nothing more, and unticking it could not
-                // take the correction back.
-                disabled={answering || Boolean(relationEdits[q.index])}
-                className={optionClass(
-                  Boolean(relations[q.index]) || Boolean(relationEdits[q.index]),
-                )}
-              >
-                {radio(Boolean(relations[q.index]) || Boolean(relationEdits[q.index]))}
-                <span className="flex flex-col gap-0.5 text-left">
-                  <span className="text-sm font-medium text-white">
-                    <span dir="auto">{q.from_name === '__SELF__' ? 'You' : q.from_name}</span>
-                    {' is the '}
-                    {q.relation_type.replace(/_/g, ' ')}
-                    {' of '}
-                    <span dir="auto">{q.to_name === '__SELF__' ? 'you' : q.to_name}</span>
-                  </span>
-                  {q.evidence && (
-                    <span dir="auto" className="text-xs text-gray-400">
-                      &ldquo;{q.evidence}&rdquo;
-                    </span>
-                  )}
-                </span>
-              </button>
-                {/* The way to say the proposal is WRONG, as opposed to
-                    declining it — which only ever meant "don't store this",
-                    leaving the real relation uncaptured. Opening it IS the
-                    acceptance: a corrected relation is stored without also
-                    needing its tick, because correcting one is saying it
-                    should exist in the corrected form. */}
-                {canCorrect && !relationEdits[q.index] && (
-                  <button
-                    type="button"
-                    disabled={answering}
-                    onClick={() =>
-                      setRelationEdits(current => ({
-                        ...current,
-                        // Defaults to the proposal, so a correction that
-                        // changes only the TYPE needs one control touched.
-                        [q.index]: {
-                          relation_type: q.relation_type,
-                          from_name: q.from_name,
-                          to_name: q.to_name,
-                        },
-                      }))
-                    }
-                    className="self-start text-xs text-primary-300 hover:text-primary-200 pl-1"
-                  >
-                    Not quite — fix this
-                  </button>
-                )}
-
-                {relationEdits[q.index] && (
-                  <div className="flex flex-col gap-2 px-4 py-3 rounded-xl border border-primary-500/30 bg-primary-500/5">
-                    <div className="flex flex-wrap items-center gap-2 text-sm text-white">
-                      {/* Both ends are selectable: a proposal can be wrong
-                          about a relation between two OTHER people, and
-                          correcting only one end cannot express that. */}
-                      <PersonSelect
-                        value={relationEdits[q.index].from_name}
-                        people={correctionPeople}
-                        disabled={answering}
-                        label={`Who, in relation ${q.index + 1}`}
-                        onChange={name =>
-                          setRelationEdits(current => ({
-                            ...current,
-                            [q.index]: { ...current[q.index], from_name: name },
-                          }))
-                        }
-                      />
-                      <span className="text-gray-400">is the</span>
-                      <select
-                        value={relationEdits[q.index].relation_type}
-                        disabled={answering}
-                        aria-label={`Relation ${q.index + 1}`}
-                        onChange={e =>
-                          setRelationEdits(current => ({
-                            ...current,
-                            [q.index]: {
-                              ...current[q.index],
-                              relation_type: e.target.value,
-                            },
-                          }))
-                        }
-                        className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white"
-                      >
-                        {/* Straight from the relation_types table, so adding
-                            a type is a data change and an invented one cannot
-                            be picked at all. */}
-                        {correctionTypes.map(option => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="text-gray-400">of</span>
-                      <PersonSelect
-                        value={relationEdits[q.index].to_name}
-                        people={correctionPeople}
-                        disabled={answering}
-                        label={`Of whom, in relation ${q.index + 1}`}
-                        onChange={name =>
-                          setRelationEdits(current => ({
-                            ...current,
-                            [q.index]: { ...current[q.index], to_name: name },
-                          }))
-                        }
-                      />
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        disabled={answering}
-                        onClick={() =>
-                          setRelationEdits(current => {
-                            const next = { ...current }
-                            delete next[q.index]
-                            return next
-                          })
-                        }
-                        className="text-xs text-gray-400 hover:text-white"
-                      >
-                        Cancel this fix
-                      </button>
-                      {relationEdits[q.index].from_name ===
-                        relationEdits[q.index].to_name && (
-                        <span className="text-xs text-amber-300">
-                          Pick two different people.
-                        </span>
-                      )}
-                    </div>
-                  </div>
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <h3 dir="auto" className="text-sm font-semibold text-white">
+                  {group.name}
+                </h3>
+                {entity?.type && (
+                  <span className="text-[11px] text-gray-500">{entity.type}</span>
                 )}
               </div>
-            ))}
-          </fieldset>
-        )}
 
-        {/* Every name this recording produced, editable.
-            NOT a question and never the reason this screen appears — it sits
-            at the top because it is the one thing here that can be wrong
-            without anything having asked. The extractor said "ליאן" for
-            "אליאן" with complete confidence: a brand-new name has nothing
-            similar to disambiguate against, so no identity question was
-            raised and there was no way to say it was wrong. */}
-        {editableEntities.length > 0 && (
-          <fieldset className="flex flex-col gap-2 pt-1 border-t border-white/10">
-            <legend className="text-sm text-white leading-relaxed mb-1">
-              Did we get these names right?
-            </legend>
-            <p className="text-xs text-gray-400 -mt-1 mb-1">
-              Fix any that were misheard. Leave the rest alone.
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {editableEntities.map((entity) => {
-                const value = nameEdits[entity.name] ?? entity.name
-                const changed = value.trim() !== entity.name
-                return (
-                  <div key={`edit-${entity.name}`} className="flex flex-col gap-0.5">
-                    <input
-                      type="text"
-                      dir="auto"
-                      value={value}
-                      onChange={(e) =>
-                        setNameEdits((s) => ({ ...s, [entity.name]: e.target.value }))
-                      }
+              {/* Name and year: the two plain FIELDS, side by side at the top.
+                  Neither is a question — one exists because the extractor can
+                  be confidently wrong, the other because a year is optional —
+                  so they sit above the things that must be answered. */}
+              {(entity || group.year) && (
+                <div className="flex flex-wrap items-end gap-3">
+                  {/* Only for entities THIS recording produced. Somebody pulled
+                      in from an earlier recording by the parentage question has
+                      no name field: this screen corrects what the extractor
+                      heard, and it never heard them. */}
+                  {entity && (
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[11px] text-gray-400">Name</span>
+                      <input
+                        type="text"
+                        dir="auto"
+                        value={nameValue}
+                        onChange={(e) =>
+                          setNameEdits((s) => ({ ...s, [group.name]: e.target.value }))
+                        }
+                        disabled={answering}
+                        aria-label={`Name: ${group.name}`}
+                        className={`w-40 px-3 py-1.5 rounded-lg bg-surface-800 border text-sm text-white ${
+                          nameChanged ? 'border-primary-400' : 'border-white/10'
+                        }`}
+                      />
+                      {nameChanged && (
+                        <span className="text-[10px] text-primary-300">
+                          was &ldquo;{group.name}&rdquo;
+                        </span>
+                      )}
+                    </label>
+                  )}
+                  {group.year && (
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[11px] text-gray-400">Year — optional</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={years[group.name] ?? ''}
+                        onChange={(e) =>
+                          setYears((s) => ({ ...s, [group.name]: e.target.value }))
+                        }
+                        disabled={answering}
+                        placeholder="e.g. 1973"
+                        aria-label={`Year for ${group.name}`}
+                        className="w-32 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
+
+              {/* IDENTITY. One candidate -> yes/no. Two or more -> a picker, so
+                  a bare "Moshe" matching both "Moshe Cohen" and "Moshe Levi"
+                  asks which rather than a yes/no about an arbitrary guess. */}
+              {group.identity && (
+                <fieldset className="flex flex-col gap-2">
+                  <legend className="text-sm text-white leading-relaxed mb-1">
+                    {group.identity.question}
+                  </legend>
+                  {group.identity.candidates.map((c) => (
+                    <button
+                      key={c.uuid}
+                      type="button"
+                      onClick={() => setIdentity((s) => ({ ...s, [group.name]: c.uuid }))}
                       disabled={answering}
-                      aria-label={`Name: ${entity.name}`}
-                      className={`w-36 px-3 py-1.5 rounded-lg bg-surface-800 border text-sm text-white ${
-                        changed ? 'border-primary-400' : 'border-white/10'
-                      }`}
-                    />
-                    {changed && (
-                      <span className="text-[10px] text-primary-300">
-                        was &ldquo;{entity.name}&rdquo;
+                      className={optionClass(identity[group.name] === c.uuid)}
+                    >
+                      {radio(identity[group.name] === c.uuid)}
+                      <span>
+                        <span className="block text-sm font-medium text-white">{c.name}</span>
+                        {c.summary && (
+                          <span className="block text-xs text-gray-400 mt-0.5">{c.summary}</span>
+                        )}
                       </span>
-                    )}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setIdentity((s) => ({ ...s, [group.name]: NEW_ENTITY }))}
+                    disabled={answering}
+                    className={optionClass(identity[group.name] === NEW_ENTITY)}
+                  >
+                    {radio(identity[group.name] === NEW_ENTITY)}
+                    <span className="flex items-center gap-1.5 text-sm font-medium text-white">
+                      <UserPlus size={14} />
+                      {group.identity.candidates.length === 1
+                        ? 'No, someone different'
+                        : 'Someone new, not listed'}
+                    </span>
+                  </button>
+                </fieldset>
+              )}
+
+              {/* TYPE. Always exactly two options, because the extractor
+                  reports the runner-up it was torn between rather than a
+                  confidence score. */}
+              {group.type && (
+                <fieldset className="flex flex-col gap-2">
+                  <legend className="text-sm text-white leading-relaxed mb-1">
+                    {group.type.question}
+                  </legend>
+                  <div className="flex gap-2">
+                    {[group.type.type, group.type.alternative_type].map((option) => (
+                      <button
+                        key={option}
+                        type="button"
+                        onClick={() => setTypes((s) => ({ ...s, [group.name]: option }))}
+                        disabled={answering}
+                        className={`${optionClass(types[group.name] === option)} flex-1 items-center`}
+                      >
+                        {radio(types[group.name] === option)}
+                        <span className="text-sm font-medium text-white capitalize">{option}</span>
+                      </button>
+                    ))}
                   </div>
-                )
-              })}
-            </div>
-          </fieldset>
-        )}
+                </fieldset>
+              )}
 
-        {/* ONE grouped question, not one per sibling.
-            Four near-identical screens whose answer is the same each time is
-            how a producer learns to click past a screen without reading —
-            which is how a question that DOES matter gets missed.
+              {/* RELATIONS about this person. Anchored to the end that is not
+                  the producer, so a relation appears once rather than on both
+                  people's cards. Optional, unlike the two above. */}
+              {group.relations.length > 0 && (
+                <fieldset className="flex flex-col gap-2">
+                  <legend className="text-sm text-white leading-relaxed mb-1">
+                    Did we get this right? — optional
+                  </legend>
+                  {group.relations.map((q) => (
+                    <div key={`rel-${q.index}`} className="flex flex-col gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setRelations((s) => ({ ...s, [q.index]: !s[q.index] }))}
+                        // A corrected proposal is already accepted; ticking it
+                        // as well would say nothing more, and unticking could
+                        // not take the correction back.
+                        disabled={answering || Boolean(relationEdits[q.index])}
+                        className={optionClass(
+                          Boolean(relations[q.index]) || Boolean(relationEdits[q.index]),
+                        )}
+                      >
+                        {radio(Boolean(relations[q.index]) || Boolean(relationEdits[q.index]))}
+                        <span className="flex flex-col gap-0.5 text-left">
+                          <span className="text-sm font-medium text-white">
+                            <span dir="auto">{q.from_name === SELF ? 'You' : q.from_name}</span>
+                            {' is the '}
+                            {q.relation_type.replace(/_/g, ' ')}
+                            {' of '}
+                            <span dir="auto">{q.to_name === SELF ? 'you' : q.to_name}</span>
+                          </span>
+                          {q.evidence && (
+                            <span dir="auto" className="text-xs text-gray-400">
+                              &ldquo;{q.evidence}&rdquo;
+                            </span>
+                          )}
+                        </span>
+                      </button>
 
-            The single Yes covers the ordinary case. Anyone who does not fit
-            gets the per-person branch, because a half-sibling shares ONE
-            parent and no yes/no can say which. */}
+                      {canCorrect && !relationEdits[q.index] && (
+                        <button
+                          type="button"
+                          disabled={answering}
+                          onClick={() =>
+                            setRelationEdits((current) => ({
+                              ...current,
+                              [q.index]: {
+                                relation_type: q.relation_type,
+                                from_name: q.from_name,
+                                to_name: q.to_name,
+                              },
+                            }))
+                          }
+                          className="self-start text-xs text-primary-300 hover:text-primary-200 pl-1"
+                        >
+                          Not quite — fix this
+                        </button>
+                      )}
+
+                      {relationEdits[q.index] && (
+                        <div className="flex flex-col gap-2 px-3 py-2.5 rounded-xl border border-primary-500/30 bg-primary-500/5">
+                          <div className="flex flex-wrap items-center gap-2 text-sm text-white">
+                            <PersonSelect
+                              value={relationEdits[q.index].from_name}
+                              people={correctionPeople}
+                              disabled={answering}
+                              label={`Who, in relation ${q.index + 1}`}
+                              onChange={(name) =>
+                                setRelationEdits((current) => ({
+                                  ...current,
+                                  [q.index]: { ...current[q.index], from_name: name },
+                                }))
+                              }
+                            />
+                            <span className="text-gray-400">is the</span>
+                            <select
+                              value={relationEdits[q.index].relation_type}
+                              disabled={answering}
+                              aria-label={`Relation ${q.index + 1}`}
+                              onChange={(e) =>
+                                setRelationEdits((current) => ({
+                                  ...current,
+                                  [q.index]: {
+                                    ...current[q.index],
+                                    relation_type: e.target.value,
+                                  },
+                                }))
+                              }
+                              className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white"
+                            >
+                              {correctionTypes.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                            <span className="text-gray-400">of</span>
+                            <PersonSelect
+                              value={relationEdits[q.index].to_name}
+                              people={correctionPeople}
+                              disabled={answering}
+                              label={`Of whom, in relation ${q.index + 1}`}
+                              onChange={(name) =>
+                                setRelationEdits((current) => ({
+                                  ...current,
+                                  [q.index]: { ...current[q.index], to_name: name },
+                                }))
+                              }
+                            />
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <button
+                              type="button"
+                              disabled={answering}
+                              onClick={() =>
+                                setRelationEdits((current) => {
+                                  const next = { ...current }
+                                  delete next[q.index]
+                                  return next
+                                })
+                              }
+                              className="text-xs text-gray-400 hover:text-white"
+                            >
+                              Cancel this fix
+                            </button>
+                            {relationEdits[q.index].from_name ===
+                              relationEdits[q.index].to_name && (
+                              <span className="text-xs text-amber-300">
+                                Pick two different people.
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </fieldset>
+              )}
+
+              {/* PARENTAGE for this sibling. The grouped screen it replaces
+                  asked about everyone at once; the bulk answer that made that
+                  worth having still exists, at the bottom, because it is the
+                  one action here that spans people. */}
+              {group.parentageGroup && parents.length > 0 && (
+                <fieldset className="flex flex-col gap-2">
+                  <legend className="text-sm text-white leading-relaxed mb-1">
+                    Whose child are they?
+                  </legend>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {parents.map((parent) => {
+                      const ticked = shared.includes(parent.name)
+                      return (
+                        <button
+                          key={parent.name}
+                          type="button"
+                          disabled={answering}
+                          onClick={() =>
+                            setParentage((current) => ({
+                              ...current,
+                              [group.name]: ticked
+                                ? shared.filter((n) => n !== parent.name)
+                                : [...shared, parent.name],
+                            }))
+                          }
+                          className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
+                            ticked
+                              ? 'border-primary-400 bg-primary-500/15 text-white'
+                              : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
+                          }`}
+                        >
+                          <span dir="auto">{parent.name}</span>
+                        </button>
+                      )
+                    })}
+                    <button
+                      type="button"
+                      disabled={answering}
+                      onClick={() =>
+                        setOtherOpen((current) => {
+                          const opening = !current[group.name]
+                          if (!opening) {
+                            // Backing out must not leave a stale name to be
+                            // submitted for a path that was abandoned.
+                            setNewParent((n) => ({ ...n, [group.name]: '' }))
+                          }
+                          return { ...current, [group.name]: opening }
+                        })
+                      }
+                      className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
+                        otherOpen[group.name]
+                          ? 'border-primary-400 bg-primary-500/15 text-white'
+                          : 'border-white/10 bg-surface-800 text-gray-400 hover:border-white/25'
+                      }`}
+                    >
+                      Someone else
+                    </button>
+                  </div>
+
+                  {otherOpen[group.name] && (
+                    <div className="flex flex-col gap-1">
+                      <label
+                        htmlFor={`other-parent-${group.name}`}
+                        className="text-xs text-gray-400"
+                      >
+                        Then whose child are they?
+                      </label>
+                      <input
+                        id={`other-parent-${group.name}`}
+                        type="text"
+                        dir="auto"
+                        list="parentage-known-people"
+                        value={newParent[group.name] ?? ''}
+                        onChange={(e) =>
+                          setNewParent((current) => ({
+                            ...current,
+                            [group.name]: e.target.value,
+                          }))
+                        }
+                        disabled={answering}
+                        placeholder="a name"
+                        className="w-56 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
+                      />
+                    </div>
+                  )}
+
+                  {shared.length === 0 && !typedParent && (
+                    <span className="text-[11px] text-gray-500">
+                      Skipped — nothing recorded, and we won&apos;t ask again.
+                    </span>
+                  )}
+
+                  {/* Naming someone who is NOT one of your parents means this
+                      person shares no parent with you — so they are not your
+                      sibling, and that relation is replaced rather than kept
+                      to contradict this one. Said out loud, because a relation
+                      disappearing without a word is how the last round of
+                      confusion started. */}
+                  {shared.length === 0 && typedParent && (
+                    <span className="text-[11px] text-primary-300">
+                      Then {group.name} isn&apos;t your sibling — we&apos;ll record them
+                      as <span dir="auto">{typedParent}</span>&apos;s child instead.
+                    </span>
+                  )}
+                </fieldset>
+              )}
+
+              {/* SIDE. Which parent an aunt or uncle is a sibling of — the
+                  edge that puts them beside the right parent instead of
+                  floating in the parents' row. */}
+              {group.sideGroup && sideParents.length > 0 && (
+                <fieldset className="flex flex-col gap-2">
+                  <legend className="text-sm text-white leading-relaxed mb-1">
+                    Whose brother or sister are they?
+                  </legend>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {sideParents.map((parent) => {
+                      const chosen = sides[group.name] === parent.name
+                      return (
+                        <button
+                          key={parent.name}
+                          type="button"
+                          disabled={answering}
+                          onClick={() =>
+                            setSides((current) => ({
+                              ...current,
+                              // Clicking the chosen one again clears it — one
+                              // parent, and a way back to saying nothing.
+                              [group.name]: chosen ? '' : parent.name,
+                            }))
+                          }
+                          className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
+                            chosen
+                              ? 'border-primary-400 bg-primary-500/15 text-white'
+                              : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
+                          }`}
+                        >
+                          <span dir="auto">{parent.name}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                  {!sides[group.name] && (
+                    <span className="text-[11px] text-gray-500">
+                      Not sure — we won&apos;t ask again
+                    </span>
+                  )}
+                </fieldset>
+              )}
+            </section>
+          )
+        })}
+
+        {/* The one action that spans people, and the reason the grouped
+            parentage screen was worth having: "yes, all of them" is the
+            common answer, and making it one click per sibling is how a
+            screen gets skipped wholesale. It stays whole, below the cards
+            it fills in. */}
         {parentageQuestions.map((group) => {
-          // Defensive on purpose. This payload is persisted JSON and can
-          // have been written by an older build; a shape we do not
-          // recognise must render nothing, never take the screen down and
-          // with it every other question on it.
           const siblings = group.siblings ?? []
           const parents = group.parents ?? []
           if (siblings.length === 0 || parents.length === 0) return null
-          const allShared =
-            siblings.length > 0 &&
-            siblings.every(
-              (sibling) =>
-                (parentage[sibling.name] ?? []).length === parents.length,
-            )
-          const answerAll = () =>
-            setParentage((current) => {
-              const next = { ...current }
-              for (const sibling of siblings) {
-                next[sibling.name] = allShared
-                  ? []
-                  : parents.map((parent) => parent.name)
-              }
-              return next
-            })
-
+          const allShared = siblings.every(
+            (sibling) => (parentage[sibling.name] ?? []).length === parents.length,
+          )
           return (
-            <fieldset
-              key="parentage"
-              className="flex flex-col gap-3 pt-1 border-t border-white/10"
+            <div
+              key="parentage-bulk"
+              className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 rounded-xl border border-white/10 bg-surface-800/60"
             >
-              <legend className="text-sm text-white leading-relaxed mb-1">
-                <span dir="auto">{group.question}</span>
-              </legend>
-              <p className="text-xs text-gray-400 -mt-1 mb-1">
-                You&apos;ve said these people are your siblings, but not whose
-                children they are — so nothing joins them to anyone in your tree.
-                Asked once either way.
+              <p dir="auto" className="text-xs text-gray-400 min-w-0">
+                {group.question}
               </p>
-
               <button
                 type="button"
                 disabled={answering}
-                onClick={answerAll}
-                className={`self-start px-4 py-2 rounded-lg border text-sm transition-colors ${
+                onClick={() =>
+                  setParentage((current) => {
+                    const next = { ...current }
+                    for (const sibling of siblings) {
+                      next[sibling.name] = allShared ? [] : parents.map((p) => p.name)
+                    }
+                    return next
+                  })
+                }
+                className={`shrink-0 px-4 py-2 rounded-lg border text-sm transition-colors ${
                   allShared
                     ? 'border-primary-400 bg-primary-500/15 text-white'
                     : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
@@ -739,215 +964,59 @@ export function EntityConfirmModal({
               >
                 {allShared ? 'Yes — all of them' : 'Yes — all of them'}
               </button>
-
-              <div className="flex flex-col gap-2 pl-1">
-                {siblings.map((sibling) => {
-                  const shared = parentage[sibling.name] ?? []
-                  const typed = (newParent[sibling.name] ?? '').trim()
-                  const open = otherOpen[sibling.name]
-                  return (
-                    <div key={sibling.name} className="flex flex-col gap-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span dir="auto" className="text-sm text-white w-24 shrink-0">
-                          {sibling.name}
-                        </span>
-                        {parents.map((parent) => {
-                          const ticked = shared.includes(parent.name)
-                          return (
-                            <button
-                              key={parent.name}
-                              type="button"
-                              disabled={answering}
-                              onClick={() =>
-                                setParentage((current) => ({
-                                  ...current,
-                                  [sibling.name]: ticked
-                                    ? shared.filter((n) => n !== parent.name)
-                                    : [...shared, parent.name],
-                                }))
-                              }
-                              className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
-                                ticked
-                                  ? 'border-primary-400 bg-primary-500/15 text-white'
-                                  : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
-                              }`}
-                            >
-                              <span dir="auto">{parent.name}</span>
-                            </button>
-                          )
-                        })}
-                        <button
-                          type="button"
-                          disabled={answering}
-                          onClick={() =>
-                            setOtherOpen((current) => {
-                              const opening = !current[sibling.name]
-                              if (!opening) {
-                                // Backing out must not leave a stale name to be
-                                // submitted for a path that was abandoned.
-                                setNewParent((n) => ({ ...n, [sibling.name]: '' }))
-                              }
-                              return { ...current, [sibling.name]: opening }
-                            })
-                          }
-                          className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
-                            open
-                              ? 'border-primary-400 bg-primary-500/15 text-white'
-                              : 'border-white/10 bg-surface-800 text-gray-400 hover:border-white/25'
-                          }`}
-                        >
-                          Someone else
-                        </button>
-                      </div>
-
-                      {open && (
-                        <div className="flex flex-col gap-1 pl-24">
-                          <label
-                            htmlFor={`other-parent-${sibling.name}`}
-                            className="text-xs text-gray-400"
-                          >
-                            Then whose child are they?
-                          </label>
-                          <input
-                            id={`other-parent-${sibling.name}`}
-                            type="text"
-                            dir="auto"
-                            list="parentage-known-people"
-                            value={newParent[sibling.name] ?? ''}
-                            onChange={(e) =>
-                              setNewParent((current) => ({
-                                ...current,
-                                [sibling.name]: e.target.value,
-                              }))
-                            }
-                            disabled={answering}
-                            placeholder="a name"
-                            className="w-56 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
-                          />
-                        </div>
-                      )}
-
-                      {shared.length === 0 && !typed && (
-                        <span className="text-[11px] text-gray-500 pl-24">
-                          Skipped — nothing recorded, and we won&apos;t ask again.
-                        </span>
-                      )}
-
-                      {/* Naming someone who is NOT one of your parents means
-                          this person does not share a parent with you — so
-                          they are not your sibling, and that relation is
-                          replaced rather than kept to contradict this one.
-                          Said out loud, because a relation disappearing
-                          without a word is how the last round of confusion
-                          started. Ticking a parent as well makes them a
-                          half-sibling and this note goes away. */}
-                      {shared.length === 0 && typed && (
-                        <span className="text-[11px] text-primary-300 pl-24">
-                          Then {sibling.name} isn&apos;t your sibling — we&apos;ll record
-                          them as <span dir="auto">{typed}</span>&apos;s child instead.
-                        </span>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-
-              {/* Picking beats typing: a typed name resolves by normalised
-                  match, so one different character makes a second person
-                  instead of linking to the first. */}
-              <datalist id="parentage-known-people">
-                {(group.known_people ?? []).map((person) => (
-                  <option key={person.name} value={person.name} />
-                ))}
-              </datalist>
-            </fieldset>
+            </div>
           )
         })}
 
-        {/* Which parent an aunt or uncle belongs to.
-            Without it, an aunt_uncle edge puts them in the parents' row and
-            says nothing more — so the row is four boxes and nothing marks the
-            two that are actually parents. This produces the edge the chart
-            draws between them and the parent they are a sibling of. */}
-        {sideQuestions.map((group) => {
-          const relatives = group.relatives ?? []
-          const parents = group.parents ?? []
-          if (relatives.length === 0 || parents.length === 0) return null
-          return (
-            <fieldset
-              key="sides"
-              className="flex flex-col gap-3 pt-1 border-t border-white/10"
-            >
-              <legend className="text-sm text-white leading-relaxed mb-1">
-                <span dir="auto">{group.question}</span>
-              </legend>
-              <p className="text-xs text-gray-400 -mt-1 mb-1">
-                Whose brother or sister are they? This is what connects them to the
-                right parent in your tree. Asked once either way.
-              </p>
-              {relatives.map((relative) => (
-                <div key={relative.name} className="flex flex-wrap items-center gap-2">
-                  <span dir="auto" className="text-sm text-white w-24 shrink-0">
-                    {relative.name}
-                  </span>
-                  {parents.map((parent) => {
-                    const chosen = sides[relative.name] === parent.name
-                    return (
-                      <button
-                        key={parent.name}
-                        type="button"
-                        disabled={answering}
-                        onClick={() =>
-                          setSides((current) => ({
-                            ...current,
-                            // Clicking the chosen one again clears it — one
-                            // parent, and a way back to saying nothing.
-                            [relative.name]: chosen ? '' : parent.name,
-                          }))
-                        }
-                        className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
-                          chosen
-                            ? 'border-primary-400 bg-primary-500/15 text-white'
-                            : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
-                        }`}
-                      >
-                        <span dir="auto">{parent.name}</span>
-                      </button>
-                    )
-                  })}
-                  {!sides[relative.name] && (
-                    <span className="text-[11px] text-gray-500">
-                      Not sure — we won&apos;t ask again
-                    </span>
-                  )}
-                </div>
-              ))}
-            </fieldset>
-          )
-        })}
+        {/* Picking beats typing: a typed name resolves by normalised match,
+            so one different character makes a second person instead of
+            linking to the first. Shared by every card's "someone else". */}
+        <datalist id="parentage-known-people">
+          {(parentageQuestions[0]?.known_people ?? []).map((person) => (
+            <option key={person.name} value={person.name} />
+          ))}
+        </datalist>
 
-        {yearQuestions.length > 0 && (
+        {/* Everything else the recording named. Not questions — these are
+            here in case the extractor misheard, which it can do with complete
+            confidence: "ליאן" for "אליאן" raises nothing to answer, because a
+            brand-new name has nothing similar to disambiguate against. */}
+        {nameOnly.length > 0 && (
           <fieldset className="flex flex-col gap-2 pt-1 border-t border-white/10">
             <legend className="text-sm text-white leading-relaxed mb-1">
-              Roughly when? — optional
+              Also picked up
             </legend>
             <p className="text-xs text-gray-400 -mt-1 mb-1">
-              A year helps place these on the timeline. Leave blank to skip.
+              Nothing to answer here — fix any name that was misheard.
             </p>
-            {yearQuestions.map((q) => (
-              <label key={`year-${q.name}`} className="flex items-center gap-3">
-                <span dir="auto" className="text-sm text-white flex-1">{q.name}</span>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={years[q.name] ?? ''}
-                  onChange={(e) => setYears((s) => ({ ...s, [q.name]: e.target.value }))}
-                  disabled={answering}
-                  placeholder="e.g. 1973"
-                  className="w-32 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
-                />
-              </label>
-            ))}
+            <div className="flex flex-wrap gap-2">
+              {nameOnly.map((group) => {
+                const value = nameEdits[group.name] ?? group.name
+                const changed = value.trim() !== group.name
+                return (
+                  <div key={`only-${group.name}`} className="flex flex-col gap-0.5">
+                    <input
+                      type="text"
+                      dir="auto"
+                      value={value}
+                      onChange={(e) =>
+                        setNameEdits((s) => ({ ...s, [group.name]: e.target.value }))
+                      }
+                      disabled={answering}
+                      aria-label={`Name: ${group.name}`}
+                      className={`w-36 px-3 py-1.5 rounded-lg bg-surface-800 border text-sm text-white ${
+                        changed ? 'border-primary-400' : 'border-white/10'
+                      }`}
+                    />
+                    {changed && (
+                      <span className="text-[10px] text-primary-300">
+                        was &ldquo;{group.name}&rdquo;
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
           </fieldset>
         )}
 
