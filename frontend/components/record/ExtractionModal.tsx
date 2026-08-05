@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { X, Loader2, Sparkles, Tag, Scissors, FileText, Users, AlertTriangle, HelpCircle, Bell } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
+import { EntityConfirmModal } from '@/components/record/EntityConfirmModal'
 import type { ApiError, SegmentExtraction } from '@/lib/types'
 
 /**
@@ -43,6 +44,17 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
   const [removed, setRemoved] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  /**
+   * The questions for THIS recording, opened from here (§13.3).
+   *
+   * The second way in, alongside the notification list, and the one that
+   * restores what removing the popup cost: entities are only written once the
+   * answers land, so answering from the panel that is already showing this
+   * recording is the one place the producer can watch a name they just
+   * confirmed appear in it. `awaiting_confirmation` already rides on the
+   * extraction payload, so this needed no new field.
+   */
+  const [showQuestions, setShowQuestions] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -54,6 +66,17 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
       setError(detail || 'Could not load what was extracted')
     } finally {
       setLoading(false)
+    }
+  }, [segmentId])
+
+  /** Refetch without blanking the panel — `load` flips `loading`, which is
+   *  right on first open and wrong for a refresh of something already on
+   *  screen. */
+  const refetch = useCallback(async () => {
+    try {
+      setData(await api.getSegmentExtraction(segmentId))
+    } catch {
+      /* leave what is on screen; it is still the best answer available */
     }
   }, [segmentId])
 
@@ -101,15 +124,21 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
   // someone opened out of curiosity should never be harder to leave than to
   // enter. The lock, the 90s stall escape and the failure escape all existed
   // to soften a screen that appeared uninvited and refused to go away.
+  //
+  // Except while the questions are open on top: that screen answers Escape
+  // itself, and both acting on one keypress would dismiss the panel the
+  // producer is about to be returned to.
   useEffect(() => {
+    if (showQuestions) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, showQuestions])
 
   return (
+    <>
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4 py-8 animate-fade-in"
       role="dialog"
@@ -160,14 +189,23 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
                   questions are. Kept for exactly that reason: a badge
                   appearing in the corner explains itself to nobody. */}
               {data.awaiting_confirmation && (
-                <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary-500/10 border border-primary-500/30 text-primary-200 text-sm">
-                  <HelpCircle size={16} className="shrink-0" />
-                  <span>
-                    A few questions are ready about this recording. They&apos;re waiting
-                    under the <Bell size={13} className="inline -mt-0.5" /> at the top of
-                    the screen — answering them is what saves the people and relations
-                    it found.
-                  </span>
+                <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-primary-500/10 border border-primary-500/30 text-primary-200 text-sm">
+                  <HelpCircle size={16} className="shrink-0 mt-0.5" />
+                  <div className="flex flex-col items-start gap-2.5 min-w-0">
+                    <span>
+                      A few questions are ready about this recording — answering them is
+                      what saves the people and relations it found. They&apos;re also
+                      waiting under the <Bell size={13} className="inline -mt-0.5" /> at
+                      the top of the screen.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowQuestions(true)}
+                      className="btn-primary py-1.5 text-xs"
+                    >
+                      Show questions
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -339,6 +377,23 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
         </div>
       </div>
     </div>
+
+    {/* A SIBLING of the panel, not a child of it. Nested inside, every click
+        in the questions screen would bubble to the backdrop above and close
+        the panel underneath — the one the producer is about to be returned
+        to. Answering here is where the loop closes: the entities those
+        answers wrote appear in the list behind, on a refetch rather than a
+        reopen. */}
+    {showQuestions && (
+      <EntityConfirmModal
+        segmentId={segmentId}
+        onClose={() => {
+          setShowQuestions(false)
+          refetch()
+        }}
+      />
+    )}
+    </>
   )
 }
 

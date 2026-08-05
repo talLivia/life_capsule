@@ -324,12 +324,12 @@ export default function Home() {
             {/* "Record" now lives in the nav bar (left) as an in-shell view. */}
             <ConnectionStatus />
             {/* The bell, its dropdown, the full-screen list and whatever a row
-                opens — all of it owns its own state. `record` suppresses only
-                the once-ever auto-open: those first questions arrive seconds
-                after a producer's first recording, i.e. while they are on this
-                screen and possibly part-way through recording the NEXT answer,
-                and a panel opening over a live camera could cost a take. */}
-            {isProducerUser && <NotificationCenter suppressAutoOpen={view === 'record'} />}
+                opens — all of it owns its own state. It needs to know about
+                the record screen for two opposite reasons: nothing may open
+                over a live camera (the first questions arrive seconds after a
+                producer's first recording, possibly part-way through the
+                next), and LEAVING it is exactly when the nudge should fire. */}
+            {isProducerUser && <NotificationCenter onRecordScreen={view === 'record'} />}
             <ThemeToggle />
             {user && (
               <div className="flex items-center gap-2">

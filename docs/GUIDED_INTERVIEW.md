@@ -605,8 +605,8 @@ no way to answer anything.
 | **1** | ✅ Shared pending-confirmations provider: one poller, count, list, faster while in flight | Endpoint, poll logic | Provider |
 | **2** | ✅ Bell in the top bar + full-screen list reusing `EntityConfirmModal`'s sections | Sections, answer contract | Badge, shell |
 | **3** | ✅ **DONE 2026-08-05** — popup auto-open removed, extraction handoff unwound per §14. Read §14's DONE note before phase 4: it records what the unwind actually cost. | — | Careful deletion |
-| **4** | **Show questions** in the extraction panel | `awaiting_confirmation` | Button |
-| **5** | Nudge on leaving `/record` with pending questions | — | View-change hook |
+| **4** | ✅ **DONE 2026-08-05** — **Show questions** in the extraction panel | `awaiting_confirmation` | Button |
+| **5** | ✅ **DONE 2026-08-05** — nudge on leaving `/record` with pending questions | — | View-change hook |
 | **6** | `/record` UI: collapsible panel, takes accordion, progress bar, explainer | `interview_flow` | UI |
 | **7** | Read aloud + record disabled while playing | `tts.py` | Playback, cache |
 
@@ -697,7 +697,46 @@ Correspondingly, `count` is gone from the pending-confirmations provider. The
 badge counts NOTIFICATIONS; a count published from one source would be right
 today and quietly wrong the moment there is a second.
 
-## 17.4 Decision 16.C, again
+## 17.4 Phases 4 and 5 (2026-08-05)
+
+**Show questions** sits in the extraction panel's `awaiting_confirmation`
+banner — no new field, as predicted. It renders `EntityConfirmModal` directly
+rather than routing through the notification layer: this is not a notification
+being opened, it is the panel for a known recording opening its own questions,
+so no `kind` is involved and the single switch in `NotificationCenter` stays
+single.
+
+**This is what closes the loop §14 recorded as lost.** Entities are only
+written once answers land, so answering from the panel already showing that
+recording is the one place a producer can watch a name they just confirmed
+appear in it. The panel refetches quietly on close — a refresh of something
+already on screen should not blank it, which `load` would.
+
+Two things the stacking needed, both easy to get wrong:
+
+- The questions screen is a **sibling** of the extraction panel, not a child.
+  Nested inside, every click in it bubbles to the panel's backdrop and closes
+  the thing underneath — the panel the producer is about to be returned to.
+- The extraction panel **ignores Escape while the questions are open**, or one
+  keypress dismisses both.
+
+**The nudge** fires on leaving the record view with items waiting, and nowhere
+else (16.B). A toast with a "Show me" action, never a modal — the producer has
+just finished recording, and interrupting them at the door is how a prompt
+becomes something dismissed without reading. One toast id, so bouncing in and
+out replaces rather than stacks. Suppressed when the once-ever auto-open is
+about to fire: that is the stronger signal, and both at once is two
+interruptions for one event.
+
+It counts ITEMS, matching the badge, where §13.4's sketch said "20 questions".
+A nudge saying "20 questions" beside a badge saying "3" invites the producer to
+work out which is wrong. The per-recording count still shows on every row.
+
+**Not built: the "after a long session" trigger** also mentioned in §13.4. The
+build order only listed the leaving-`/record` one, and a duration threshold
+nobody has picked is a knob invented rather than needed.
+
+## 17.5 Decision 16.C, again
 
 The once-ever auto-open now opens **the dropdown**, not a question. Opening a
 question teaches nothing about where questions live; opening the dropdown

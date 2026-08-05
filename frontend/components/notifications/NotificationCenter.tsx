@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { toast } from 'react-hot-toast'
 import { NotificationBell } from '@/components/notifications/NotificationBell'
 import { NotificationsPage } from '@/components/notifications/NotificationsPage'
 import { EntityConfirmModal } from '@/components/record/EntityConfirmModal'
@@ -17,11 +18,12 @@ import { useNotifications, type NotificationItem } from '@/lib/notifications'
  * branch below. Nothing else moves.
  */
 export function NotificationCenter({
-  /** The producer is in the middle of the recording flow. Suppresses the
-   *  once-ever auto-open only — the bell itself is always available. */
-  suppressAutoOpen = false,
+  /** The producer is in the recording flow. Drives two things and nothing
+   *  else: the once-ever auto-open is suppressed while it is true, and LEAVING
+   *  it is what fires the nudge. The bell itself is always available. */
+  onRecordScreen = false,
 }: {
-  suppressAutoOpen?: boolean
+  onRecordScreen?: boolean
 }) {
   const items = useNotifications()
   const { autoOpenPending, markAutoOpened } = usePendingConfirmations()
@@ -43,10 +45,58 @@ export function NotificationCenter({
    * nothing about where questions now live.
    */
   useEffect(() => {
-    if (suppressAutoOpen || !autoOpenPending) return
+    if (onRecordScreen || !autoOpenPending) return
     setDropdownOpen(true)
     markAutoOpened()
-  }, [suppressAutoOpen, autoOpenPending, markAutoOpened])
+  }, [onRecordScreen, autoOpenPending, markAutoOpened])
+
+  /**
+   * The nudge (§13.4): leaving the record screen with things waiting.
+   *
+   * Non-blocking and never a modal — the producer has just finished a stretch
+   * of recording and interrupting them at the door is how a prompt becomes
+   * something to dismiss without reading. It is a toast that says how much is
+   * waiting and offers to show it.
+   *
+   * Only on leaving `/record` (decision 16.B). Firing on any navigation was
+   * the alternative and it becomes wallpaper: this is the one transition where
+   * the producer has demonstrably just generated the things that are waiting.
+   *
+   * Deliberately NOT fired when the list is about to open by itself — the
+   * once-ever auto-open is the stronger signal, and both at once is two
+   * interruptions for one event.
+   */
+  const wasOnRecordScreen = useRef(onRecordScreen)
+  useEffect(() => {
+    const leaving = wasOnRecordScreen.current && !onRecordScreen
+    wasOnRecordScreen.current = onRecordScreen
+    if (!leaving || items.length === 0) return
+    if (autoOpenPending || dropdownOpen || pageOpen || active) return
+    toast(
+      t => (
+        <span className="flex items-center gap-3">
+          <span className="text-sm">
+            {items.length === 1
+              ? 'One thing is waiting for you.'
+              : `${items.length} things are waiting for you.`}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              toast.dismiss(t.id)
+              setDropdownOpen(true)
+            }}
+            className="text-sm font-semibold text-primary-400 hover:text-primary-300 shrink-0"
+          >
+            Show me
+          </button>
+        </span>
+      ),
+      // One id, so bouncing in and out of the record screen replaces the
+      // toast rather than stacking a column of them.
+      { id: 'pending-nudge', duration: 8000 },
+    )
+  }, [onRecordScreen, items.length, autoOpenPending, dropdownOpen, pageOpen, active])
 
   // Nothing left to show. The dropdown is transient and closes; the page is
   // somewhere the producer navigated to and keeps its empty state.
