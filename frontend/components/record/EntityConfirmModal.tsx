@@ -832,6 +832,21 @@ export function EntityConfirmModal({
                           Skipped — nothing recorded, and we won&apos;t ask again.
                         </span>
                       )}
+
+                      {/* Naming someone who is NOT one of your parents means
+                          this person does not share a parent with you — so
+                          they are not your sibling, and that relation is
+                          replaced rather than kept to contradict this one.
+                          Said out loud, because a relation disappearing
+                          without a word is how the last round of confusion
+                          started. Ticking a parent as well makes them a
+                          half-sibling and this note goes away. */}
+                      {shared.length === 0 && typed && (
+                        <span className="text-[11px] text-primary-300 pl-24">
+                          Then {sibling.name} isn&apos;t your sibling — we&apos;ll record
+                          them as <span dir="auto">{typed}</span>&apos;s child instead.
+                        </span>
+                      )}
                     </div>
                   )
                 })}

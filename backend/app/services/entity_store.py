@@ -948,6 +948,7 @@ async def write_parentage(
     segment_id: str,
     asked_sibling_names: Sequence[str],
     answers: Dict[str, dict],
+    not_sibling_names: Sequence[str] = (),
 ) -> Dict[str, int]:
     """Apply the parentage answers. Flushes, never commits.
 
@@ -966,9 +967,17 @@ async def write_parentage(
 
     Runs AFTER write_segment_entities, so every name the question offered
     resolves to a row — including people this recording was the first to name.
+
+    `not_sibling_names` are people whose answer named NO parent of the
+    producer's, so they cannot be the producer's sibling — a nephew proposed
+    as a brother. Their sibling relation is REPLACED rather than left to
+    contradict the parent edge written here: the tree cannot honour both, and
+    when it kept the sibling and dropped the parent it looked exactly like the
+    chosen parent failing to save. The node decides this (it is the one place
+    that knows which parents were offered); this deletes what it decided.
     """
     now = datetime.now(timezone.utc)
-    result = {"relations": 0, "new_parents": 0, "asked": 0}
+    result = {"relations": 0, "new_parents": 0, "asked": 0, "siblings_replaced": 0}
 
     asked = list(dict.fromkeys(asked_sibling_names))
     if not asked:
@@ -989,6 +998,33 @@ async def write_parentage(
 
         sibling.parentage_asked_at = now
         result["asked"] += 1
+
+        if sibling_name in set(not_sibling_names):
+            # Retract the sibling relation this answer contradicts. Scoped to
+            # edges between this person and the PRODUCER: "he is not my
+            # brother" says nothing about his being someone else's.
+            self_entity = (
+                await db.execute(
+                    select(Entity).where(
+                        Entity.producer_id == producer_id, Entity.is_self
+                    )
+                )
+            ).scalars().first()
+            if self_entity is not None:
+                removed = await db.execute(
+                    delete(EntityRelation).where(
+                        EntityRelation.relation_type == SIBLING_RELATION,
+                        (
+                            (EntityRelation.from_entity_id == sibling.id)
+                            & (EntityRelation.to_entity_id == self_entity.id)
+                        )
+                        | (
+                            (EntityRelation.from_entity_id == self_entity.id)
+                            & (EntityRelation.to_entity_id == sibling.id)
+                        ),
+                    )
+                )
+                result["siblings_replaced"] += removed.rowcount or 0
 
         answer = answers.get(sibling_name) or {}
         wanted = list(answer.get("parent_names") or [])

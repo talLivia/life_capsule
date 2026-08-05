@@ -1323,3 +1323,194 @@ async def test_a_renamed_aunt_or_uncle_keeps_its_side_answer(monkeypatch):
 
     assert result["sides"]["asked_names"] == ["אמנון"]
     assert result["sides"]["answers"] == {"אמנון": "צבי"}
+
+
+# ── The parentage answer OWNS whether they are a sibling ─────────────────────
+
+
+async def test_a_non_parent_answer_replaces_the_sibling_relation(monkeypatch):
+    """Ticking sibling AND naming רז as the parent used to store BOTH.
+
+    The live case: "איציק" ticked as a brother and told he is רז's child. Both
+    relations were written, the tree could not honour both, and it kept the
+    sibling and reported the parent edge as a contradiction — which looked
+    exactly like the chosen parent failing to save.
+
+    The parentage answer decides. רז is the producer's brother, not their
+    parent, so this person shares no parent with the producer and cannot be
+    their sibling: the sibling relation is not written at all.
+    """
+    import app.analysis_graph as ag
+
+    monkeypatch.setattr(
+        ag,
+        "interrupt",
+        lambda _payload: {
+            "identity": {}, "types": {}, "years": {}, "sides": {}, "name_edits": {},
+            # Ticked — and overridden by the answer below.
+            "relations": {"0": True},
+            "parentage": {"איציק": {"parent_names": [], "new_parent_name": "רז"}},
+        },
+    )
+
+    state = {
+        "segment_id": "seg-8",
+        "names_to_check": [],
+        "extracted_entities": [
+            {"name": "איציק", "type": "person", "alternative_type": None, "summary": "s"},
+        ],
+        "proposed_relations": [
+            {
+                "from_name": "איציק",
+                "to_name": ag.entity_extraction.SELF,
+                "relation_type": "sibling",
+                "index": 0,
+            }
+        ],
+        "parentage": {
+            "siblings": [{"name": "איציק"}],
+            "parents": [{"name": "אילנה"}, {"name": "צבי"}],
+            "known_people": [{"name": "רז"}],
+        },
+    }
+
+    result = await ag.human_confirm_node(state)
+
+    assert result["proposed_relations"] == [], (
+        "the sibling relation is replaced by the parentage answer, not stored "
+        "alongside it to contradict the parent edge"
+    )
+    assert result["parentage"]["not_sibling_names"] == ["איציק"]
+    assert result["parentage"]["answers"]["איציק"]["new_parent_name"] == "רז"
+
+
+async def test_a_half_sibling_answer_keeps_the_sibling_relation(monkeypatch):
+    """THE case the naive rule would destroy.
+
+    "Picked a different parent" is not the rule — "shares no parent with you"
+    is. A half-sibling names ONE of the producer's parents plus somebody else,
+    and is still a sibling. Ticking any offered parent means a shared parent,
+    because the parents this question offers are the producer's own.
+    """
+    import app.analysis_graph as ag
+
+    monkeypatch.setattr(
+        ag,
+        "interrupt",
+        lambda _payload: {
+            "identity": {}, "types": {}, "years": {}, "sides": {}, "name_edits": {},
+            "relations": {"0": True},
+            "parentage": {
+                "דנה": {"parent_names": ["צבי"], "new_parent_name": "רבקה"}
+            },
+        },
+    )
+
+    state = {
+        "segment_id": "seg-9",
+        "names_to_check": [],
+        "extracted_entities": [
+            {"name": "דנה", "type": "person", "alternative_type": None, "summary": "s"},
+        ],
+        "proposed_relations": [
+            {
+                "from_name": "דנה",
+                "to_name": ag.entity_extraction.SELF,
+                "relation_type": "sibling",
+                "index": 0,
+            }
+        ],
+        "parentage": {
+            "siblings": [{"name": "דנה"}],
+            "parents": [{"name": "אילנה"}, {"name": "צבי"}],
+            "known_people": [],
+        },
+    }
+
+    result = await ag.human_confirm_node(state)
+
+    assert result["parentage"]["not_sibling_names"] == []
+    assert len(result["proposed_relations"]) == 1, (
+        "a half-sibling shares one parent and remains a sibling"
+    )
+
+
+async def test_skipping_the_parentage_question_changes_nothing(monkeypatch):
+    """Silence must not retract anything.
+
+    The rule reads an ANSWER. A producer who ticks sibling and leaves the
+    grouped question alone keeps their sibling, exactly as before.
+    """
+    import app.analysis_graph as ag
+
+    monkeypatch.setattr(
+        ag,
+        "interrupt",
+        lambda _payload: {
+            "identity": {}, "types": {}, "years": {}, "sides": {}, "name_edits": {},
+            "relations": {"0": True},
+            "parentage": {},
+        },
+    )
+
+    state = {
+        "segment_id": "seg-10",
+        "names_to_check": [],
+        "extracted_entities": [
+            {"name": "רון", "type": "person", "alternative_type": None, "summary": "s"},
+        ],
+        "proposed_relations": [
+            {
+                "from_name": "רון",
+                "to_name": ag.entity_extraction.SELF,
+                "relation_type": "sibling",
+                "index": 0,
+            }
+        ],
+        "parentage": {
+            "siblings": [{"name": "רון"}],
+            "parents": [{"name": "אילנה"}, {"name": "צבי"}],
+            "known_people": [],
+        },
+    }
+
+    result = await ag.human_confirm_node(state)
+    assert result["parentage"]["not_sibling_names"] == []
+    assert len(result["proposed_relations"]) == 1
+
+
+async def test_an_earlier_recordings_sibling_edge_is_deleted(db_session, family):
+    """A sibling from an EARLIER recording already has a row.
+
+    Dropping the proposal covers a sibling this recording raised. One recorded
+    by a previous recording is already in the database, and only a delete can
+    retract it — otherwise the contradiction survives in exactly the case the
+    parentage question was originally built for.
+    """
+    # The fixture already recorded Sib as the producer's sibling — that IS the
+    # earlier recording this test is about.
+    uncle = await family["person"]("Raz")
+
+    written = await entity_store.write_parentage(
+        db_session,
+        producer_id=family["user"].id,
+        segment_id=family["segment"].id,
+        asked_sibling_names=["Sib"],
+        answers={"Sib": {"parent_names": [], "new_parent_name": "Raz"}},
+        not_sibling_names=["Sib"],
+    )
+
+    assert written["siblings_replaced"] == 1
+    remaining = (
+        await db_session.execute(
+            EntityRelation.__table__.select().where(
+                EntityRelation.relation_type == "sibling",
+                EntityRelation.to_entity_id == family["root"].id,
+            )
+        )
+    ).all()
+    assert remaining == [], "the contradicting sibling edge is retracted"
+
+    parents = await _parents_of(db_session, family["sib"].id)
+    # _parents_of returns RELATION rows, so the parent is from_entity_id.
+    assert [p.from_entity_id for p in parents] == [uncle.id]

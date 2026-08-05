@@ -1188,10 +1188,87 @@ async def human_confirm_node(state: AnalysisState) -> dict:
             "to_name": corrected_name(edit.get("to_name") or relation["to_name"]),
         }
 
+    # ── The parentage answer OWNS whether they are a sibling ────────────────
+    #
+    # A sibling relation and a parentage answer used to be collected
+    # independently and both stored, so "he is my brother" and "he is רז's
+    # child" could both be written — and the tree, unable to honour both, kept
+    # the first and reported the second as a contradiction. From the outside
+    # that looked exactly like the chosen parent failing to save.
+    #
+    # There is no reason the sibling relation needs to survive its own
+    # correction, so it does not: the parentage answer decides, and the
+    # contradiction becomes unconstructible rather than caught.
+    #
+    # THE RULE IS "SHARES NO PARENT WITH YOU", not "picked a different parent".
+    # A half-sibling shares ONE parent and is still a sibling — the case that
+    # made this checkboxes rather than a yes/no in the first place, and the
+    # case a naive "any other parent means not a sibling" would silently
+    # destroy. The parents this question OFFERS are exactly the producer's own
+    # (`parentage_candidates` builds them from parent edges to the self
+    # entity), so ticking any of them means a shared parent, and naming only
+    # someone else means none.
+    parentage_answers = {
+        corrected_name(name): given
+        for name, given in (answer.get("parentage") or {}).items()
+    }
+    offered_parent_keys = {
+        normalize_entity_name(parent["name"])
+        for question in pending_parentage
+        for parent in question.get("parents") or []
+    }
+    offered_parent_keys.discard("")
+
+    def _answered_parentage(name: str) -> bool:
+        """Did the producer say something specific about this person?
+
+        The acceptance rule below is right about SILENCE and wrong about an
+        explicit answer, which is how a real correction was silently thrown
+        away: told "בני is your brother — and is he אילנה and צבי's child?",
+        a producer whose בני is actually a NEPHEW declines the sibling and
+        names the real parent. That is one statement made with two controls,
+        and reading the second only when the first was accepted discards it.
+        """
+        given = parentage_answers.get(name) or {}
+        return bool(given.get("parent_names") or (given.get("new_parent_name") or "").strip())
+
+    def _shares_a_parent(name: str) -> bool:
+        given = parentage_answers.get(name) or {}
+        keys = {normalize_entity_name(n) for n in given.get("parent_names") or []}
+        typed = normalize_entity_name((given.get("new_parent_name") or "").strip())
+        if typed:
+            keys.add(typed)
+        keys.discard("")
+        return bool(keys & offered_parent_keys)
+
+    # Answered, and none of the named parents is one of the producer's own.
+    # Silence is NOT included: skipping the question changes nothing, exactly
+    # as it does everywhere else on this screen.
+    not_siblings = {
+        name
+        for name in parentage_answers
+        if _answered_parentage(name) and not _shares_a_parent(name)
+    }
+
+    def _replaced_by_parentage(relation: Dict[str, Any]) -> bool:
+        if relation.get("relation_type") != entity_store.SIBLING_RELATION:
+            return False
+        endpoints = (relation.get("from_name"), relation.get("to_name"))
+        if entity_extraction.SELF not in endpoints:
+            return False
+        other = endpoints[0] if endpoints[1] == entity_extraction.SELF else endpoints[1]
+        return other in not_siblings
+
     accepted = [
-        _resolve(r, i)
-        for i, r in enumerate(state.get("proposed_relations") or [])
-        if _accepted(i)
+        relation
+        for relation in (
+            _resolve(r, i)
+            for i, r in enumerate(state.get("proposed_relations") or [])
+            if _accepted(i)
+        )
+        # Dropped rather than written and then deleted: this recording's own
+        # proposal has not been stored yet, so the replacement costs nothing.
+        if not _replaced_by_parentage(relation)
     ]
 
     # Parentage: carry both the answers and the full list of siblings the
@@ -1231,10 +1308,6 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         or corrected_name(relative["name"]) in accepted_aunt_uncle_names
     ]
 
-    parentage_answers = {
-        corrected_name(name): given
-        for name, given in (answer.get("parentage") or {}).items()
-    }
     # A sibling this recording only PROPOSED is asked about on the same screen
     # — that is what makes the question work on a first recording. But their
     # parentage may only be written if the sibling relation itself was
@@ -1246,24 +1319,6 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         if r.get("relation_type") == entity_store.SIBLING_RELATION
         and entity_extraction.SELF in (r.get("from_name"), r.get("to_name"))
     }
-
-    def _answered_parentage(name: str) -> bool:
-        """Did the producer say something specific about this person?
-
-        The acceptance rule above is right about SILENCE and wrong about an
-        explicit answer, which is how a real correction was silently thrown
-        away: told "בני is your brother — and is he אילנה and צבי's child?",
-        a producer whose בני is actually a NEPHEW declines the sibling and
-        names the real parent through "someone else". That is one statement
-        made with two controls, and reading the second only when the first was
-        accepted discards it — while the UI reports success.
-
-        So an explicit answer carries through on its own. Silence still does
-        not: leaving the grouped question alone after declining the sibling
-        writes nothing, which is what the guard was for.
-        """
-        given = parentage_answers.get(name) or {}
-        return bool(given.get("parent_names") or (given.get("new_parent_name") or "").strip())
 
     asked_parentage = [
         corrected_name(sibling["name"])
@@ -1285,6 +1340,11 @@ async def human_confirm_node(state: AnalysisState) -> dict:
             **(state.get("parentage") or {}),
             "asked_names": asked_parentage,
             "answers": parentage_answers,
+            # Whose sibling relation this answer REPLACES. Dropping the
+            # proposal above covers one this recording raised; a sibling
+            # recorded by an EARLIER recording already has a row, and only a
+            # delete can retract it.
+            "not_sibling_names": sorted(not_siblings),
         },
         "sides": {
             **(state.get("sides") or {}),
@@ -1389,6 +1449,7 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
                     segment_id=segment_id,
                     asked_sibling_names=parentage.get("asked_names") or [],
                     answers=parentage.get("answers") or {},
+                    not_sibling_names=parentage.get("not_sibling_names") or [],
                 )
             # ONE commit for the entities AND the status. entity_store
             # deliberately does not commit, so a recording can never be marked
