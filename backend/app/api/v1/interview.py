@@ -1,8 +1,12 @@
+import hashlib
 import logging
+import tempfile
 import uuid
+from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +36,7 @@ from app.schemas import (
 from app.services import gate_answers, interview_flow
 from app.services.gate_answers import InvalidGateAnswer
 from app.services.storage import storage_service
+from app.services.tts import tts_service
 from app.services.year_parsing import parse_year
 
 logger = logging.getLogger(__name__)
@@ -79,6 +84,66 @@ async def _get_or_create_session(db: AsyncSession, user: User) -> InterviewSessi
 async def list_questions(user: User = Depends(require_producer)):
     """Fixed guided-interview question sequence, in the producer's recording_language."""
     return _questions_with_index(user.recording_language)
+
+
+@router.get("/questions/{question_id}/audio")
+async def question_audio(question_id: str, user: User = Depends(require_producer)):
+    """The question, spoken, in the producer's own recording_language.
+
+    Synthesised once and cached on disk, rather than pre-generated at build
+    time as decision 16.D recommended. The steady state is identical — every
+    question is synthesised at most once, ever — and it costs no build step, no
+    deploy artifact and nothing to regenerate when a question's wording is
+    edited, which is what a pre-generated set would silently go stale against.
+    The cache key includes a hash of the TEXT, so an edited question misses the
+    cache and is re-spoken instead of playing the old wording forever.
+
+    What 16.D bought that this does not is a loud build-time failure if TTS
+    cannot speak the language at all. `scripts/warm_question_audio.py` covers
+    that: run it to synthesise every question up front and it fails loudly,
+    which is the pre-generate benefit without the pre-generate machinery.
+
+    Read-aloud is deliberately an optional extra (§12): if this endpoint fails,
+    the button is unavailable and nothing else about recording changes.
+    """
+    language = user.recording_language
+    text = interview_config.step_text(language, question_id)
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No such question in your interview language",
+        )
+
+    # Text in the key, not just the id: editing a question must not keep
+    # playing the sentence it used to say.
+    digest = hashlib.sha256(f"{language}:{text}".encode("utf-8")).hexdigest()[:16]
+    cache_dir = Path(settings.QUESTION_AUDIO_DIR)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached = cache_dir / f"{question_id}-{digest}.wav"
+
+    if not cached.exists():
+        try:
+            audio = await tts_service.synthesize_bytes(text, language=language)
+        except Exception:
+            logger.exception("Question read-aloud synthesis failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Could not read that question aloud just now",
+            )
+        # Written via a temp file in the same directory, then moved: two
+        # producers asking at once must not read a half-written file.
+        with tempfile.NamedTemporaryFile(dir=cache_dir, suffix=".part", delete=False) as tmp:
+            tmp.write(audio)
+            tmp_path = Path(tmp.name)
+        tmp_path.replace(cached)
+
+    return FileResponse(
+        cached,
+        media_type="audio/wav",
+        # Immutable: the digest changes when the wording does, so a stale
+        # cached response is not reachable.
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @router.get("/session", response_model=InterviewSessionState)

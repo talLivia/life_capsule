@@ -2,9 +2,19 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Feather, Gift, Loader2, PartyPopper, Plus, ShieldOff } from 'lucide-react'
+import {
+  Feather,
+  Gift,
+  Loader2,
+  PanelRightClose,
+  PanelRightOpen,
+  PartyPopper,
+  Plus,
+  ShieldOff,
+} from 'lucide-react'
 import { GateStep } from '@/components/record/GateStep'
 import { InterviewAccordion } from '@/components/record/InterviewAccordion'
+import { ReadAloudButton } from '@/components/record/ReadAloudButton'
 import { RecordingList } from '@/components/record/RecordingList'
 import { SegmentUpload } from '@/components/record/SegmentUpload'
 import { VideoRecorder } from '@/components/record/VideoRecorder'
@@ -61,7 +71,7 @@ export function RecordPanel() {
 
   const {
     flow, loading, error, reload,
-    openCategory, viewingStep, isReviewing, progressLabel,
+    openCategory, viewingStep, isReviewing, progressLabel, overall,
     openCategoryId, setOpenCategory, selectStep,
     answerGate, answering, onRecordingAccepted,
   } = useInterviewFlow()
@@ -75,6 +85,22 @@ export function RecordPanel() {
   const [addingTake, setAddingTake] = useState(false)
   useEffect(() => {
     setAddingTake(false)
+  }, [viewingStep?.id])
+
+  // The category list, shown by default. Collapsing it leaves one question on
+  // screen and nothing else. Not persisted: it is a per-sitting preference,
+  // and a producer who returns to a hidden list has no clue where the
+  // questions went.
+  const [panelOpen, setPanelOpen] = useState(true)
+
+  // The two halves of "the question's voice never reaches the recording".
+  // `readingAloud` holds the record button; `capturing` takes the read-aloud
+  // control off the screen. Neither depends on the other being got right.
+  const [readingAloud, setReadingAloud] = useState(false)
+  const [capturing, setCapturing] = useState(false)
+  useEffect(() => {
+    setReadingAloud(false)
+    setCapturing(false)
   }, [viewingStep?.id])
 
   /**
@@ -170,15 +196,72 @@ export function RecordPanel() {
   return (
     <div className="animate-fade-in">
       <header className="max-w-7xl mx-auto px-6 pt-10 pb-5">
-        <div className="flex items-center gap-2 text-primary-400">
-          <Feather size={16} />
-          <span className="text-sm font-medium">Your Story</span>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-primary-400">
+            <Feather size={16} />
+            <span className="text-sm font-medium">Your Story</span>
+          </div>
+          {/* Desktop only. On narrow screens the list already stacks above
+              the question rather than beside it, so there is no column to
+              reclaim and the control would just be a second way to scroll. */}
+          <button
+            type="button"
+            onClick={() => setPanelOpen(open => !open)}
+            className="hidden lg:flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
+            aria-expanded={panelOpen}
+          >
+            {panelOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
+            {panelOpen ? 'Hide questions' : 'Show all questions'}
+          </button>
+        </div>
+
+        {/* ── How far through ──────────────────────────────────────────
+            Sections, not questions. The reachable-question denominator
+            moves from 89 to 129 as gates are answered, so a percentage of
+            it falls when a producer answers one truthfully. See
+            `buildOverallProgress`. The recorded count carries no
+            denominator, deliberately. */}
+        <div className="mt-4 flex flex-col gap-1.5">
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="text-xs text-gray-400">
+              {overall.sectionsDone} of {overall.sectionsTotal} sections finished
+            </span>
+            <span className="text-xs text-gray-500">
+              {overall.questionsRecorded === 1
+                ? '1 question recorded'
+                : `${overall.questionsRecorded} questions recorded`}
+            </span>
+          </div>
+          <div
+            className="h-1.5 rounded-full bg-surface-800 overflow-hidden"
+            role="progressbar"
+            aria-valuenow={overall.percent}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label="Progress through the interview"
+          >
+            <div
+              className="h-full bg-gradient-to-r from-primary-500 to-accent-500 transition-all duration-700"
+              style={{ width: `${overall.percent}%` }}
+            />
+          </div>
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-6 pb-16 grid grid-cols-1 lg:grid-cols-5 gap-6 items-start">
+      <div
+        className={`max-w-7xl mx-auto px-6 pb-16 grid grid-cols-1 gap-6 items-start ${
+          panelOpen ? 'lg:grid-cols-5' : 'lg:grid-cols-1'
+        }`}
+      >
         {/* ── The step being answered ─────────────────────────────────── */}
-        <main className="lg:col-span-3 flex flex-col gap-5 order-2 lg:order-1">
+        <main
+          className={`flex flex-col gap-5 order-2 lg:order-1 ${
+            // Collapsed, the question gets the whole width — but centred and
+            // capped, because a question line running the full width of a
+            // desktop monitor is harder to read, not easier.
+            panelOpen ? 'lg:col-span-3' : 'w-full max-w-3xl mx-auto'
+          }`}
+        >
           {viewingStep?.kind === 'gate' ? (
             <GateStep
               step={viewingStep}
@@ -208,6 +291,20 @@ export function RecordPanel() {
                 <h1 dir="auto" className="text-2xl md:text-3xl font-bold text-white mt-1.5 leading-snug">
                   {viewingStep.text}
                 </h1>
+                {/* Read aloud sits with the QUESTION, because that is what it
+                    reads — and it is absent, not merely disabled, while the
+                    camera is capturing. A button that cannot be pressed
+                    mid-answer is a stronger guarantee than one that must
+                    remember not to be. */}
+                {!capturing && (
+                  <div className="mt-2">
+                    <ReadAloudButton
+                      key={viewingStep.id}
+                      questionId={viewingStep.id}
+                      onPlayingChange={setReadingAloud}
+                    />
+                  </div>
+                )}
               </div>
 
               {showRecorder ? (
@@ -219,6 +316,8 @@ export function RecordPanel() {
                   questionText={viewingStep.text}
                   onAccepted={handleAccepted}
                   onCancel={takes.length > 0 ? () => setAddingTake(false) : undefined}
+                  recordDisabled={readingAloud}
+                  onCapturingChange={setCapturing}
                 />
               ) : (
                 <RecordingList recordings={takes} onDeleted={handleAccepted} />
@@ -242,16 +341,53 @@ export function RecordPanel() {
             </>
           ) : null}
 
+          {/* ── What each control does ────────────────────────────────
+              Always visible, never a tooltip or a first-run tour. The
+              producer this is built for may use the screen once a month,
+              so anything that explains itself only on hover, or only the
+              first time, explains itself to nobody. It costs a few lines
+              of grey text and removes the need to remember. */}
+          {viewingStep?.kind !== 'gate' && (
+            <dl className="text-[11px] text-gray-500 leading-relaxed border-t border-white/8 pt-3 flex flex-col gap-1">
+              <div className="flex gap-2">
+                <dt className="text-gray-400 shrink-0">Read aloud</dt>
+                <dd>hear the question spoken. Recording waits until it finishes.</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="text-gray-400 shrink-0">Record</dt>
+                <dd>answer in your own words. You can watch it back before saving.</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="text-gray-400 shrink-0">Add another take</dt>
+                <dd>
+                  say more without losing what you already said — answers are kept, never
+                  replaced.
+                </dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="text-gray-400 shrink-0">Extracted from this</dt>
+                <dd>what the archive understood, so you can catch a mistake.</dd>
+              </div>
+            </dl>
+          )}
+
           {/* No Back button. Every earlier question is one click away in
               the accordion, which says WHICH question it goes to — Back
               only ever went to the same place, without saying so. */}
         </main>
 
         {/* ── Categories ──────────────────────────────────────────────── */}
-        {/* Its own scroll container. With 16 categories this list is taller
-            than the viewport, and letting it grow the PAGE means scrolling
-            past the whole interview to reach the recorder. */}
-        <aside className="lg:col-span-2 order-1 lg:order-2 lg:sticky lg:top-6 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto messages-scroll">
+        {/* Collapsible (§13.1). Hidden, the screen becomes a single question
+            and nothing else — which is the whole guided-interview feel, on
+            the screen that already exists rather than a second one. It keeps
+            its own scroll container when open: with 16 categories the list is
+            taller than the viewport, and letting it grow the PAGE means
+            scrolling past the whole interview to reach the recorder. */}
+        <aside
+          className={`order-1 lg:order-2 lg:sticky lg:top-6 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto messages-scroll ${
+            panelOpen ? 'lg:col-span-2' : 'hidden'
+          }`}
+        >
           <InterviewAccordion
             freeNavigation={flow.free_navigation}
             categories={flow.categories}

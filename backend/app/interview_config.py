@@ -270,6 +270,27 @@ def _index() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str], Dict[str, str]]
     return by_id, by_text, category_of
 
 
+def available_languages() -> List[str]:
+    """Every language the question set is written in."""
+    return list(_document()["languages"].keys())
+
+
+def step_text(language: str, step_id: str) -> Optional[str]:
+    """A step's text in ONE language.
+
+    `_index()` deliberately cannot answer this: it folds every language
+    together because an id means the same thing in all of them, so the text it
+    holds is whichever language happened to load first. That is right for
+    validation and resolution, and wrong for anything a producer HEARS or
+    reads — read-aloud has to speak their own `recording_language`.
+    """
+    for category in _categories(language):
+        for step in iter_steps(category["steps"]):
+            if step["id"] == step_id:
+                return step["text"]
+    return None
+
+
 def is_valid_question_id(question_id: str) -> bool:
     """Guards the ingest payload — a client cannot invent an id.
 

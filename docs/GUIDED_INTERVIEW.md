@@ -607,8 +607,8 @@ no way to answer anything.
 | **3** | ✅ **DONE 2026-08-05** — popup auto-open removed, extraction handoff unwound per §14. Read §14's DONE note before phase 4: it records what the unwind actually cost. | — | Careful deletion |
 | **4** | ✅ **DONE 2026-08-05** — **Show questions** in the extraction panel | `awaiting_confirmation` | Button |
 | **5** | ✅ **DONE 2026-08-05** — nudge on leaving `/record` with pending questions | — | View-change hook |
-| **6** | `/record` UI: collapsible panel, takes accordion, progress bar, explainer | `interview_flow` | UI |
-| **7** | Read aloud + record disabled while playing | `tts.py` | Playback, cache |
+| **6** | ✅ **DONE 2026-08-05** — `/record` UI: collapsible panel, takes accordion, progress bar, explainer | `interview_flow` | UI |
+| **7** | ✅ **DONE 2026-08-05** — read aloud + record disabled while playing | `tts.py` | Playback, cache |
 
 
 Phase 8 (Pause) was dropped — see 16.A.
@@ -736,7 +736,88 @@ work out which is wrong. The per-recording count still shows on every row.
 build order only listed the leaving-`/record` one, and a duration threshold
 nobody has picked is a knob invented rather than needed.
 
-## 17.5 Decision 16.C, again
+## 17.5 Phases 6 and 7 (2026-08-05)
+
+The `/record` presentation work, and read-aloud. Two open decisions resolved,
+both differently from the recommendation, and both for measured reasons.
+
+### 🛑 6.A — progress is over SECTIONS, not reachable questions
+
+6.A recommended counting reachable questions, recomputed as gates are
+answered, because 129 is discouraging and wrong once gates rule some out. The
+diagnosis is right; the proposed fix does not work, and the measurement is the
+argument:
+
+**9 gates across 7 of the 16 categories. The reachable-question count runs
+from 89 with no gate answered to 129 with every branch opened.** Answering
+"yes, I served" adds 8 questions; the two `relationships` gates add 15
+between them. So a producer sitting at 20 of 89 (22%) who answers a gate
+truthfully drops to 20 of 97 (21%). **The bar goes backwards as a reward for
+answering** — the same discouragement 6.A set out to prevent, arriving from
+the other direction.
+
+Sections do not move. There are always exactly 16 whatever the gate answers:
+a gate changes how many questions a section holds, never whether the section
+exists. So the denominator is fixed for the life of the interview and the bar
+only advances. It can retreat if a producer DELETES recordings, which is real
+progress being undone rather than an artifact of counting.
+
+The recorded-question count rides alongside as a bare number with no
+denominator — the §8.4 rule exactly: a total that is not knowable must not be
+implied. "38 recorded" claims nothing about a ceiling; "38 of 89" claims
+something false.
+
+### 🛑 16.D — synthesise on demand and cache, with a warm script
+
+16.D preferred pre-generating all 129 per language, for no first-play latency
+and a loud build-time failure. On-demand + a persistent disk cache reaches the
+**same steady state** — each question synthesised at most once, ever — with no
+build step and no deploy artifact.
+
+It is also strictly safer in one respect the recommendation missed: a
+pre-generated set goes stale silently when a question's wording is edited, and
+would keep speaking the old sentence. The cache key hashes the TEXT, so an
+edit misses the cache and is re-spoken.
+
+`scripts/warm_question_audio.py` recovers what pre-generating actually bought:
+run it and every question is spoken into the same cache the endpoint reads, so
+nobody waits, and a language TTS cannot handle fails there, loudly, with a
+count and a non-zero exit.
+
+### §12's Hebrew go/no-go: answered, and it works
+
+Verified by synthesising a real interview question rather than by reading the
+config: Chatterbox is absent locally, the **edge-tts fallback produced a valid
+138KB WAV using `he-IL-HilaNeural`** — a real Hebrew neural voice, not an
+English voice reading Hebrew characters, which is the failure that map lookup
+falls back to for an unlisted language. Read-aloud is viable for the actual
+storyteller.
+
+### ⚠️ A pre-existing bug this surfaced: `synthesize_bytes` failed AFTER succeeding
+
+`tts_service.synthesize_bytes` deleted its temp file in a `finally` with no
+guard. On Windows the fallback path leaves the handle held briefly
+(pydub/ffmpeg), so the unlink raised `WinError 32` **after the audio had been
+produced and read** — turning a working synthesis into a failed call. It
+affected the voice-preview endpoint too, which shares the method. Cleanup is
+now non-fatal: a leftover file in the OS temp directory is the cheapest
+possible failure, and it must never destroy a good result.
+
+### The TTS-in-the-recording guarantee is structural, both ways
+
+Part One §2.3's worry — the synthetic voice landing in the video and in the
+transcript entity extraction reads — is prevented by two independent
+mechanisms, neither relying on getting an order right:
+
+- Recording cannot START while audio plays: `recordDisabled` holds the button
+  for exactly as long as playback reports itself active.
+- Read-aloud is **not rendered** while the camera is capturing (`recording` or
+  `paused`), so it cannot be pressed mid-answer. Absent, not merely disabled.
+
+Changing question also stops playback, so a voice cannot carry over onto a
+question it is not reading.
+
+## 17.6 Decision 16.C, again
 
 The once-ever auto-open now opens **the dropdown**, not a question. Opening a
 question teaches nothing about where questions live; opening the dropdown

@@ -259,7 +259,18 @@ class TTSService:
             await self.synthesize(text, tmp_path, speaker_wav, language)
             return Path(tmp_path).read_bytes()
         finally:
-            Path(tmp_path).unlink(missing_ok=True)
+            # Cleanup must never destroy a successful synthesis. On Windows the
+            # fallback path leaves the handle held briefly (pydub/ffmpeg), so
+            # this raised WinError 32 AFTER the audio had been produced and
+            # read — turning a working call into a failed one, here and in the
+            # voice-preview endpoint that shares this method. A leftover file
+            # in the OS temp directory is the cheapest possible failure.
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except OSError as cleanup_err:
+                logger.warning(
+                    "Could not remove TTS temp file %s: %s", tmp_path, cleanup_err
+                )
 
 
 # Suppress unused-name warning — re-exported for type hints elsewhere

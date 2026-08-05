@@ -81,6 +81,65 @@ async def test_family_role_forbidden(client: AsyncClient, family_auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_question_audio_synthesises_once_and_serves_the_cache(
+    client: AsyncClient, auth_headers, monkeypatch, tmp_path
+):
+    """Read-aloud speaks the producer's own language, and speaks it once.
+
+    The cache key carries a hash of the TEXT, so this also pins the property
+    that makes on-demand synthesis safe against a pre-generated set going
+    stale: editing a question's wording misses the cache and is re-spoken,
+    rather than playing the old sentence forever.
+    """
+    from app import interview_config
+    from app.api.v1 import interview as interview_api
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "QUESTION_AUDIO_DIR", str(tmp_path / "audio"))
+    calls: list[tuple[str, str]] = []
+
+    async def fake_synthesize(text, speaker_wav=None, language="en"):
+        calls.append((text, language))
+        return b"RIFFfake-wav-bytes"
+
+    monkeypatch.setattr(
+        interview_api.tts_service, "synthesize_bytes", fake_synthesize
+    )
+
+    question_id = interview_config.get_questions("he")[0]["id"]
+    url = f"/api/v1/interview/questions/{question_id}/audio"
+
+    first = await client.get(url, headers=auth_headers)
+    assert first.status_code == 200
+    assert first.headers["content-type"] == "audio/wav"
+    assert first.content == b"RIFFfake-wav-bytes"
+    # Spoken in the producer's recording_language, with that language's text —
+    # not whichever language happened to load first (see step_text).
+    assert calls == [(interview_config.step_text("he", question_id), "he")]
+
+    second = await client.get(url, headers=auth_headers)
+    assert second.status_code == 200
+    assert second.content == b"RIFFfake-wav-bytes"
+    assert len(calls) == 1, "a cached question must not be synthesised again"
+
+
+@pytest.mark.asyncio
+async def test_question_audio_rejects_an_unknown_question(client: AsyncClient, auth_headers):
+    response = await client.get(
+        "/api/v1/interview/questions/not-a-real-question/audio", headers=auth_headers
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_question_audio_is_producer_only(client: AsyncClient, family_auth_headers):
+    response = await client.get(
+        "/api/v1/interview/questions/childhood_q01/audio", headers=family_auth_headers
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_list_questions_default_hebrew(client: AsyncClient, auth_headers):
     """test_user has no recording_language set explicitly -> defaults to 'he'."""
     response = await client.get("/api/v1/interview/questions", headers=auth_headers)

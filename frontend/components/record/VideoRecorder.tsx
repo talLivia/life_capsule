@@ -30,6 +30,15 @@ interface VideoRecorderProps {
    *  screen immediately, rather than waiting for a poll to notice. */
   onAccepted: (segmentId?: string) => void
   onCancel?: () => void
+  /** Something else is making noise — the question being read aloud. Recording
+   *  must not start under it, or the synthetic voice lands in the video AND in
+   *  the transcript entity extraction reads (Part One §2.3). */
+  recordDisabled?: boolean
+  /** True while the camera is actually capturing. Lets the parent take the
+   *  read-aloud control OFF the screen for the duration, which is a stronger
+   *  guarantee than remembering not to press it: the button cannot be clicked
+   *  mid-recording because it is not there. */
+  onCapturingChange?: (capturing: boolean) => void
 }
 
 /* Reviewing an EXISTING answer no longer lives here. A question can hold
@@ -64,8 +73,16 @@ export function VideoRecorder({
   questionText,
   onAccepted,
   onCancel,
+  recordDisabled = false,
+  onCapturingChange,
 }: VideoRecorderProps) {
   const [phase, setPhase] = useState<Phase>('acquiring')
+  // Capturing covers paused too: the recorder is mid-take and the microphone
+  // is still part of this answer, so read-aloud stays away.
+  const capturing = phase === 'recording' || phase === 'paused'
+  useEffect(() => {
+    onCapturingChange?.(capturing)
+  }, [capturing, onCapturingChange])
   const [elapsed, setElapsed] = useState(0)
   const [uploadFraction, setUploadFraction] = useState(0)
   const [cameraErrorMsg, setCameraErrorMsg] = useState<string | null>(null)
@@ -410,8 +427,13 @@ export function VideoRecorder({
                 )}
                 <button
                   onClick={startRecording}
-                  className="btn-primary px-6 py-3 text-base"
+                  disabled={recordDisabled}
+                  className="btn-primary px-6 py-3 text-base disabled:opacity-40 disabled:cursor-not-allowed"
                   aria-label="Start recording"
+                  // Held while the question is being spoken. Starting under it
+                  // would capture the synthetic voice in the video and in the
+                  // transcript that entity extraction reads.
+                  title={recordDisabled ? 'Wait for the question to finish' : undefined}
                 >
                   <Video size={18} />
                   Start Recording

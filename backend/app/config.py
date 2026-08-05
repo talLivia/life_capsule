@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     STORAGE_PROVIDER: str = "r2"  # r2 | s3
     LOCAL_STORAGE_PATH: str = "uploads"
 
+    # Spoken interview questions, synthesised on first request and kept.
+    # Local disk rather than object storage on purpose: it is a CACHE, derived
+    # entirely from the question text and reproducible by deleting it and
+    # asking again, so it is not archive data and nothing is lost with it.
+    QUESTION_AUDIO_DIR: str = "uploads/question_audio"
+
     # AWS (retained for the base project's Terraform/EC2 GPU deploy path —
     # NOT used for object storage in this project; see R2_* below)
     AWS_ACCESS_KEY_ID: str = ""

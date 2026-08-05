@@ -43,6 +43,8 @@ export interface UseInterviewFlow {
 
   /** Counter text, or null when no honest count exists yet (§8.4). */
   progressLabel: string | null
+  /** Progress through the whole interview. See `buildOverallProgress`. */
+  overall: OverallProgress
 
   openCategoryId: string | null
   setOpenCategory: (categoryId: string) => void
@@ -54,6 +56,59 @@ export interface UseInterviewFlow {
   answering: boolean
   /** Call after a recording is accepted — refetches and auto-advances. */
   onRecordingAccepted: () => Promise<void>
+}
+
+export interface OverallProgress {
+  /** 0-100, for the bar. */
+  percent: number
+  sectionsDone: number
+  sectionsTotal: number
+  /** A bare count with no denominator, deliberately — see below. */
+  questionsRecorded: number
+}
+
+/**
+ * Progress through the whole interview, measured in SECTIONS.
+ *
+ * ## Why not a percentage of questions — decision 6.A, resolved differently
+ *
+ * 6.A recommended counting reachable questions, recomputed as gates are
+ * answered, on the grounds that 129 is discouraging and wrong once gates rule
+ * some out. The first half of that is right and the fix does not work, because
+ * a reachable-question denominator MOVES — and mostly upward.
+ *
+ * Measured against the real question set: 9 gates across 7 of the 16
+ * categories, and the reachable count runs from **89 with no gate answered to
+ * 129 with every branch opened**. Answering "yes, I served" adds 8 questions;
+ * the two `relationships` gates add 15. So a producer at 20 of 89 (22%) who
+ * answers a gate truthfully drops to 20 of 97 (21%). The bar goes BACKWARDS as
+ * a reward for answering, which is the same discouragement 6.A set out to
+ * avoid, arriving by a different route.
+ *
+ * Sections do not have this problem. There are always exactly 16 regardless of
+ * any gate answer — a gate changes how many questions a section holds, never
+ * whether the section exists — so the denominator is fixed for the life of the
+ * interview and the bar only moves forward. (It can move back if a producer
+ * DELETES recordings, which is real progress being undone rather than an
+ * artifact of counting.)
+ *
+ * The question count rides alongside as a bare number with no denominator, for
+ * the same reason §8.4 shows no counter until a category is settled: a total
+ * that is not knowable must not be implied. "38 recorded" claims nothing about
+ * a ceiling; "38 of 89" would claim something false.
+ */
+function buildOverallProgress(flow: InterviewFlow | null): OverallProgress {
+  const categories = flow?.categories ?? []
+  const sectionsDone = categories.filter(c => c.complete).length
+  const questionsRecorded = categories.reduce((n, c) => n + c.done_count, 0)
+  return {
+    sectionsDone,
+    sectionsTotal: categories.length,
+    questionsRecorded,
+    percent: categories.length
+      ? Math.round((sectionsDone / categories.length) * 100)
+      : 0,
+  }
 }
 
 /**
@@ -228,6 +283,7 @@ export function useInterviewFlow(): UseInterviewFlow {
     viewingStep,
     isReviewing,
     progressLabel: buildProgressLabel(openCategory, viewingStep),
+    overall: buildOverallProgress(flow),
     openCategoryId,
     setOpenCategory,
     selectStep,

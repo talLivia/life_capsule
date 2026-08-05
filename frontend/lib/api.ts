@@ -385,6 +385,17 @@ export const api = {
     return response.data
   },
 
+  /** The question spoken aloud, in the producer's own recording language.
+   *  A blob rather than a URL so the request carries the auth header like
+   *  every other call — an <audio src> would go out unauthenticated. */
+  getQuestionAudio: async (questionId: string): Promise<Blob> => {
+    const response = await apiClient.get(
+      `/api/v1/interview/questions/${encodeURIComponent(questionId)}/audio`,
+      { responseType: 'blob' },
+    )
+    return response.data
+  },
+
   // Answers EVERY question for one recording in a single call, so the
   // pipeline resumes once and runs to completion. Replaced confirmEntity,
   // which answered one name and left the graph to pause again with the next.
