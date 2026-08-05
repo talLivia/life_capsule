@@ -1198,7 +1198,25 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     # screen asked about. finalize_ingest needs the second even when the first
     # is empty — a skipped question still has to be stamped as asked, or it
     # comes back on every future recording.
-    side_answers = answer.get("sides") or {}
+    # ── Everything below travels under the CORRECTED names ──────────────────
+    #
+    # The entities were renamed a few lines above, and every downstream step
+    # resolves people by NAME: `write_parentage` and `write_sides` look the
+    # entity up, and the acceptance sets here already hold corrected names
+    # because they are built from `accepted`. Carrying the screen's original
+    # spelling into either would compare "גבי" against a set holding "גבינון"
+    # and then search for a "גבי" that no longer exists — the answer dropped
+    # with a warning nobody reads.
+    #
+    # Confirmed on two real recordings: "גבי" corrected to "גבינון" and told
+    # he was רז's child, and the same shape for "יונתן"/"יוני". Both left the
+    # person floating in the tree. The client keys its answers by the name the
+    # SCREEN asked about, which is the only name it knows, so the remapping
+    # has to happen here — at the one point that knows both spellings.
+    side_answers = {
+        corrected_name(name): given
+        for name, given in (answer.get("sides") or {}).items()
+    }
     accepted_aunt_uncle_names = {
         r["from_name"] if r["to_name"] == entity_extraction.SELF else r["to_name"]
         for r in accepted
@@ -1206,13 +1224,17 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         and entity_extraction.SELF in (r.get("from_name"), r.get("to_name"))
     }
     asked_sides = [
-        relative["name"]
+        corrected_name(relative["name"])
         for question in pending_sides
         for relative in question["relatives"]
-        if relative.get("recorded") or relative["name"] in accepted_aunt_uncle_names
+        if relative.get("recorded")
+        or corrected_name(relative["name"]) in accepted_aunt_uncle_names
     ]
 
-    parentage_answers = answer.get("parentage") or {}
+    parentage_answers = {
+        corrected_name(name): given
+        for name, given in (answer.get("parentage") or {}).items()
+    }
     # A sibling this recording only PROPOSED is asked about on the same screen
     # — that is what makes the question work on a first recording. But their
     # parentage may only be written if the sibling relation itself was
@@ -1244,12 +1266,12 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         return bool(given.get("parent_names") or (given.get("new_parent_name") or "").strip())
 
     asked_parentage = [
-        sibling["name"]
+        corrected_name(sibling["name"])
         for question in pending_parentage
         for sibling in question["siblings"]
         if sibling.get("recorded")
-        or sibling["name"] in accepted_sibling_names
-        or _answered_parentage(sibling["name"])
+        or corrected_name(sibling["name"]) in accepted_sibling_names
+        or _answered_parentage(corrected_name(sibling["name"]))
     ]
 
     return {

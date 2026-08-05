@@ -1213,3 +1213,113 @@ async def test_a_correction_survives_a_name_edit_on_the_same_screen(monkeypatch)
     stored = result["proposed_relations"][0]
     assert stored["from_name"] == "אליאן", "the correction follows the renamed entity"
     assert stored["relation_type"] == "sibling"
+
+
+async def test_a_renamed_sibling_keeps_its_parentage_answer(monkeypatch):
+    """A misheard name and a parentage answer, about the same person, on the
+    same screen. Confirmed broken on two real recordings.
+
+    "גבי" is corrected to "גבינון" and told he is רז's child. The entity is
+    written under the CORRECTED name, and every relation endpoint is corrected
+    to match — but the parentage question still names him "גבי", because that
+    is what the screen asked about. So the acceptance test compares "גבי"
+    against a set holding "גבינון", and the entity lookup in write_parentage
+    searches for a "גבי" that no longer exists. Both miss, and the answer is
+    dropped with a warning nobody reads.
+
+    The names the node hands on must be the names the entities were WRITTEN
+    under, or every downstream lookup is searching for a person who was
+    renamed a few lines earlier.
+    """
+    import app.analysis_graph as ag
+
+    monkeypatch.setattr(
+        ag,
+        "interrupt",
+        lambda _payload: {
+            "identity": {}, "types": {}, "years": {}, "sides": {},
+            "name_edits": {"גבי": "גבינון"},
+            # The sibling proposal IS accepted — he is a brother — and the
+            # parentage question is answered for the same person.
+            "relations": {"0": True},
+            "parentage": {"גבי": {"parent_names": [], "new_parent_name": "רז"}},
+        },
+    )
+
+    state = {
+        "segment_id": "seg-6",
+        "names_to_check": [],
+        "extracted_entities": [
+            {"name": "גבי", "type": "person", "alternative_type": None, "summary": "s"},
+        ],
+        "proposed_relations": [
+            {
+                "from_name": "גבי",
+                "to_name": ag.entity_extraction.SELF,
+                "relation_type": "sibling",
+                "index": 0,
+            }
+        ],
+        "parentage": {
+            "siblings": [{"name": "גבי"}],
+            "parents": [{"name": "אילנה"}, {"name": "צבי"}],
+            "known_people": [{"name": "רז"}],
+        },
+    }
+
+    result = await ag.human_confirm_node(state)
+
+    # The entity is written as גבינון...
+    assert result["extracted_entities"][0]["name"] == "גבינון"
+    # ...so the parentage answer must travel under that name too, or
+    # write_parentage looks up a person who does not exist.
+    assert result["parentage"]["asked_names"] == ["גבינון"]
+    assert "גבינון" in result["parentage"]["answers"]
+    assert result["parentage"]["answers"]["גבינון"]["new_parent_name"] == "רז"
+
+
+async def test_a_renamed_aunt_or_uncle_keeps_its_side_answer(monkeypatch):
+    """The same bug, one question along.
+
+    `asked_sides` compared the screen's spelling against a set built from the
+    corrected relations, exactly as parentage did. Fixed together and pinned
+    together, because finding this class twice and fixing it once is how the
+    second half comes back.
+    """
+    import app.analysis_graph as ag
+
+    monkeypatch.setattr(
+        ag,
+        "interrupt",
+        lambda _payload: {
+            "identity": {}, "types": {}, "years": {}, "parentage": {},
+            "name_edits": {"אמנונ": "אמנון"},
+            "relations": {"0": True},
+            "sides": {"אמנונ": "צבי"},
+        },
+    )
+
+    state = {
+        "segment_id": "seg-7",
+        "names_to_check": [],
+        "extracted_entities": [
+            {"name": "אמנונ", "type": "person", "alternative_type": None, "summary": "s"},
+        ],
+        "proposed_relations": [
+            {
+                "from_name": "אמנונ",
+                "to_name": ag.entity_extraction.SELF,
+                "relation_type": "aunt_uncle",
+                "index": 0,
+            }
+        ],
+        "sides": {
+            "relatives": [{"name": "אמנונ"}],
+            "parents": [{"name": "צבי"}, {"name": "אילנה"}],
+        },
+    }
+
+    result = await ag.human_confirm_node(state)
+
+    assert result["sides"]["asked_names"] == ["אמנון"]
+    assert result["sides"]["answers"] == {"אמנון": "צבי"}
