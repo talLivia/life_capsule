@@ -9,10 +9,68 @@ import { usePendingConfirmations } from '@/components/providers/PendingConfirmat
 // things this recording needs checked. Two counts of the same payload is how
 // a badge and the screen it opens come to disagree.
 import { countQuestions } from '@/lib/pendingQuestions'
-import type { ApiError, ConfirmEntitiesResult, PendingConfirmation } from '@/lib/types'
+import type {
+  ApiError,
+  ConfirmEntitiesResult,
+  PendingConfirmation,
+  RelationEdit,
+} from '@/lib/types'
 
 /** Sentinel for "someone new" — never a real candidate id. */
 const NEW_ENTITY = '__new__'
+
+/** The producer themselves, as the relation payload names them. */
+const SELF = '__SELF__'
+
+/**
+ * Pick a person for one end of a corrected relation.
+ *
+ * A `select` rather than the datalist the parentage question uses, and the
+ * difference is deliberate: parentage has to admit a parent nobody has ever
+ * mentioned, so it must accept typing. A correction only ever re-points a
+ * relation at someone the archive already knows, so the stricter control is
+ * available — and a value that cannot be typed cannot be a typo, which is the
+ * whole reason the datalist existed. The server refuses anything it did not
+ * offer either way; this makes that refusal unreachable by normal use.
+ */
+function PersonSelect({
+  value,
+  people,
+  disabled,
+  label,
+  onChange,
+}: {
+  value: string
+  people: { name: string }[]
+  disabled: boolean
+  label: string
+  onChange: (name: string) => void
+}) {
+  return (
+    <select
+      value={value}
+      disabled={disabled}
+      aria-label={label}
+      onChange={e => onChange(e.target.value)}
+      dir="auto"
+      className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white max-w-[10rem]"
+    >
+      <option value={SELF}>You</option>
+      {people.map(person => (
+        <option key={person.name} value={person.name}>
+          {person.name}
+        </option>
+      ))}
+      {/* A proposal can name someone who is not in the offered list — the
+          server builds it from this recording's own proposals too, but an
+          older stored payload may not have them. Keeping the current value
+          selectable stops the control silently changing the answer. */}
+      {value !== SELF && !people.some(p => p.name === value) && (
+        <option value={value}>{value}</option>
+      )}
+    </select>
+  )
+}
 
 /**
  * Everything unclear about ONE recording, on one screen, with one submit.
@@ -86,6 +144,10 @@ export function EntityConfirmModal({
   // Aunt/uncle name -> the parent they are a sibling of. One choice each:
   // an uncle is a sibling of one parent, not both.
   const [sides, setSides] = useState<Record<string, string>>({})
+  // Proposal index -> the relation it should have been. Present only for
+  // proposals the producer opened "Not quite" on; an edited proposal is
+  // stored as corrected without also needing its tick.
+  const [relationEdits, setRelationEdits] = useState<Record<number, RelationEdit>>({})
   const [answering, setAnswering] = useState(false)
 
   // Escape leaves, except mid-submit — closing on a request already in flight
@@ -117,6 +179,7 @@ export function EntityConfirmModal({
     setOtherOpen({})
     setNameEdits({})
     setSides({})
+    setRelationEdits({})
   }, [pending?.segment_id])
 
   const identityQuestions = useMemo(
@@ -147,14 +210,33 @@ export function EntityConfirmModal({
     () => pending?.pending_confirmation.editable_entities ?? [],
     [pending],
   )
+  const correctionPeople = useMemo(
+    () => pending?.pending_confirmation.correction_people ?? [],
+    [pending],
+  )
+  const correctionTypes = useMemo(
+    () => pending?.pending_confirmation.correction_types ?? [],
+    [pending],
+  )
+  // Corrections can only be offered when the server sent the options. A
+  // payload stored before this existed has neither, and the control is simply
+  // absent rather than offering a dropdown that would be refused on submit.
+  const canCorrect = correctionTypes.length > 0
 
   // The server rejects a partial submit of identity/type, so the button must
   // not offer one. Relations are deliberately NOT counted here: they are
   // skippable, and including them would make the button demand answers the
   // server does not require — turning "you may skip this" into "you may not".
+  // A correction that relates somebody to themselves is refused by the server
+  // and by a CHECK constraint below it. Blocked here so it is caught while the
+  // two dropdowns are still on screen, rather than as an error after submit.
+  const brokenEdit = Object.values(relationEdits).some(
+    edit => edit.from_name === edit.to_name,
+  )
   const allAnswered =
     identityQuestions.every((q) => identity[q.name]) &&
-    typeQuestions.every((q) => types[q.name])
+    typeQuestions.every((q) => types[q.name]) &&
+    !brokenEdit
   const answeredCount =
     identityQuestions.filter((q) => identity[q.name]).length +
     typeQuestions.filter((q) => types[q.name]).length
@@ -187,6 +269,9 @@ export function EntityConfirmModal({
         relations: Object.fromEntries(
           Object.entries(relations).filter(([, accepted]) => accepted),
         ),
+        // A corrected proposal is stored as corrected and needs no separate
+        // acceptance. Sent keyed by the same proposal index.
+        relation_edits: relationEdits,
         years: Object.fromEntries(
           Object.entries(years).filter(([, v]) => v.trim()),
         ),
@@ -405,16 +490,21 @@ export function EntityConfirmModal({
               Tick the ones that are right. Anything you leave alone is simply not saved.
             </p>
             {relationQuestions.map((q) => (
+              <div key={`rel-${q.index}`} className="flex flex-col gap-1.5">
               <button
-                key={`rel-${q.index}`}
                 type="button"
                 onClick={() =>
                   setRelations((s) => ({ ...s, [q.index]: !s[q.index] }))
                 }
-                disabled={answering}
-                className={optionClass(Boolean(relations[q.index]))}
+                // A corrected proposal is already accepted; ticking it as
+                // well would say nothing more, and unticking it could not
+                // take the correction back.
+                disabled={answering || Boolean(relationEdits[q.index])}
+                className={optionClass(
+                  Boolean(relations[q.index]) || Boolean(relationEdits[q.index]),
+                )}
               >
-                {radio(Boolean(relations[q.index]))}
+                {radio(Boolean(relations[q.index]) || Boolean(relationEdits[q.index]))}
                 <span className="flex flex-col gap-0.5 text-left">
                   <span className="text-sm font-medium text-white">
                     <span dir="auto">{q.from_name === '__SELF__' ? 'You' : q.from_name}</span>
@@ -430,6 +520,116 @@ export function EntityConfirmModal({
                   )}
                 </span>
               </button>
+                {/* The way to say the proposal is WRONG, as opposed to
+                    declining it — which only ever meant "don't store this",
+                    leaving the real relation uncaptured. Opening it IS the
+                    acceptance: a corrected relation is stored without also
+                    needing its tick, because correcting one is saying it
+                    should exist in the corrected form. */}
+                {canCorrect && !relationEdits[q.index] && (
+                  <button
+                    type="button"
+                    disabled={answering}
+                    onClick={() =>
+                      setRelationEdits(current => ({
+                        ...current,
+                        // Defaults to the proposal, so a correction that
+                        // changes only the TYPE needs one control touched.
+                        [q.index]: {
+                          relation_type: q.relation_type,
+                          from_name: q.from_name,
+                          to_name: q.to_name,
+                        },
+                      }))
+                    }
+                    className="self-start text-xs text-primary-300 hover:text-primary-200 pl-1"
+                  >
+                    Not quite — fix this
+                  </button>
+                )}
+
+                {relationEdits[q.index] && (
+                  <div className="flex flex-col gap-2 px-4 py-3 rounded-xl border border-primary-500/30 bg-primary-500/5">
+                    <div className="flex flex-wrap items-center gap-2 text-sm text-white">
+                      {/* Both ends are selectable: a proposal can be wrong
+                          about a relation between two OTHER people, and
+                          correcting only one end cannot express that. */}
+                      <PersonSelect
+                        value={relationEdits[q.index].from_name}
+                        people={correctionPeople}
+                        disabled={answering}
+                        label={`Who, in relation ${q.index + 1}`}
+                        onChange={name =>
+                          setRelationEdits(current => ({
+                            ...current,
+                            [q.index]: { ...current[q.index], from_name: name },
+                          }))
+                        }
+                      />
+                      <span className="text-gray-400">is the</span>
+                      <select
+                        value={relationEdits[q.index].relation_type}
+                        disabled={answering}
+                        aria-label={`Relation ${q.index + 1}`}
+                        onChange={e =>
+                          setRelationEdits(current => ({
+                            ...current,
+                            [q.index]: {
+                              ...current[q.index],
+                              relation_type: e.target.value,
+                            },
+                          }))
+                        }
+                        className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white"
+                      >
+                        {/* Straight from the relation_types table, so adding
+                            a type is a data change and an invented one cannot
+                            be picked at all. */}
+                        {correctionTypes.map(option => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-gray-400">of</span>
+                      <PersonSelect
+                        value={relationEdits[q.index].to_name}
+                        people={correctionPeople}
+                        disabled={answering}
+                        label={`Of whom, in relation ${q.index + 1}`}
+                        onChange={name =>
+                          setRelationEdits(current => ({
+                            ...current,
+                            [q.index]: { ...current[q.index], to_name: name },
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        disabled={answering}
+                        onClick={() =>
+                          setRelationEdits(current => {
+                            const next = { ...current }
+                            delete next[q.index]
+                            return next
+                          })
+                        }
+                        className="text-xs text-gray-400 hover:text-white"
+                      >
+                        Cancel this fix
+                      </button>
+                      {relationEdits[q.index].from_name ===
+                        relationEdits[q.index].to_name && (
+                        <span className="text-xs text-amber-300">
+                          Pick two different people.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             ))}
           </fieldset>
         )}

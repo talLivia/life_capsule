@@ -33,7 +33,7 @@ from app.schemas import (
     SegmentPresignRequest,
     SegmentPresignResponse,
 )
-from app.services import gate_answers, interview_flow
+from app.services import entity_extraction, gate_answers, interview_flow
 from app.services.gate_answers import InvalidGateAnswer
 from app.services.storage import storage_service
 from app.services.tts import tts_service
@@ -754,6 +754,9 @@ async def confirm_entities(
     # Not a question — the full list of names this recording produced, any of
     # which may be corrected.
     editable_names = {e["name"] for e in pending.get("editable_entities") or []}
+    # Also not questions: the OPTIONS a wrong relation may be corrected to.
+    correction_people = {p["name"] for p in pending.get("correction_people") or []}
+    correction_types = {t["value"] for t in pending.get("correction_types") or []}
 
     # Staleness, both directions. An answer to a name this screen never asked
     # about means the client is answering a payload the pipeline has moved
@@ -765,6 +768,9 @@ async def confirm_entities(
         # skippable: skipping means sending nothing, not sending an answer to
         # a question this recording never raised.
         | (set(payload.relations) - set(relation_questions))
+        # A correction names the proposal it corrects, so it is stale in
+        # exactly the same way an acceptance is.
+        | (set(payload.relation_edits) - set(relation_questions))
         | (set(payload.years) - set(year_questions))
         | (set(payload.parentage) - parentage_siblings)
         | (set(payload.name_edits) - editable_names)
@@ -835,6 +841,37 @@ async def confirm_entities(
                 {"name": name, "given": given, "reason": outcome.reason or "not understood"}
             )
 
+    # A correction may only name a type and people this question OFFERED.
+    # Same rule as parentage and sides, for the same reason: the store filters
+    # again, but a bad value should be REFUSED rather than dropped — a
+    # correction that silently does nothing is the bug this whole feature
+    # exists to fix, and it would be maddening to hit twice.
+    for index, edit in payload.relation_edits.items():
+        if edit.relation_type not in correction_types:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"relation_edits[{index}].relation_type must be one this "
+                    f"question offered; got {edit.relation_type!r}"
+                ),
+            )
+        for field_name, name in (("from_name", edit.from_name), ("to_name", edit.to_name)):
+            if name != entity_extraction.SELF and name not in correction_people:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"relation_edits[{index}].{field_name} must be someone this "
+                        f"question offered; got {name!r}"
+                    ),
+                )
+        if edit.from_name == edit.to_name:
+            # ck_entity_relations_not_self would reject it at the database, but
+            # a 400 naming the problem beats a constraint violation.
+            raise HTTPException(
+                status_code=400,
+                detail=f"relation_edits[{index}] cannot relate someone to themselves",
+            )
+
     parentage_answers: dict = {}
     for sibling_name, given in payload.parentage.items():
         unknown_parents = set(given.parent_names) - parentage_parents
@@ -875,6 +912,11 @@ async def confirm_entities(
             # proposal only where this says True, so a declined or skipped
             # relation and an absent key are the same thing.
             "relations": dict(payload.relations),
+            # A corrected proposal is stored as corrected, and counts as
+            # accepted on its own — see RelationEdit.
+            "relation_edits": {
+                index: edit.model_dump() for index, edit in payload.relation_edits.items()
+            },
             "years": parsed_years,
             # Validated at the edge, like years: a ticked parent must be one
             # the question actually offered. Otherwise a client could name any

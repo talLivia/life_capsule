@@ -293,7 +293,22 @@ export interface PendingConfirmation {
      *  can be corrected. Never causes the screen to appear on its own. */
     editable_entities?: { name: string; type?: string | null }[]
     side_questions?: SideQuestion[]
+    /** Also not questions: the OPTIONS a wrong relation is corrected with.
+     *  Both come from the server so the screen can only offer what exists —
+     *  the relation vocabulary is a table, not a list duplicated here. Absent
+     *  on a payload stored before corrections existed, in which case the
+     *  correction control simply is not offered. */
+    correction_people?: { name: string; entity_id: string | null }[]
+    correction_types?: { value: string; label: string }[]
   }
+}
+
+/** A wrong relation, as the producer says it actually is. All three parts,
+ *  because a correction is a statement about the whole relation. */
+export interface RelationEdit {
+  relation_type: string
+  from_name: string
+  to_name: string
 }
 
 /** Whose child is this sibling?
@@ -349,6 +364,13 @@ export interface EntityBatchAnswer {
    *  others are wrong in opposite directions. Omitting a key and sending
    *  false mean the same thing. */
   relations?: Record<string, boolean>
+  /** Proposed relation index -> the relation it should have been.
+   *
+   *  Declining a wrong proposal only ever meant "don't store this", which
+   *  left the REAL relation uncaptured. An edited proposal is stored as
+   *  corrected and needs no separate acceptance — correcting one is saying it
+   *  should exist, in the corrected form. */
+  relation_edits?: Record<number, RelationEdit>
   /** Entity name -> whatever the producer typed. Free text on purpose:
    *  "בערך 1973" is a fine answer and the client should not parse it. The
    *  server resolves it to one year or refuses with a reason. */

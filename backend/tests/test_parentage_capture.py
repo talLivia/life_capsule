@@ -1067,3 +1067,149 @@ async def test_declining_a_sibling_without_answering_still_writes_nothing(monkey
 
     result = await ag.human_confirm_node(state)
     assert result["parentage"]["asked_names"] == []
+
+
+async def test_a_corrected_relation_replaces_the_proposal(monkeypatch):
+    """"Not quite — fix this": the wrong relation becomes the right one.
+
+    The case from live testing: יוסי is the producer's BROTHER and extraction
+    proposed him as a nephew. Before this, the only available answers were
+    "yes, nephew" and silence — so the real relation could not be captured at
+    all, and the tree drew him in the wrong place or not at all.
+    """
+    import app.analysis_graph as ag
+
+    monkeypatch.setattr(
+        ag,
+        "interrupt",
+        lambda _payload: {
+            "identity": {}, "types": {}, "years": {}, "sides": {},
+            "name_edits": {}, "parentage": {},
+            # NOT ticked. Correcting it is the acceptance.
+            "relations": {},
+            "relation_edits": {
+                "0": {
+                    "relation_type": "sibling",
+                    "from_name": "יוסי",
+                    "to_name": "__SELF__",
+                }
+            },
+        },
+    )
+
+    state = {
+        "segment_id": "seg-3",
+        "names_to_check": [],
+        "extracted_entities": [
+            {"name": "יוסי", "type": "person", "alternative_type": None, "summary": "s"},
+        ],
+        "proposed_relations": [
+            {
+                "from_name": "יוסי",
+                "to_name": ag.entity_extraction.SELF,
+                "relation_type": "aunt_uncle",
+                "index": 0,
+            }
+        ],
+    }
+
+    result = await ag.human_confirm_node(state)
+
+    assert len(result["proposed_relations"]) == 1, (
+        "a corrected relation is stored without also needing its tick"
+    )
+    stored = result["proposed_relations"][0]
+    assert stored["relation_type"] == "sibling"
+    assert stored["from_name"] == "יוסי"
+    assert stored["to_name"] == ag.entity_extraction.SELF
+
+
+async def test_a_correction_can_repoint_both_ends(monkeypatch):
+    """The nephew case: בני is not the producer's brother, he is ניר's child.
+
+    Type AND an endpoint change together, which is why an edit carries all
+    three parts rather than patching one.
+    """
+    import app.analysis_graph as ag
+
+    monkeypatch.setattr(
+        ag,
+        "interrupt",
+        lambda _payload: {
+            "identity": {}, "types": {}, "years": {}, "sides": {},
+            "name_edits": {}, "parentage": {}, "relations": {},
+            "relation_edits": {
+                "0": {"relation_type": "parent", "from_name": "ניר", "to_name": "בני"}
+            },
+        },
+    )
+
+    state = {
+        "segment_id": "seg-4",
+        "names_to_check": [],
+        "extracted_entities": [
+            {"name": "בני", "type": "person", "alternative_type": None, "summary": "s"},
+        ],
+        "proposed_relations": [
+            {
+                "from_name": "בני",
+                "to_name": ag.entity_extraction.SELF,
+                "relation_type": "sibling",
+                "index": 0,
+            }
+        ],
+    }
+
+    result = await ag.human_confirm_node(state)
+    stored = result["proposed_relations"][0]
+    assert (stored["from_name"], stored["relation_type"], stored["to_name"]) == (
+        "ניר", "parent", "בני",
+    )
+
+
+async def test_a_correction_survives_a_name_edit_on_the_same_screen(monkeypatch):
+    """Both corrections at once: the name was misheard AND the relation wrong.
+
+    Endpoints are resolved by name at write time, so a correction naming the
+    OLD spelling while the entity is stored under the new one would be dropped
+    with a log line nobody reads.
+    """
+    import app.analysis_graph as ag
+
+    monkeypatch.setattr(
+        ag,
+        "interrupt",
+        lambda _payload: {
+            "identity": {}, "types": {}, "years": {}, "sides": {},
+            "parentage": {}, "relations": {},
+            "name_edits": {"ליאן": "אליאן"},
+            "relation_edits": {
+                "0": {
+                    "relation_type": "sibling",
+                    "from_name": "ליאן",
+                    "to_name": "__SELF__",
+                }
+            },
+        },
+    )
+
+    state = {
+        "segment_id": "seg-5",
+        "names_to_check": [],
+        "extracted_entities": [
+            {"name": "ליאן", "type": "person", "alternative_type": None, "summary": "s"},
+        ],
+        "proposed_relations": [
+            {
+                "from_name": "ליאן",
+                "to_name": ag.entity_extraction.SELF,
+                "relation_type": "aunt_uncle",
+                "index": 0,
+            }
+        ],
+    }
+
+    result = await ag.human_confirm_node(state)
+    stored = result["proposed_relations"][0]
+    assert stored["from_name"] == "אליאן", "the correction follows the renamed entity"
+    assert stored["relation_type"] == "sibling"

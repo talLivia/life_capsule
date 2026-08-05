@@ -3,8 +3,16 @@ import type { PendingConfirmation } from '@/lib/types'
 /** Keys in the pending payload that are NOT questions. Everything else in it
  *  is one, counted generically so that a class added on the server appears
  *  here without this file being edited — the omission that caused the bug
- *  below could not then happen again. */
-const NON_QUESTION_KEYS = new Set(['editable_entities'])
+ *  below could not then happen again.
+ *
+ *  `correction_people` and `correction_types` are the OPTIONS a wrong relation
+ *  is corrected with, not things being asked. Counted as questions they would
+ *  report "23 things to check" for one relation and a dropdown. */
+const NON_QUESTION_KEYS = new Set([
+  'editable_entities',
+  'correction_people',
+  'correction_types',
+])
 
 /**
  * How many questions one recording raises, of ANY class.

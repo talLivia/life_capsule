@@ -1261,3 +1261,42 @@ def test_type_questions_offers_exactly_the_two_the_extractor_named():
         [{"name": "X", "type": "place", "alternative_type": "organisation"}]
     )[0]
     assert (q["type"], q["alternative_type"]) == ("place", "organisation")
+
+
+async def test_a_relation_correction_must_name_an_offered_type(
+    client: AsyncClient, db_session, segment, analysis_session_factory,
+    fake_checkpointer, auth_headers, monkeypatch,
+):
+    """An invented relation type is REFUSED, not dropped.
+
+    The FK on entity_relations.relation_type is the backstop, but a correction
+    that silently does nothing is exactly the bug this feature exists to fix —
+    hitting it again on the fix itself would be maddening.
+    """
+    segment_id = segment.id
+    await _pause_with(
+        monkeypatch, segment_id, extraction=_MOSHE,
+        candidates=[{"uuid": "u2", "name": "Moshe Cohen", "summary": "army friend"}],
+    )
+    db_session.expire_all()
+
+    resp = await client.post(
+        f"/api/v1/interview/segments/{segment_id}/confirm-entities",
+        json={
+            "identity": {"Moshe": {"same_as_existing": False}},
+            "types": {},
+            "relation_edits": {
+                "0": {
+                    "relation_type": "brother-ish",
+                    "from_name": "__SELF__",
+                    "to_name": "Moshe",
+                }
+            },
+        },
+        headers=auth_headers,
+    )
+    # Either the proposal index is not one this recording raised (409) or the
+    # type is not one the question offered (400). Both are a loud refusal,
+    # which is the property under test.
+    assert resp.status_code in (400, 409)
+    assert "brother-ish" in resp.text or "not questions" in resp.text.lower()

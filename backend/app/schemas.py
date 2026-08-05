@@ -444,6 +444,26 @@ class ParentageAnswer(BaseModel):
     new_parent_name: Optional[str] = None
 
 
+class RelationEdit(BaseModel):
+    """A proposed relation, as the producer says it actually is.
+
+    All three parts are required rather than patch-style optionals. A
+    correction is a statement about the whole relation — "בני is not my
+    brother, he is ניר's child" changes the type AND an endpoint — and a
+    partial edit leaves the client deciding which parts of a wrong proposal to
+    keep, which is how half-corrected relations get written.
+
+    Endpoints are NAMES, matching the proposal and the parentage answer: they
+    have to work on a recording that named someone moments ago, before any row
+    exists. `__SELF__` is the producer. Both ends are editable, because a
+    proposal can be wrong about a relation between two other people.
+    """
+
+    relation_type: str
+    from_name: str
+    to_name: str
+
+
 class EntityBatchConfirmRequest(BaseModel):
     """Every answer for ONE recording, submitted together.
 
@@ -471,6 +491,16 @@ class EntityBatchConfirmRequest(BaseModel):
     # speaker — "ניר ורז הם אחים שלי" is two sibling proposals — so a name
     # would not identify one.
     relations: Dict[str, bool] = Field(default_factory=dict)
+    # Proposed relation index (as a string) -> the relation it should have
+    # been. The gap this closes: the screen could confirm a proposal or ignore
+    # it, and had no way to say "wrong — here is the right one". A producer
+    # whose brother was proposed as a nephew could only decline, leaving the
+    # real relation uncaptured, and a producer who improvised the correction
+    # through the parentage question had it silently discarded.
+    #
+    # An edited proposal is stored WITHOUT also needing `relations[i] = true`:
+    # correcting a relation is saying it should exist, in the corrected form.
+    relation_edits: Dict[str, RelationEdit] = Field(default_factory=dict)
     # Entity name -> whatever the producer typed for its year. Free text, not
     # an int: "בערך 1973" is a perfectly good answer and the client should not
     # have to parse it. Skippable — omit the key to say nothing. Text the

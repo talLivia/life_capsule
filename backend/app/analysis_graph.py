@@ -672,6 +672,20 @@ async def check_entities_node(state: AnalysisState) -> dict:
         sides = await entity_store.aunt_uncle_candidates(
             db, group_id, proposed_dicts, entity_extraction.SELF
         )
+        # What a WRONG relation may be corrected to. Both read here for the
+        # same reason as the two above — the database is open and
+        # human_confirm stays a pure function over state.
+        #
+        # Not derived from `parentage` even though it also carries people:
+        # that returns nothing at all when the producer has no recorded
+        # parents, and a misclassified relation still needs correcting then.
+        correction_people = await entity_store.people_for_correction(
+            db, group_id, proposed_dicts, entity_extraction.SELF
+        )
+        # The SAME vocabulary the extractor may propose from. A correction that
+        # could name a type extraction can never produce would be two lists to
+        # keep in step; the FK is the backstop either way.
+        correction_types = await entity_store.get_relation_vocabulary(db)
 
     return {
         "names_to_check": to_check,
@@ -681,6 +695,8 @@ async def check_entities_node(state: AnalysisState) -> dict:
         "year_settled": sorted(year_settled),
         "parentage": parentage,
         "sides": sides,
+        "correction_people": correction_people,
+        "correction_types": correction_types,
     }
 
 
@@ -1028,6 +1044,18 @@ async def human_confirm_node(state: AnalysisState) -> dict:
                 {"name": e["name"], "type": e.get("type")}
                 for e in state.get("extracted_entities") or []
             ],
+            # Also NOT questions, and for the same reason: they are the
+            # OPTIONS a relation question is answered with, not something
+            # being asked. Counted as questions they would pause the pipeline
+            # on every recording that named a person, and inflate "3 things to
+            # check" with the contents of a dropdown.
+            "correction_people": state.get("correction_people") or [],
+            "correction_types": [
+                # snake_case in the table, people words on the screen. Done
+                # here so one place decides how a type reads.
+                {"value": relation_type, "label": relation_type.replace("_", " ")}
+                for relation_type in state.get("correction_types") or []
+            ],
         }
     )
 
@@ -1125,20 +1153,45 @@ async def human_confirm_node(state: AnalysisState) -> dict:
     # available: storing nothing leaves the archive exactly as it was, which
     # is why relations could be made skippable and identity could not.
     raw_relation_answers = answer.get("relations") or {}
-    accepted = [
+    # Corrections, keyed by proposal INDEX like the acceptances — two people
+    # can hold the same relation to the speaker, so a name does not identify a
+    # proposal.
+    raw_relation_edits = answer.get("relation_edits") or {}
+
+    def _edit_for(i: int) -> Optional[Dict[str, Any]]:
+        return raw_relation_edits.get(str(i)) or raw_relation_edits.get(i)
+
+    def _accepted(i: int) -> bool:
+        """A CORRECTED relation is accepted by virtue of being corrected.
+
+        Requiring the tick as well would mean a producer who fixed a wrong
+        relation and did not also tick it lost the correction — silently, the
+        same shape as the parentage answer that was thrown away for needing an
+        acceptance it was busy contradicting. Correcting a proposal IS saying
+        it should exist, in the corrected form.
+        """
+        if _edit_for(i):
+            return True
+        return raw_relation_answers.get(str(i)) is True or raw_relation_answers.get(i) is True
+
+    def _resolve(relation: Dict[str, Any], i: int) -> Dict[str, Any]:
         # Endpoints carry NAMES, and write_segment_relations resolves them by
         # looking the entity up. Renaming an entity without rewriting the
         # relations that point at it would leave those endpoints unresolvable
         # — the relation would be dropped with a log line nobody reads, which
         # is precisely the silent-failure shape to avoid.
-        {
-            **r,
-            "from_name": corrected_name(r["from_name"]),
-            "to_name": corrected_name(r["to_name"]),
+        edit = _edit_for(i) or {}
+        return {
+            **relation,
+            "relation_type": edit.get("relation_type") or relation["relation_type"],
+            "from_name": corrected_name(edit.get("from_name") or relation["from_name"]),
+            "to_name": corrected_name(edit.get("to_name") or relation["to_name"]),
         }
+
+    accepted = [
+        _resolve(r, i)
         for i, r in enumerate(state.get("proposed_relations") or [])
-        if raw_relation_answers.get(str(i)) is True
-        or raw_relation_answers.get(i) is True
+        if _accepted(i)
     ]
 
     # Parentage: carry both the answers and the full list of siblings the

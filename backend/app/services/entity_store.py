@@ -43,7 +43,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
@@ -752,6 +752,48 @@ def _proposed_names(
         elif from_name == self_marker and to_name and to_name != self_marker:
             found.append(to_name)
     return found
+
+
+async def people_for_correction(
+    db: AsyncSession,
+    producer_id: str,
+    proposed_relations: Optional[Sequence[dict]] = None,
+    self_marker: str = "__SELF__",
+) -> List[Dict[str, Any]]:
+    """Everyone a corrected relation may point at.
+
+    The archive's people PLUS anyone this recording has only just named, which
+    is what lets a correction be made on a first recording — the same reasoning
+    as `parentage_candidates`, but without its preconditions. That function
+    returns nothing at all when the producer has no recorded parents, because
+    there is then no parentage question to ask; a wrong relation still needs
+    correcting in that situation, so this cannot be derived from it.
+
+    Picking beats typing: a typed name resolves by normalised match, so one
+    different character makes a second person instead of linking to the first.
+    """
+    people = {
+        entity.normalized_name: {"name": entity.name, "entity_id": entity.id}
+        for entity in (
+            await db.execute(
+                select(Entity).where(
+                    Entity.producer_id == producer_id,
+                    Entity.type == "person",
+                    Entity.is_self.is_(False),
+                )
+            )
+        ).scalars().all()
+    }
+
+    for relation in proposed_relations or []:
+        for name in (relation.get("from_name"), relation.get("to_name")):
+            if not name or name == self_marker:
+                continue
+            normalized = normalize_entity_name(name)
+            if normalized and normalized not in people:
+                people[normalized] = {"name": name, "entity_id": None}
+
+    return sorted(people.values(), key=lambda person: person["name"])
 
 
 async def parentage_candidates(
