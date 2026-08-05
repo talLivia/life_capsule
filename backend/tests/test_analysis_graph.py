@@ -1105,6 +1105,46 @@ async def test_confirm_entities_rejects_a_partial_submit(
     assert len(still.json()) == 1
 
 
+async def test_extraction_unlocks_when_the_pipeline_pauses_for_answers(
+    client: AsyncClient, db_session, segment, analysis_session_factory,
+    fake_checkpointer, auth_headers, monkeypatch,
+):
+    """A paused pipeline must read as NOT processing.
+
+    "Still working on it" and "waiting on you" are different states and the
+    frontend renders them differently: `awaiting_confirmation` points at the
+    bell, `still_processing` shows a progress bar and polls until it clears.
+    Were `pending_confirmation` ever counted as processing, a recording paused
+    on a question would show both at once — a progress bar claiming work is in
+    flight next to a note saying it is waiting for an answer — and poll for as
+    long as the panel stayed open, because nothing would ever finish.
+
+    Pinned because it is a SERVER fact the client has no way to second-guess.
+    It mattered more before: the extraction screen used to LOCK on this flag
+    while it held the producer in place waiting to hand off to the confirmation
+    popup, so a wrong answer here trapped them on a screen with no way out.
+    Both the lock and the handoff are gone (docs/GUIDED_INTERVIEW.md §14), and
+    the flag still has to be right.
+    """
+    segment_id = segment.id
+    await _pause_with(
+        monkeypatch, segment_id,
+        extraction=_MOSHE_AND_A_TYPE_QUESTION,
+        candidates=[{"uuid": "u2", "name": "Moshe Cohen", "summary": "army friend"}],
+    )
+    db_session.expire_all()
+
+    body = (await client.get(
+        f"/api/v1/interview/segments/{segment_id}/extraction", headers=auth_headers
+    )).json()
+
+    assert body["status"] == "pending_confirmation"
+    assert body["awaiting_confirmation"] is True
+    assert body["still_processing"] is False, (
+        "the extraction screen locks on this flag and its handoff is gone"
+    )
+
+
 async def test_confirm_entities_rejects_a_stale_answer(
     client: AsyncClient, db_session, segment, analysis_session_factory,
     fake_checkpointer, auth_headers, monkeypatch,

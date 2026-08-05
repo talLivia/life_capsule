@@ -1,41 +1,18 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { HelpCircle, Loader2, UserPlus, Check } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { HelpCircle, Loader2, UserPlus, Check, X } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
+import { usePendingConfirmations } from '@/components/providers/PendingConfirmationsProvider'
+// The one implementation, shared with the notification row that says how many
+// things this recording needs checked. Two counts of the same payload is how
+// a badge and the screen it opens come to disagree.
+import { countQuestions } from '@/lib/pendingQuestions'
 import type { ApiError, ConfirmEntitiesResult, PendingConfirmation } from '@/lib/types'
-
-const POLL_INTERVAL_MS = 8000
 
 /** Sentinel for "someone new" — never a real candidate id. */
 const NEW_ENTITY = '__new__'
-
-/** Keys in the pending payload that are NOT questions. Everything else in it
- *  is one, counted generically so that a class added on the server appears
- *  here without this file being edited — the omission that caused the bug
- *  below could not then happen again. */
-const NON_QUESTION_KEYS = new Set(['editable_entities'])
-
-/**
- * How many questions this recording raises, of ANY class.
- *
- * The bug this replaces: the render guard was `totalCount === 0`, where
- * totalCount counted identity and type ONLY. A recording with ten relation
- * questions, ten year questions and ten editable names — fetched, in state,
- * ready to render — returned null and showed nothing at all, because the two
- * oldest classes happened to be empty. Exactly the same omission as the graph
- * router that skipped confirmation entirely, one layer up.
- */
-function countQuestions(
-  payload: PendingConfirmation['pending_confirmation'] | undefined,
-): number {
-  return Object.entries(payload ?? {}).reduce(
-    (total, [key, value]) =>
-      NON_QUESTION_KEYS.has(key) || !Array.isArray(value) ? total : total + value.length,
-    0,
-  )
-}
 
 /**
  * Everything unclear about ONE recording, on one screen, with one submit.
@@ -57,28 +34,34 @@ function countQuestions(
  *    runner-up it was torn between rather than a confidence score. Only
  *    entities it was genuinely torn about appear at all — asking about
  *    everything trains people to click through without reading.
+ *
+ * It no longer opens ITSELF, and no longer chooses which recording to show.
+ * It used to poll, appear over whatever the producer was doing, and work
+ * through the pending list head-first. Now a notification row names the
+ * recording and this screen answers exactly that one
+ * (docs/GUIDED_INTERVIEW.md §14, §17). Three consequences this file honours:
+ *
+ *  - It must be closable. As an auto-opened popup it was a dead end on
+ *    purpose — answering was the only way out, because it appeared at the one
+ *    moment the recording was still fresh. Reached by choosing a row, the same
+ *    dead end is a trap.
+ *  - It answers ONE recording and stops. Advancing to the next by itself would
+ *    contradict the list the producer just chose from, and take them somewhere
+ *    they did not ask to go.
+ *  - Its question SECTIONS are unchanged, and deliberately so. However it is
+ *    reached, it POSTs the identical `EntityBatchConfirmRequest` and the
+ *    server cannot tell the difference — the hard constraint of §7.
  */
 export function EntityConfirmModal({
-  refreshKey = 0,
-  onResolved,
-  openedFromBell = false,
+  /** The recording to answer. Chosen by the producer from the notification
+   *  list, never by this component. */
+  segmentId,
   onClose,
 }: {
-  /** Opened deliberately from the bell rather than by its own poll. It then
-   *  renders even with nothing outstanding, because a producer who clicked it
-   *  is owed an answer either way. */
-  openedFromBell?: boolean
-  onClose?: () => void
-  /** Bumped when the extraction screen hands over, so the questions appear at
-   *  once instead of on the next background poll — several seconds of nothing
-   *  on screen otherwise. */
-  refreshKey?: number
-  /** The recording whose questions were just answered. The caller reopens its
-   *  extraction screen: entities are only written after these answers land,
-   *  so this is the first moment it can show what was actually captured. */
-  onResolved?: (segmentId: string) => void
-} = {}) {
-  const [pending, setPending] = useState<PendingConfirmation | null>(null)
+  segmentId: string
+  onClose: () => void
+}) {
+  const { items, refresh } = usePendingConfirmations()
   const [identity, setIdentity] = useState<Record<string, string>>({})
   const [types, setTypes] = useState<Record<string, string>>({})
   // Keyed by proposal INDEX, not name: two people can hold the same relation
@@ -103,31 +86,24 @@ export function EntityConfirmModal({
   // Aunt/uncle name -> the parent they are a sibling of. One choice each:
   // an uncle is a sibling of one parent, not both.
   const [sides, setSides] = useState<Record<string, string>>({})
-  const answeringRef = useRef(false)
   const [answering, setAnswering] = useState(false)
 
+  // Escape leaves, except mid-submit — closing on a request already in flight
+  // would hide whether the answers landed.
   useEffect(() => {
-    let cancelled = false
-
-    const poll = async () => {
-      if (answeringRef.current) return
-      try {
-        const list: PendingConfirmation[] = await api.getPendingConfirmations()
-        if (!cancelled) setPending(list[0] ?? null)
-      } catch {
-        /* transient network errors are fine to ignore on a background poll */
-      }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !answering) onClose()
     }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose, answering])
 
-    poll()
-    const id = setInterval(poll, POLL_INTERVAL_MS)
-    return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-    // refreshKey re-runs the effect, which polls immediately — that is the
-    // handoff from the extraction screen, and it must not wait for the timer.
-  }, [refreshKey])
+  // Read from the shared list rather than fetched again — one poller, and a
+  // screen that cannot disagree with the badge that opened it. Looking the
+  // recording up by id also means a background poll can reorder the list
+  // without moving the ground under a half-answered form.
+  const pending: PendingConfirmation | null =
+    items.find(item => item.segment_id === segmentId) ?? null
 
   // Clear every selection whenever a different recording's screen appears —
   // carrying an answer across recordings would attach it to the wrong name.
@@ -191,7 +167,6 @@ export function EntityConfirmModal({
 
   const submit = async () => {
     if (!pending || !allAnswered) return
-    answeringRef.current = true
     setAnswering(true)
     try {
       const outcome: ConfirmEntitiesResult = await api.confirmEntities(pending.segment_id, {
@@ -256,29 +231,23 @@ export function EntityConfirmModal({
       for (const bad of outcome?.rejected_years ?? []) {
         toast.error(`Couldn't read "${bad.given}" as a year — ${bad.reason}. Not saved.`)
       }
-      const resolvedId = pending.segment_id
-      setPending(null)
-      // Entities are written only once these answers land, so the extraction
-      // screen can finally show what was captured. The caller reopens it.
-      onResolved?.(resolvedId)
-      // Another RECORDING may also be waiting — this screen covers one.
-      try {
-        const list: PendingConfirmation[] = await api.getPendingConfirmations()
-        setPending(list[0] ?? null)
-      } catch {
-        /* next poll tick will catch it */
-      }
+      // One fetch, through the shared provider, so the badge, the list and
+      // this screen cannot disagree about what is left. Awaited BEFORE closing
+      // so the caller returns to a list this recording has already dropped out
+      // of, rather than one still showing a row that has been answered.
+      await refresh()
+      onClose()
     } catch (err: unknown) {
       const detail = (err as ApiError)?.response?.data?.detail || (err as ApiError)?.message
       toast.error(detail || 'Could not save your answers — please try again')
     } finally {
-      answeringRef.current = false
       setAnswering(false)
     }
   }
 
+  // This screen only ever appears because someone asked for it, so an empty
+  // list gets an answer rather than a silently absent dialog.
   if (!pending || questionCount === 0) {
-    if (!openedFromBell) return null
     return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4 animate-fade-in">
         <div className="w-full max-w-md glass-card p-6 flex flex-col items-center gap-3 text-center">
@@ -318,17 +287,33 @@ export function EntityConfirmModal({
       aria-labelledby="entity-confirm-heading"
     >
       <div className="w-full max-w-lg glass-card p-6 flex flex-col gap-5 max-h-[85vh] overflow-y-auto">
-        <div>
-          <div className="flex items-center gap-2 text-primary-400">
-            <HelpCircle size={18} />
-            <span className="text-sm font-semibold">Quick check</span>
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            {/* No "N of M" any more. The producer picked this recording off a
+                list that shows what else is waiting, so a position counter
+                would describe a queue they are not in. */}
+            <div className="flex items-center gap-2 text-primary-400">
+              <HelpCircle size={18} />
+              <span className="text-sm font-semibold">Quick check</span>
+            </div>
+            <h2 id="entity-confirm-heading" className="text-white text-base mt-2 leading-relaxed">
+              {questionCount === 1
+                ? 'One thing to check about this recording:'
+                : `${questionCount} things to check about this recording:`}
+            </h2>
+            {/* The recording these questions are about. With the popup gone
+                nobody answers while the recording is fresh, so the context
+                has to travel with the question — §12. */}
+            <p dir="auto" className="text-xs text-gray-400 mt-1 italic">{pending.question_asked}</p>
           </div>
-          <h2 id="entity-confirm-heading" className="text-white text-base mt-2 leading-relaxed">
-            {questionCount === 1
-              ? 'One thing to check about this recording:'
-              : `${questionCount} things to check about this recording:`}
-          </h2>
-          <p className="text-xs text-gray-400 mt-1 italic">{pending.question_asked}</p>
+          <button
+            onClick={onClose}
+            disabled={answering}
+            className="btn-icon shrink-0 disabled:opacity-40"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
         </div>
 
         {identityQuestions.map((q) => (

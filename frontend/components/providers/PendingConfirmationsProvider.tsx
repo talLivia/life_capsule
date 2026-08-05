@@ -6,7 +6,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from 'react'
 import { api } from '@/lib/api'
@@ -32,21 +31,34 @@ import type { PendingConfirmation } from '@/lib/types'
  * that no longer exist.
  */
 
-const IDLE_POLL_MS = 8000
-/** While a recording is being processed, questions can appear at any moment
- *  and the producer is watching. Same reasoning as the extraction screen. */
-const ACTIVE_POLL_MS = 2000
+/**
+ * One cadence, because nobody is ever waiting on this.
+ *
+ * There was a 2s "a recording is in flight" mode here, on the reasoning that
+ * questions can appear at any moment and the producer is watching. They are
+ * not, by design: finishing a recording goes straight to the next question and
+ * the extraction screen no longer opens, so nothing on screen is waiting for
+ * this badge to change. A badge that appears a few seconds later is invisible;
+ * a second cadence that has to be turned on and off by whichever screen
+ * happens to know is not.
+ */
+const POLL_MS = 8000
 
 interface PendingContext {
   items: PendingConfirmation[]
-  count: number
-  /** Fetch now — after answering, or after a recording is ingested. */
+  /** No `count` here. The badge counts NOTIFICATIONS, of which pending
+   *  confirmations are currently the only kind — a count published from this
+   *  source would be right today and quietly wrong the moment there is a
+   *  second one. See `lib/notifications.ts`. */
+  /** Fetch now — after answering. */
   refresh: () => Promise<void>
-  /** Poll faster until things settle. */
-  setActive: (active: boolean) => void
-  /** Has the producer ever been shown the bell's contents automatically?
-   *  Once, so the mechanism is discovered; never again, so it is not a
-   *  recurring interruption. */
+  /** Is there anything the producer has never been shown?
+   *
+   *  True once per producer — the mechanism has to be discovered, and after
+   *  that it is a recurring interruption. WHEN to act on it is the caller's
+   *  call, not this provider's: the one moment it must not fire is over
+   *  someone part-way through recording an answer, and only the screen knows
+   *  that. See `app/page.tsx`. */
   autoOpenPending: boolean
   markAutoOpened: () => void
 }
@@ -61,16 +73,18 @@ export function PendingConfirmationsProvider({
   children: React.ReactNode
 }) {
   const [items, setItems] = useState<PendingConfirmation[]>([])
-  const [active, setActive] = useState(false)
   const [seen, setSeen] = useState(true) // assume seen until storage says otherwise
-  const answering = useRef(false)
 
   useEffect(() => {
     setSeen(window.localStorage.getItem(SEEN_KEY) === '1')
   }, [])
 
+  // Polls unconditionally. There was a guard here meant to hold the list
+  // still while someone was answering, but nothing ever set it — and a poll
+  // landing mid-answer is harmless anyway, because the list is only ever read
+  // through a PINNED segment id (see EntityConfirmModal). A guard that looks
+  // like protection and is not is worse than neither.
   const refresh = useCallback(async () => {
-    if (answering.current) return
     try {
       setItems(await api.getPendingConfirmations())
     } catch {
@@ -86,12 +100,12 @@ export function PendingConfirmationsProvider({
       await refresh()
     }
     tick()
-    const id = setInterval(tick, active ? ACTIVE_POLL_MS : IDLE_POLL_MS)
+    const id = setInterval(tick, POLL_MS)
     return () => {
       cancelled = true
       clearInterval(id)
     }
-  }, [refresh, active])
+  }, [refresh])
 
   const markAutoOpened = useCallback(() => {
     window.localStorage.setItem(SEEN_KEY, '1')
@@ -101,9 +115,7 @@ export function PendingConfirmationsProvider({
   const value = useMemo<PendingContext>(
     () => ({
       items,
-      count: items.length,
       refresh,
-      setActive,
       autoOpenPending: !seen && items.length > 0,
       markAutoOpened,
     }),

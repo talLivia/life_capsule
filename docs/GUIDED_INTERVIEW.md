@@ -446,6 +446,10 @@ As Part One §3, minus the origin filter. A top-bar component on every screen,
 count badge, full-screen list, answerable one at a time, persisting across
 navigation.
 
+**Superseded in one respect — see §17.** The bell opens a LIST, not a
+question, and the list is a general notification surface rather than a
+confirmations surface.
+
 ### 13.3 Second entry point
 
 A **Show questions** button inside the extraction panel when that recording has
@@ -481,6 +485,111 @@ extraction screen closes itself and the bell takes over — the same terminal
 state it already has for "nothing to ask", reached by a different route. The
 lock, the timeout escape and the failure escape all stay.
 
+### ✅ DONE (2026-08-05) — and the lock was never the danger it looked like
+
+Unwound as described. The lock, the 90s timeout escape and the failure escape
+are all untouched. What changed: `onNeedsConfirmation` is deleted, and
+`awaiting_confirmation` now just falls through to the close this screen
+already did for "nothing to ask" — on a longer dwell, because that state has
+a sentence to READ (where the questions went) rather than a result to notice.
+
+**The "locked forever" risk was already structurally prevented, and not by
+anything in the frontend.** `segment_extraction` computes
+`still_processing = status not in (ready, analyzed, failed,
+pending_confirmation)` — so the flag the lock reads is *already false* by the
+time the pipeline pauses. Removing the handoff could not have stranded the
+screen. Verified against a real segment driven to its pause through the actual
+pipeline, not by reading the code:
+`test_extraction_unlocks_when_the_pipeline_pauses_for_answers` asserts
+`still_processing is False` on the extraction endpoint's own response, so
+adding `pending_confirmation` back to the processing statuses now fails loudly
+instead of silently trapping a producer on a screen with no close button.
+
+Worth stating plainly because the reasoning generalises: the risk was named
+correctly, and the mitigation turned out to live one layer down from where the
+plan looked for it.
+
+**Two things phase 1 built that nothing consumed**, both load-bearing once the
+popup goes, both now wired:
+
+- `setActive` (2s polling while a recording is in flight). With the popup gone
+  the badge is the *only* signal that questions arrived; at the idle 8s cadence
+  it appears seconds after the extraction screen has already closed, which
+  reads as nothing having happened. `RecordPanel` turns it on for exactly the
+  window its extraction screen is open.
+- `autoOpenPending` / decision 16.C. Removing the popup removed the only thing
+  that ever put these questions in front of anyone, so the once-per-producer
+  open is what stops the bell being a badge nobody has been taught to look at.
+
+**16.C needed one qualification the decision did not anticipate.** A producer's
+first pending item almost always arrives *while the extraction screen is still
+up* — so a naive auto-open pops the question list over the top of it, which is
+the stacked-dialogs problem the handoff existed to prevent, reintroduced from
+the other side. `autoOpenPending` is therefore also gated on `!active`: the one
+teaching moment waits the few seconds for the extraction screen to close and
+lands on an empty screen. Gated inside the provider rather than negotiated
+between the two screens, because cross-component sequencing is precisely what
+this phase deleted.
+
+**What is genuinely lost, and is phase 4's to restore.** Answering used to
+reopen the extraction screen (`onResolved`), so the producer saw the entities
+their answers had just written — entities are only persisted once the answers
+land, so that was the first moment there was anything to show. Nothing does
+that now: the bell's list advances to the next recording or reports that there
+is nothing left. `onResolved` is deleted rather than left dangling. §13.3's
+**Show questions** button re-links the two screens from the other direction.
+
+`EntityConfirmModal` also gained a close button and an Escape handler. As an
+auto-opened popup it was a dead end deliberately — answering was the only way
+out, which is defensible when it appears the moment the recording is fresh. The
+same dead end reached by clicking a bell is just a trap.
+
+### ✅ AND THEN — the extraction screen stopped auto-opening too (2026-08-05)
+
+Decided immediately after the above, and it removes most of what the unwind
+had just carefully preserved.
+
+**Finishing a recording now goes straight to the next question.** Nothing
+opens, nothing has to be dismissed, nothing is waited for. The recording is
+read on the server and anything it raises appears in the bell.
+
+The reasoning is the same argument one step further. The extraction screen's
+lock, its progress bar and its handoff all existed to hold the producer in
+place until the confirmation questions were ready. The bell does that job
+asynchronously now, so holding them there serves nothing — it is purely an
+interruption between one question and the next.
+
+**The screen itself stays**, opened on demand by "Extracted from this" on a
+recording. It is no longer something that appears on its own.
+
+#### What that made redundant, and what earned its place
+
+| Machinery | Verdict |
+| --- | --- |
+| **The lock** (`locked`, no close button, no Escape, no backdrop) | **Gone.** It existed so nobody wandered off mid-processing and met the questions later against a recording they had moved past. That is now the *design* — questions arrive later, in the bell, by choice. The only way in is a button the producer pressed on a recording they picked, and trapping someone in a read-only panel they opened out of curiosity was never defensible. |
+| **The 90s stall escape** (`STUCK_AFTER_MS`, `escapable`) | **Gone.** It only ever released the lock. No lock, nothing to escape. |
+| **The failure escape** (`status === 'failed'` → `escapable`) | **Gone as an escape — replaced by an actual failure state.** This is the one that needed care: `failed` was handled in exactly one place, and all it did was unlock the modal. Deleting it would have left failure entirely unsurfaced, and the sections below would render empty — reading as "nothing was found in your recording", which is a much worse claim than "we could not read it". There is now a banner that says so. |
+| **The progress bar + 2s poll** | **Kept, reduced.** Nobody is held here waiting, but the panel can still be opened ON a recording the pipeline has not finished, and then an empty entity list reads as a finished, disappointing result rather than an unfinished one. The instructional copy ("Stay here…") is gone — closing it changes nothing. |
+| **The `live` prop, `DONE_DWELL_MS`, `HANDOFF_DWELL_MS`, self-close** | **Gone.** All of it described a screen that opened itself. |
+| **The banner naming the bell** | **Kept**, and it is the whole handoff now: a producer who came looking is told where the questions are. |
+
+**A fifth piece went with them, not in the original list: the provider's 2s
+`setActive` cadence** (§3.2's "faster while a segment is in flight"). Its
+justification was that the producer is watching for the badge. They are not,
+by design — they have moved on to the next question. One 8s poll, no second
+cadence for screens to turn on and off, and `setActive` is gone from the
+context.
+
+**Decision 16.C needed re-gating, for a worse reason than before.** The
+stacked-dialogs risk is gone with the auto-open, but the replacement is
+sharper: a producer's first pending questions land seconds after their first
+recording, i.e. while they are on the record screen and possibly part-way
+through recording the NEXT answer. A modal opening over a live camera could
+cost a take. Auto-open is therefore suppressed on the record view entirely
+(gated in `page.tsx`, which owns `view`, rather than in the provider — WHEN to
+interrupt is the screen's knowledge, not the poller's). The flag survives
+until they leave, and the bell is visible the whole time.
+
 **Second-order:** `EntityConfirmModal` currently polls globally and opens
 itself. It becomes a rendered-on-demand list with no auto-open. Its polling
 moves to the shared provider; its question SECTIONS are reused as-is, which is
@@ -493,9 +602,9 @@ no way to answer anything.
 
 | Phase | Work | Reused | New |
 | --- | --- | --- | --- |
-| **1** | Shared pending-confirmations provider: one poller, count, list, faster while in flight | Endpoint, poll logic | Provider |
-| **2** | Bell in the top bar + full-screen list reusing `EntityConfirmModal`'s sections | Sections, answer contract | Badge, shell |
-| **3** | Remove the popup's auto-open; unwind the extraction handoff per §14 | — | Careful deletion |
+| **1** | ✅ Shared pending-confirmations provider: one poller, count, list, faster while in flight | Endpoint, poll logic | Provider |
+| **2** | ✅ Bell in the top bar + full-screen list reusing `EntityConfirmModal`'s sections | Sections, answer contract | Badge, shell |
+| **3** | ✅ **DONE 2026-08-05** — popup auto-open removed, extraction handoff unwound per §14. Read §14's DONE note before phase 4: it records what the unwind actually cost. | — | Careful deletion |
 | **4** | **Show questions** in the extraction panel | `awaiting_confirmation` | Button |
 | **5** | Nudge on leaving `/record` with pending questions | — | View-change hook |
 | **6** | `/record` UI: collapsible panel, takes accordion, progress bar, explainer | `interview_flow` | UI |
@@ -515,5 +624,82 @@ Phases 6–7 are presentation and can land in any order.
 | 6.A | Progress over all 129 questions, or over reachable ones? | Reachable, recomputed as gates are answered — 129 is discouraging and wrong once gates rule some out |
 | 16.A | Pause | **RESOLVED 2026-08-04 — DROPPED.** It existed to interrupt an automatic flow and there is no automatic flow. A button that suspends nothing is another control to explain. If a visible "nothing is listening" state is wanted later, that is a label, not a button. Phase 8 is removed from the build order. |
 | 16.B | Does the nudge fire on leaving `/record` only, or on any navigation with pending questions? | `/record` only at first; anywhere risks becoming wallpaper |
-| 16.C | Bell auto-open | **RESOLVED 2026-08-04 — YES, once per producer, never again.** Otherwise nobody discovers the mechanism exists. Persisted client-side; a flag that resets on a new device costs one extra open, which is harmless. |
+| 16.C | Bell auto-open | **RESOLVED 2026-08-04 — YES, once per producer, never again.** Otherwise nobody discovers the mechanism exists. Persisted client-side; a flag that resets on a new device costs one extra open, which is harmless. **Built 2026-08-05 with one qualification: never while a recording is being processed — see §14's DONE note.** |
 | 16.D | Read-aloud: pre-generate all 129 per language, or synthesise on demand and cache? | Pre-generate — one cost, no latency, and it fails loudly at build time rather than quietly for a storyteller |
+
+---
+
+# 17. Notifications, not confirmations (2026-08-05)
+
+The bell opened a question. It now opens a **list**, and the list is a general
+notification surface that pending confirmations happen to be the only current
+occupant of.
+
+## 17.1 The interaction
+
+| Action | Result |
+| --- | --- |
+| Click the bell | A dropdown beneath it: one row per waiting item, each saying what it is asking and which recording it is about |
+| Click a row | That recording's questions, in the popup, exactly as before |
+| Answer | Row gone, badge down, popup closed, back to the list — or the dropdown closes if that was the last one |
+| **See all** | Full-screen page, same list, roomier |
+
+Going straight into a question made the bell a shortcut to one arbitrary
+recording, with no sense of what else was waiting or which recording was about
+to be discussed. An item is now chosen rather than served up.
+
+## 17.2 Why the full screen exists when the dropdown does the same job
+
+Because notifications are meant to be a general surface. Today the only item
+is a pending confirmation; a second kind must be **a data change, not a
+rebuild** — the same bargain `countQuestions` makes with the six question
+classes, and for the same reason: every bug that cost real recordings came
+from a second place that had to be updated and was not.
+
+So the split is:
+
+- `lib/notifications.ts` — `NotificationItem` carries its own `title`,
+  `detail`, `count` and `icon`. A builder turns a source into items;
+  `useNotifications` composes the sources. **This is where a second kind is
+  added.**
+- `NotificationList` — renders items. Knows nothing about recordings,
+  segments or questions, and must not learn: it may not switch on `kind` to
+  decide how to draw a row. `roomy` is the entire difference between the
+  dropdown and the page, so the two cannot drift into showing different
+  things.
+- `NotificationCenter` — owns the bell, the dropdown, the page and whatever a
+  row opens. **The only place in the feature that switches on `kind`**, because
+  what opens is the one thing a generic list genuinely cannot derive.
+
+Verified structurally rather than asserted: the three list surfaces contain no
+code referencing confirmations, segments or questions, and `kind` is branched
+on in exactly one line.
+
+## 17.3 What this changed in the popup
+
+`EntityConfirmModal` no longer chooses a recording. It is handed a
+`segmentId`, answers that one, and closes — where it previously took the head
+of the pending list and advanced through it. Auto-advancing now contradicts
+the list the producer just chose from and takes them somewhere they did not
+ask to go. The "N of M recordings" counter went with it: it described a queue
+nobody is in any more.
+
+The questions themselves are untouched — same component, same sections, same
+`EntityBatchConfirmRequest`, same six classes. Only the way in changed.
+
+`countQuestions` moved to `lib/pendingQuestions.ts` because it now has two
+callers: the popup deciding whether it has anything to show, and the row
+saying how many things need checking. Those two disagreeing is the same class
+of bug as a badge that disagrees with the list it opens, so there is one
+function rather than a second implementation to remember.
+
+Correspondingly, `count` is gone from the pending-confirmations provider. The
+badge counts NOTIFICATIONS; a count published from one source would be right
+today and quietly wrong the moment there is a second.
+
+## 17.4 Decision 16.C, again
+
+The once-ever auto-open now opens **the dropdown**, not a question. Opening a
+question teaches nothing about where questions live; opening the dropdown
+points at the bell it hangs from, which is the thing that has to be learned.
+Still suppressed on the record view, for the reason in §14's second note.

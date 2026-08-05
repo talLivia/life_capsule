@@ -1,63 +1,43 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { X, Loader2, Sparkles, Tag, Scissors, FileText, Users, AlertTriangle, HelpCircle } from 'lucide-react'
+import { X, Loader2, Sparkles, Tag, Scissors, FileText, Users, AlertTriangle, HelpCircle, Bell } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
 import type { ApiError, SegmentExtraction } from '@/lib/types'
 
 /**
  * What the system understood from ONE recording, so the producer can catch a
- * mistake — a misheard name, a person who was missed — while they still
- * remember the recording, instead of meeting it later as a bad answer.
+ * mistake — a misheard name, a person who was missed.
+ *
+ * ON DEMAND ONLY. This screen used to open itself after every recording and
+ * hold the producer there — locked, showing a progress bar — until the
+ * confirmation questions were ready to hand off to. All of that existed to
+ * keep them in place for a wait, and nobody waits any more: a recording
+ * processes in the background and anything it raises appears in the bell. So
+ * it opens when the producer asks for it and never on its own, which is also
+ * what makes it safe to have no lock and no escape hatches — the only person
+ * here chose to be here, on a recording they picked.
  *
  * READ-ONLY on purpose. Nothing here edits; correcting an extraction is a
  * separate feature that hasn't been asked for yet.
  *
  * Everything comes from ONE endpoint. The component deliberately does not
- * know that entities currently live in Graphiti and topic tags in Postgres —
- * entities are moving to Postgres, and that migration should not reach the
- * UI at all.
+ * know where entities are stored.
  */
 
 interface ExtractionModalProps {
   segmentId: string
   title: string
   onClose: () => void
-  /** Opened by the recorder rather than by the producer clicking. Turns on
-   *  polling, the progress readout, and closing itself when there is nothing
-   *  left to show. Off for the manual button, which reviews a finished
-   *  recording and should just sit there. */
-  live?: boolean
-  /** The pipeline has paused for answers. The extraction screen gets out of
-   *  the way so the confirmation popup has the screen to itself — see
-   *  "the screens do not stack" in docs/FAMILY_TREE_TIMELINE.md 8.2. */
-  onNeedsConfirmation?: () => void
 }
 
-/** Fast enough that the stage readout looks alive. Only while live. */
+/** Opened on a recording that is still being read, results fill in as they
+ *  land. Fast enough that the stage readout looks alive. */
 const PROGRESS_POLL_MS = 2000
-/** Long enough for the finished state to register as a result rather than a
- *  flash, short enough not to be a step the producer has to sit through. */
-const DONE_DWELL_MS = 1600
-/** After this long with no progress the lock releases. A modal that can
- *  trap someone forever is worse than one they can leave — but the escape
- *  is for a pipeline that has genuinely stopped, not a general dismiss. */
-const STUCK_AFTER_MS = 90_000
 
-export function ExtractionModal({
-  segmentId,
-  title,
-  onClose,
-  live = false,
-  onNeedsConfirmation,
-}: ExtractionModalProps) {
+export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalProps) {
   const [data, setData] = useState<SegmentExtraction | null>(null)
-  // Set once the run has gone quiet for too long, or has failed. Until
-  // then a live screen cannot be closed: the whole point is that questions
-  // arrive attached to the recording they are about, rather than ambushing
-  // the producer later against a recording they have moved past.
-  const [escapable, setEscapable] = useState(false)
   // Relations removed on this screen, hidden immediately rather than after
   // a refetch — the row is gone server-side the moment the call returns.
   const [removed, setRemoved] = useState<Set<string>>(new Set())
@@ -94,10 +74,10 @@ export function ExtractionModal({
    * Refetches quietly — `load` would flip `loading` and blank the panel every
    * two seconds.
    */
-  // Polls however the screen was opened. A recording still being processed
-  // is still being processed whether the producer arrived automatically or
-  // by clicking, and a panel that silently stops updating is the thing that
-  // made questions appear to come out of nowhere later.
+  // Still polls, for the one case that survives: a producer who opens this on
+  // a recording the pipeline has not finished reading. Results fill in as they
+  // land rather than the panel showing a half-empty snapshot until it is
+  // reopened. Self-limiting — it stops the moment the run finishes.
   useEffect(() => {
     if (!data?.still_processing) return
     let cancelled = false
@@ -116,52 +96,18 @@ export function ExtractionModal({
     }
   }, [data?.still_processing, segmentId])
 
-  // Release the lock if the pipeline stops reporting progress, or fails.
-  useEffect(() => {
-    if (data?.status === 'failed') {
-      setEscapable(true)
-      return
-    }
-    if (!data?.still_processing) return
-    // Restarted on every stage change, so a slow-but-moving run never
-    // unlocks — only one that has actually stalled.
-    const id = setTimeout(() => setEscapable(true), STUCK_AFTER_MS)
-    return () => clearTimeout(id)
-  }, [data?.still_processing, data?.status, data?.progress_stage])
-
-  // Hand over to the confirmation popup, or close when there is nothing left
-  // to say. Only when opened by the recorder: the manual button reviews a
-  // finished recording and must not vanish while it is being read.
-  useEffect(() => {
-    if (!data) return
-    // Hand off however the screen was opened. Leaving it up with the
-    // questions rendered UNDERNEATH it — which is what happened — means the
-    // producer has to close a panel to discover that anything is waiting.
-    if (data.awaiting_confirmation || data.status === 'pending_confirmation') {
-      onNeedsConfirmation?.()
-      return
-    }
-    // Only a screen that opened ITSELF closes itself. One opened on purpose
-    // to read a finished recording must stay until it is dismissed.
-    if (!live || data.still_processing) return
-    const id = setTimeout(onClose, DONE_DWELL_MS)
-    return () => clearTimeout(id)
-  }, [live, data, onClose, onNeedsConfirmation])
-
-  // Escape closes. A read-only panel should never trap someone who opened it
-  // out of curiosity.
-  // Locked whenever real work is in flight, however the screen was opened.
-  // The point is that nobody wanders off mid-processing and meets the
-  // questions later attached to a recording they have moved past.
-  const locked = !escapable && (data?.still_processing ?? false)
-
+  // Escape always closes. There is nothing to hold anyone here for: this
+  // panel neither opens itself nor waits on anything, so a read-only screen
+  // someone opened out of curiosity should never be harder to leave than to
+  // enter. The lock, the 90s stall escape and the failure escape all existed
+  // to soften a screen that appeared uninvited and refused to go away.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !locked) onClose()
+      if (e.key === 'Escape') onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, locked])
+  }, [onClose])
 
   return (
     <div
@@ -169,7 +115,7 @@ export function ExtractionModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="extraction-title"
-      onClick={locked ? undefined : onClose}
+      onClick={onClose}
     >
       <div
         className="w-full max-w-2xl glass-card flex flex-col max-h-full"
@@ -187,15 +133,9 @@ export function ExtractionModal({
               {title}
             </h2>
           </div>
-          {locked ? (
-            <span className="text-[11px] text-gray-500 shrink-0 max-w-[9rem] text-right leading-snug">
-              Please wait — any questions will appear here
-            </span>
-          ) : (
-            <button onClick={onClose} className="btn-icon shrink-0" aria-label="Close">
-              <X size={16} />
-            </button>
-          )}
+          <button onClick={onClose} className="btn-icon shrink-0" aria-label="Close">
+            <X size={16} />
+          </button>
         </div>
 
         <div className="p-6 overflow-y-auto messages-scroll flex flex-col gap-6">
@@ -215,23 +155,47 @@ export function ExtractionModal({
 
           {data && !loading && !error && (
             <>
-              {/* Paused on a person, not still working. The manual panel
-                  reaches this too — it has no handoff, so without its own
-                  words it showed the "hang on" message forever. */}
+              {/* Paused on a person, not still working — and the producer
+                  came looking, so this is the moment to say where the
+                  questions are. Kept for exactly that reason: a badge
+                  appearing in the corner explains itself to nobody. */}
               {data.awaiting_confirmation && (
                 <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary-500/10 border border-primary-500/30 text-primary-200 text-sm">
                   <HelpCircle size={16} className="shrink-0" />
                   <span>
-                    A few questions are ready about this recording — answering them
-                    is what saves the people and relations it found.
+                    A few questions are ready about this recording. They&apos;re waiting
+                    under the <Bell size={13} className="inline -mt-0.5" /> at the top of
+                    the screen — answering them is what saves the people and relations
+                    it found.
+                  </span>
+                </div>
+              )}
+
+              {/* The pipeline stopped without finishing. Nothing surfaced this
+                  before — `failed` only ever unlocked the modal, which was
+                  useful to someone trapped here and told them nothing. Opened
+                  deliberately, the sections below would otherwise read as
+                  "nothing was found in your recording", which is a different
+                  and much worse claim than "we could not read it". */}
+              {data.status === 'failed' && (
+                <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-sm">
+                  <AlertTriangle size={16} className="shrink-0" />
+                  <span>
+                    Something went wrong reading this recording, so what&apos;s below
+                    may be incomplete. The video itself is safe — re-recording this
+                    answer is the way to try again.
                   </span>
                 </div>
               )}
 
               {data.still_processing && (
-                // A real bar, not a spinner and not a vague reassurance. The
-                // percentages are weighted by measured stage duration, so it
-                // does not sprint to 60% and then appear to hang.
+                // Kept, in reduced form. Nobody is held here waiting any more,
+                // but someone who opens this ON a recording still being read
+                // needs to know that is why it looks thin — an empty entity
+                // list otherwise reads as a finished, disappointing result.
+                // A real bar rather than a spinner: the percentages are
+                // weighted by measured stage duration, so it does not sprint
+                // to 60% and then appear to hang.
                 <div className="flex flex-col gap-2 px-4 py-3 rounded-xl bg-surface-800/60 border border-white/10">
                   <div className="flex items-center justify-between gap-3 text-sm text-white">
                     <span>{data.progress_label ?? 'Reading your recording'}</span>
@@ -251,10 +215,11 @@ export function ExtractionModal({
                       style={{ width: `${data.progress_percent ?? 0}%` }}
                     />
                   </div>
+                  {/* No instruction to stay. Closing this changes nothing —
+                      the recording is being read on the server either way. */}
                   <p className="text-xs text-gray-400">
-                    {escapable
-                      ? 'This is taking longer than expected — you can close this and carry on; the questions will still find you.'
-                      : 'Stay here — if anything needs checking, the questions open next.'}
+                    You can close this and carry on; anything that needs checking
+                    will be waiting under the bell.
                   </p>
                 </div>
               )}

@@ -3,8 +3,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Feather, Gift, Loader2, PartyPopper, Plus, ShieldOff } from 'lucide-react'
-import { EntityConfirmModal } from '@/components/record/EntityConfirmModal'
-import { ExtractionModal } from '@/components/record/ExtractionModal'
 import { GateStep } from '@/components/record/GateStep'
 import { InterviewAccordion } from '@/components/record/InterviewAccordion'
 import { RecordingList } from '@/components/record/RecordingList'
@@ -80,25 +78,21 @@ export function RecordPanel() {
   }, [viewingStep?.id])
 
   /**
-   * The recording whose extraction screen is open, and a nudge that makes the
-   * confirmation popup look again.
+   * Finishing a recording goes straight to the next question.
    *
-   * RecordPanel owns the sequence rather than the two dialogs negotiating it
-   * between themselves: extraction screen -> confirmation popup -> extraction
-   * screen again, one at a time. Neither component can see the other, and the
-   * handoff has to be immediate — waiting for the confirm modal's background
-   * poll would leave the producer looking at nothing for several seconds.
+   * Nothing opens, nothing has to be dismissed, nothing is waited for. This
+   * panel used to own a sequence — extraction screen, then the confirmation
+   * popup, then the extraction screen again — which existed to hold the
+   * producer in place until the questions were ready. Both screens are now
+   * asynchronous: the recording is read on the server and anything it raises
+   * appears in the bell, so there is nothing left here to hold them for and
+   * the interruption between one question and the next buys nothing.
+   *
+   * The extraction screen still exists, opened on demand from a recording in
+   * `RecordingList`. It is no longer something that appears on its own.
    */
-  const [reviewingSegmentId, setReviewingSegmentId] = useState<string | null>(null)
-  const [confirmNudge, setConfirmNudge] = useState(0)
-
-  const handleAccepted = async (segmentId?: string) => {
+  const handleAccepted = async () => {
     setAddingTake(false)
-    // Open the extraction screen on the recording that was just made, rather
-    // than advancing straight to the next question and leaving what the
-    // system understood to be discovered later through a button nobody
-    // presses. Phase 6 of docs/FAMILY_TREE_TIMELINE.md.
-    if (segmentId) setReviewingSegmentId(segmentId)
     await reloadTakes()
     await onRecordingAccepted()
   }
@@ -139,22 +133,6 @@ export function RecordPanel() {
   if (flow.complete) {
     return (
       <div className="animate-fade-in">
-        <EntityConfirmModal
-          refreshKey={confirmNudge}
-          onResolved={id => setReviewingSegmentId(id)}
-        />
-      {reviewingSegmentId && (
-        <ExtractionModal
-          segmentId={reviewingSegmentId}
-          title="Your answer"
-          live
-          onClose={() => setReviewingSegmentId(null)}
-          onNeedsConfirmation={() => {
-            setReviewingSegmentId(null)
-            setConfirmNudge(n => n + 1)
-          }}
-        />
-      )}
         <div className="flex items-center justify-center py-24 px-6">
           <div className="max-w-md text-center flex flex-col items-center gap-5">
             <PartyPopper size={32} className="text-primary-400" />
@@ -191,23 +169,6 @@ export function RecordPanel() {
 
   return (
     <div className="animate-fade-in">
-      <EntityConfirmModal
-        refreshKey={confirmNudge}
-        onResolved={id => setReviewingSegmentId(id)}
-      />
-      {reviewingSegmentId && (
-        <ExtractionModal
-          segmentId={reviewingSegmentId}
-          title="Your answer"
-          live
-          onClose={() => setReviewingSegmentId(null)}
-          onNeedsConfirmation={() => {
-            setReviewingSegmentId(null)
-            setConfirmNudge(n => n + 1)
-          }}
-        />
-      )}
-
       <header className="max-w-7xl mx-auto px-6 pt-10 pb-5">
         <div className="flex items-center gap-2 text-primary-400">
           <Feather size={16} />
