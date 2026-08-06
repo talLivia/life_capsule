@@ -499,6 +499,29 @@ export function EntityConfirmModal({
           const typedParent = (newParent[group.name] ?? '').trim()
           const sideParents = group.sideGroup?.parents ?? []
 
+          /**
+           * Does the parentage answer say this person is NOT your sibling?
+           *
+           * Mirrors the server rule exactly ("shares no parent with you", see
+           * human_confirm_node): naming only somebody who is not one of your
+           * own parents means no shared parent, so the sibling relation is
+           * replaced rather than stored alongside a parent edge it
+           * contradicts.
+           *
+           * The client needs its own copy for ONE reason — so the screen
+           * cannot show a ticked sibling box that the server is about to
+           * discard. The server stays authoritative; this only stops the UI
+           * claiming something different from what will be saved.
+           */
+          const typedIsOwnParent = parents.some(
+            (p) => p.name.trim().toLowerCase() === typedParent.toLowerCase(),
+          )
+          const parentageSaysNotSibling =
+            Boolean(group.parentageGroup) &&
+            shared.length === 0 &&
+            Boolean(typedParent) &&
+            !typedIsOwnParent
+
           return (
             <section
               key={`person-${group.name}`}
@@ -641,7 +664,18 @@ export function EntityConfirmModal({
                   <legend className="text-sm text-white leading-relaxed mb-1">
                     Did we get this right? — optional
                   </legend>
-                  {group.relations.map((q) => (
+                  {group.relations.map((q) => {
+                    // Only a sibling relation with the PRODUCER on one end is
+                    // what a parentage answer can speak to. An aunt_uncle or a
+                    // relation between two other people is untouched by it.
+                    const overriddenByParentage =
+                      parentageSaysNotSibling &&
+                      q.relation_type === 'sibling' &&
+                      (q.from_name === SELF || q.to_name === SELF)
+                    const shown =
+                      !overriddenByParentage &&
+                      (Boolean(relations[q.index]) || Boolean(relationEdits[q.index]))
+                    return (
                     <div key={`rel-${q.index}`} className="flex flex-col gap-1.5">
                       <button
                         type="button"
@@ -649,12 +683,19 @@ export function EntityConfirmModal({
                         // A corrected proposal is already accepted; ticking it
                         // as well would say nothing more, and unticking could
                         // not take the correction back.
-                        disabled={answering || Boolean(relationEdits[q.index])}
-                        className={optionClass(
-                          Boolean(relations[q.index]) || Boolean(relationEdits[q.index]),
-                        )}
+                        //
+                        // Held too when the parentage answer has already
+                        // decided this: a box that stays ticked while the
+                        // server discards it is the silent contradiction this
+                        // whole redesign exists to remove.
+                        disabled={
+                          answering || Boolean(relationEdits[q.index]) || overriddenByParentage
+                        }
+                        className={`${optionClass(shown)} ${
+                          overriddenByParentage ? 'opacity-50' : ''
+                        }`}
                       >
-                        {radio(Boolean(relations[q.index]) || Boolean(relationEdits[q.index]))}
+                        {radio(shown)}
                         <span className="flex flex-col gap-0.5 text-left">
                           <span className="text-sm font-medium text-white">
                             <span dir="auto">{q.from_name === SELF ? 'You' : q.from_name}</span>
@@ -671,7 +712,16 @@ export function EntityConfirmModal({
                         </span>
                       </button>
 
-                      {canCorrect && !relationEdits[q.index] && (
+                      {/* Why it just went grey, said where it happened rather
+                          than only under the parent picker below. */}
+                      {overriddenByParentage && (
+                        <span className="text-[11px] text-primary-300 pl-1">
+                          Replaced by the parent you chose — <span dir="auto">{typedParent}</span>{' '}
+                          isn&apos;t your parent, so {group.name} isn&apos;t your sibling.
+                        </span>
+                      )}
+
+                      {canCorrect && !relationEdits[q.index] && !overriddenByParentage && (
                         <button
                           type="button"
                           disabled={answering}
@@ -767,7 +817,8 @@ export function EntityConfirmModal({
                         </div>
                       )}
                     </div>
-                  ))}
+                    )
+                  })}
                 </fieldset>
               )}
 
@@ -869,7 +920,7 @@ export function EntityConfirmModal({
                       to contradict this one. Said out loud, because a relation
                       disappearing without a word is how the last round of
                       confusion started. */}
-                  {shared.length === 0 && typedParent && (
+                  {parentageSaysNotSibling && (
                     <span className="text-[11px] text-primary-300">
                       Then {group.name} isn&apos;t your sibling — we&apos;ll record them
                       as <span dir="auto">{typedParent}</span>&apos;s child instead.
