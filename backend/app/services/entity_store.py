@@ -40,7 +40,7 @@ that genuinely mentioned nobody.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -56,6 +56,7 @@ from app.models import (
     InterviewSession,
     RawSegment,
     RelationType,
+    User,
 )
 from app.services.entity_extraction import ExtractedEntity, ExtractedRelation
 from app.services.entity_names import normalize_entity_name
@@ -553,6 +554,96 @@ async def get_entity_candidates(
 
 #: Marks a candidate that has no entity row yet — see `pending_entity_candidates`.
 PENDING_CANDIDATE_PREFIX = "pending:"
+
+
+async def speaker_name_for(db: AsyncSession, producer_id: str) -> Optional[str]:
+    """What to tell the extractor the narrator is called.
+
+    The `is_self` entity's name first — migration 0012 built it from
+    `full_name`, and it is the name the archive already calls this person. The
+    user row is the fallback for a producer created before that hook existed.
+    """
+    self_entity = (
+        await db.execute(
+            select(Entity.name).where(Entity.producer_id == producer_id, Entity.is_self)
+        )
+    ).scalars().first()
+    if self_entity:
+        return self_entity
+    user = (
+        await db.execute(
+            select(User.full_name, User.username).where(User.id == producer_id)
+        )
+    ).first()
+    if user is None:
+        return None
+    return user.full_name or user.username or None
+
+
+async def fold_speaker_into_self(
+    db: AsyncSession,
+    producer_id: str,
+    extracted: Sequence[ExtractedEntity],
+    proposed: Sequence[ExtractedRelation],
+    self_marker: str,
+) -> Tuple[List[ExtractedEntity], List[ExtractedRelation]]:
+    """Drop the producer from their own extraction, and re-point relations.
+
+    A transcript is the speaker's own account, so they are the one person in it
+    who must NOT become an entity — they are who the archive belongs to, not
+    somebody in it. When they name themselves ("אנחנו חמישה: אני טל, עדי…") and
+    that name is extracted, the producer gets a second, disconnected copy of
+    themselves: `טל` alongside the `is_self` row, collecting relations that
+    belong on the tree's root. Seen exactly that way on the live archive.
+
+    The prompt now says not to, and a prompt cannot be the only guard on
+    something that silently forks the root. This is the structural half:
+
+      * an extracted entity whose merge key matches the producer's OWN entity
+        is dropped;
+      * any relation pointing at it is re-pointed at `__SELF__`, so the
+        relation survives rather than being lost with the entity;
+      * a relation that becomes a self-loop is dropped, because
+        `ck_entity_relations_not_self` forbids it and "X is their own sibling"
+        is not a fact worth keeping.
+
+    Matches on `normalized_name`, so this catches the case where the producer's
+    stored name and the spoken one agree. It does NOT catch a producer whose
+    self entity is "Tal Nahum" saying "אני טל" — different scripts, different
+    merge keys — which is why the prompt rule carries the other half. Two
+    partial guards on different failure modes, deliberately, rather than one
+    that looks total and is not.
+    """
+    self_entity = (
+        await db.execute(
+            select(Entity).where(Entity.producer_id == producer_id, Entity.is_self)
+        )
+    ).scalars().first()
+    if self_entity is None:
+        return list(extracted), list(proposed)
+
+    self_keys = {self_entity.normalized_name}
+    self_keys.discard("")
+    dropped = {
+        e.name for e in extracted if normalize_entity_name(e.name) in self_keys
+    }
+    if not dropped:
+        return list(extracted), list(proposed)
+
+    logger.info(
+        f"Extraction named the producer themselves ({sorted(dropped)}); "
+        f"folding into the self entity"
+    )
+    kept = [e for e in extracted if e.name not in dropped]
+
+    relations: List[ExtractedRelation] = []
+    for relation in proposed:
+        from_name = self_marker if relation.from_name in dropped else relation.from_name
+        to_name = self_marker if relation.to_name in dropped else relation.to_name
+        if from_name == to_name:
+            continue
+        relations.append(replace(relation, from_name=from_name, to_name=to_name))
+    return kept, relations
 
 
 async def pending_entity_candidates(

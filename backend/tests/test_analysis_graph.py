@@ -737,7 +737,14 @@ async def _mock_all_llm_calls(
     async def fake_generate(messages, system_prompt=None, thinking=False, temperature=None):
         if system_prompt == ag._EXTRACT_TOPICS_SYSTEM_PROMPT:
             return '["childhood"]'
-        if system_prompt == entity_extraction._ENTITY_EXTRACTION_SYSTEM_PROMPT:
+        # startswith, not equality: the extraction prompt now carries the
+        # producer's name so the model can tell which of the names in a
+        # transcript is the one narrating. Identifying a call by exact
+        # prompt text was always brittle; it breaks the moment the prompt
+        # legitimately varies per producer.
+        if (system_prompt or "").startswith(
+            entity_extraction._ENTITY_EXTRACTION_SYSTEM_PROMPT
+        ):
             return _extraction_reply(entity_name)
         if system_prompt == ag._IMPORTANCE_SYSTEM_PROMPT:
             return "8"
@@ -878,7 +885,14 @@ async def test_full_pipeline_asks_identity_and_type_in_ONE_interrupt(
     async def fake_generate(messages, system_prompt=None, thinking=False, temperature=None):
         if system_prompt == ag._EXTRACT_TOPICS_SYSTEM_PROMPT:
             return '["childhood"]'
-        if system_prompt == entity_extraction._ENTITY_EXTRACTION_SYSTEM_PROMPT:
+        # startswith, not equality: the extraction prompt now carries the
+        # producer's name so the model can tell which of the names in a
+        # transcript is the one narrating. Identifying a call by exact
+        # prompt text was always brittle; it breaks the moment the prompt
+        # legitimately varies per producer.
+        if (system_prompt or "").startswith(
+            entity_extraction._ENTITY_EXTRACTION_SYSTEM_PROMPT
+        ):
             return json.dumps([
                 {"name": "Gila", "type": "person", "alternative_type": None, "summary": "s"},
                 {"name": "הכפר הירוק", "type": "place",
@@ -1006,7 +1020,14 @@ async def _pause_with(monkeypatch, segment_id, *, extraction, candidates):
     async def fake_generate(messages, system_prompt=None, thinking=False, temperature=None):
         if system_prompt == ag._EXTRACT_TOPICS_SYSTEM_PROMPT:
             return '["childhood"]'
-        if system_prompt == entity_extraction._ENTITY_EXTRACTION_SYSTEM_PROMPT:
+        # startswith, not equality: the extraction prompt now carries the
+        # producer's name so the model can tell which of the names in a
+        # transcript is the one narrating. Identifying a call by exact
+        # prompt text was always brittle; it breaks the moment the prompt
+        # legitimately varies per producer.
+        if (system_prompt or "").startswith(
+            entity_extraction._ENTITY_EXTRACTION_SYSTEM_PROMPT
+        ):
             return json.dumps(extraction)
         if system_prompt == ag._IMPORTANCE_SYSTEM_PROMPT:
             return "8"

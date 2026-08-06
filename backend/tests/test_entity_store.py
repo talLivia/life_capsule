@@ -11,9 +11,10 @@ import pytest
 from sqlalchemy import select
 
 from app.models import Entity, EntityMention, InterviewSession, RawSegment
-from app.services.entity_extraction import ExtractedEntity
+from app.services.entity_extraction import ExtractedEntity, ExtractedRelation
 from app.services import entity_store as es
 from app.services.entity_store import delete_orphaned_entities, write_segment_entities
+from app.services.entity_names import normalize_entity_name
 
 pytestmark = pytest.mark.asyncio
 
@@ -699,3 +700,91 @@ async def test_result_counts_report_what_happened(db_session, test_user, segment
     assert second.mentions_written == 1
     # טבריה is still mentioned by the first recording, so nothing is orphaned.
     assert second.orphans_removed == 0
+
+
+# ── The producer is never an entity in their own archive ─────────────────────
+
+
+async def _self_and_producer(db_session):
+    from app.models import User
+
+    user = User(
+        id="u-self", email="s@example.com", username="selfy",
+        hashed_password="x", role="producer", full_name="Root Person",
+    )
+    db_session.add(user)
+    await db_session.flush()
+    me = Entity(
+        producer_id=user.id, name="טל", normalized_name=normalize_entity_name("טל"),
+        type="person", is_self=True,
+    )
+    db_session.add(me)
+    await db_session.flush()
+    return user, me
+
+
+async def test_the_speaker_is_dropped_from_their_own_extraction(db_session):
+    """Seen on the live archive: "אנחנו חמישה: אני טל, עדי…" extracted טל as a
+    person, giving the producer a second, disconnected copy of themselves
+    beside the is_self row — one that collects relations belonging on the
+    tree's root."""
+    user, _ = await _self_and_producer(db_session)
+
+    kept, relations = await es.fold_speaker_into_self(
+        db_session,
+        user.id,
+        [
+            ExtractedEntity(name="טל", type="person", summary="הדובר"),
+            ExtractedEntity(name="עדי", type="person", summary="אחות"),
+        ],
+        [],
+        "__SELF__",
+    )
+    assert [e.name for e in kept] == ["עדי"], "the producer is not in their own archive"
+    assert relations == []
+
+
+async def test_a_relation_to_the_speaker_survives_as_SELF(db_session):
+    """Re-pointed, not dropped with the entity — the relation is real, it just
+    names the producer by name instead of by marker."""
+    user, _ = await _self_and_producer(db_session)
+
+    kept, relations = await es.fold_speaker_into_self(
+        db_session,
+        user.id,
+        [
+            ExtractedEntity(name="טל", type="person", summary="הדובר"),
+            ExtractedEntity(name="עדי", type="person", summary="אחות"),
+        ],
+        [ExtractedRelation(from_name="עדי", to_name="טל", relation_type="sibling")],
+        "__SELF__",
+    )
+    assert [e.name for e in kept] == ["עדי"]
+    assert len(relations) == 1
+    assert (relations[0].from_name, relations[0].to_name) == ("עדי", "__SELF__")
+
+
+async def test_a_relation_that_becomes_a_self_loop_is_dropped(db_session):
+    """ck_entity_relations_not_self forbids it, and "טל is their own sibling"
+    is not a fact worth keeping."""
+    user, _ = await _self_and_producer(db_session)
+
+    _, relations = await es.fold_speaker_into_self(
+        db_session,
+        user.id,
+        [ExtractedEntity(name="טל", type="person", summary="הדובר")],
+        [ExtractedRelation(from_name="טל", to_name="__SELF__", relation_type="sibling")],
+        "__SELF__",
+    )
+    assert relations == []
+
+
+async def test_everyone_else_is_untouched(db_session):
+    user, _ = await _self_and_producer(db_session)
+    entities = [ExtractedEntity(name="עדי", type="person", summary="s")]
+    rels = [ExtractedRelation(from_name="עדי", to_name="__SELF__", relation_type="sibling")]
+
+    kept, relations = await es.fold_speaker_into_self(
+        db_session, user.id, entities, rels, "__SELF__"
+    )
+    assert [e.name for e in kept] == ["עדי"] and len(relations) == 1

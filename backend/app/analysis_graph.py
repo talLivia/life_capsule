@@ -594,7 +594,20 @@ async def check_entities_node(state: AnalysisState) -> dict:
     # comes from relation_types, so adding a type needs no prompt edit.
     async with AsyncSessionLocal() as db:
         relation_vocabulary = await entity_store.get_relation_vocabulary(db)
-    extracted, proposed = await entity_extraction.extract(transcript, relation_vocabulary)
+        # Who is narrating. Without it the model cannot tell which of twelve
+        # names is the one telling the story, and extracts the producer as a
+        # person in their own archive — measured 2/2 before, 0/2 after.
+        speaker_name = await entity_store.speaker_name_for(db, group_id)
+    extracted, proposed = await entity_extraction.extract(
+        transcript, relation_vocabulary, speaker_name
+    )
+    # The producer is not somebody IN their archive — they are who it belongs
+    # to. The prompt says so, and this enforces it, because a prompt cannot be
+    # the only guard on something that silently forks the tree root.
+    async with AsyncSessionLocal() as db:
+        extracted, proposed = await entity_store.fold_speaker_into_self(
+            db, group_id, extracted, proposed, entity_extraction.SELF
+        )
     names = [e.name for e in extracted]
 
     if names:

@@ -85,6 +85,14 @@ saying what THIS transcript says about this entity, phrased relative to the \
 speaker (e.g. "the speaker's brother", "where the speaker grew up"). Only \
 what this transcript actually says - never anything you know from elsewhere.
 
+THE SPEAKER IS NEVER AN ENTITY. The transcript is the speaker's own account, \
+so when they name THEMSELVES - "my name is X", "I am X", "we are five: X, \
+Y and Z" where X is the speaker - omit that name from the array entirely. \
+They are the person the whole archive belongs to, not somebody in it, and \
+extracting them creates a second, disconnected copy of the producer inside \
+their own family tree. Use "__SELF__" for them in relations instead. Everyone \
+ELSE named in the same breath is still extracted normally.
+
 IF SOMETHING FITS NONE OF THE FOUR TYPES, IT IS NOT A NAMED ENTITY - OMIT IT. \
 Common nouns are not entities: a mouse, a dog, a car, an unnamed school are \
 all omitted. Pronouns and generic descriptions ("my commander", "the right \
@@ -142,16 +150,33 @@ a family tree is visible and damaging.
 Output nothing after the second array."""
 
 
-def build_extraction_prompt(relation_vocabulary: List[str]) -> str:
+def build_extraction_prompt(
+    relation_vocabulary: List[str], speaker_name: Optional[str] = None
+) -> str:
     """The entity prompt, plus the relation task when a vocabulary is given.
 
     An empty vocabulary means relations are not being captured at all, and the
     prompt then asks for entities exactly as before — byte-identical, so
     nothing about existing extraction changes when relations are off.
+
+    `speaker_name` is what makes "the speaker is never an entity" actually
+    work, and it was MEASURED rather than assumed. Told only the rule, the
+    model extracted "טל" from "אנחנו חמישה: אני טל, עדי…" on 2 of 2 runs —
+    it cannot tell which of twelve names is the one narrating. Told that the
+    speaker is called "Tal Nahum", it dropped it on 2 of 2, across the script
+    boundary the merge key cannot cross.
     """
+    prompt = _ENTITY_EXTRACTION_SYSTEM_PROMPT
+    if speaker_name:
+        prompt += (
+            f'\n\nThe speaker of THIS transcript is called "{speaker_name}", and may '
+            f"refer to themselves by any form of that name, including a short form "
+            f"or the same name written in another script. That name is the SPEAKER "
+            f"- never extract it as an entity."
+        )
     if not relation_vocabulary:
-        return _ENTITY_EXTRACTION_SYSTEM_PROMPT
-    return _ENTITY_EXTRACTION_SYSTEM_PROMPT + _RELATION_PROMPT_SUFFIX.format(
+        return prompt
+    return prompt + _RELATION_PROMPT_SUFFIX.format(
         vocabulary=", ".join(sorted(relation_vocabulary))
     )
 
@@ -480,7 +505,9 @@ def parse_extracted_entities(text: str) -> List[ExtractedEntity]:
 
 
 async def extract(
-    transcript: str, relation_vocabulary: Optional[List[str]] = None
+    transcript: str,
+    relation_vocabulary: Optional[List[str]] = None,
+    speaker_name: Optional[str] = None,
 ) -> Tuple[List[ExtractedEntity], List[ExtractedRelation]]:
     """This recording's named entities, and any family relations it states.
 
@@ -506,7 +533,7 @@ async def extract(
     try:
         raw = await llm_service.generate_response(
             messages=[{"role": "user", "content": transcript}],
-            system_prompt=build_extraction_prompt(vocabulary),
+            system_prompt=build_extraction_prompt(vocabulary, speaker_name),
             temperature=0,  # structured extraction — deterministic
         )
     except Exception as e:
