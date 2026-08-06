@@ -10,31 +10,31 @@ import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 const inter = Inter({ subsets: ['latin'] })
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
-const SITE_TITLE = 'AvatarAI — Real-Time AI Avatar with Lip-Sync & Voice Cloning'
+const SITE_TITLE = 'Life Capsule — your family’s story, in their own voice'
 const SITE_DESCRIPTION =
-  'Open-source AI talking avatar platform: upload a photo, clone a voice, and have ' +
-  'real-time conversations with photorealistic lip-sync video. Powered by Claude, ' +
-  'Whisper, Chatterbox TTS, and MuseTalk. Self-host everything.'
+  'Life Capsule interviews a parent or grandparent question by question, and keeps ' +
+  'their answers as they recorded them. When the family asks about a person, a place ' +
+  'or a year later on, the answer is the storyteller’s own footage — never a ' +
+  'synthetic voice speaking for them.'
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
     default: SITE_TITLE,
-    template: '%s · AvatarAI',
+    template: '%s · Life Capsule',
   },
   description: SITE_DESCRIPTION,
-  applicationName: 'AvatarAI',
+  applicationName: 'Life Capsule',
   keywords: [
-    'AI avatar', 'talking avatar', 'talking head', 'digital human', 'lip sync',
-    'voice cloning', 'text to speech', 'speech to text', 'real-time avatar',
-    'AI companion', 'Claude', 'Whisper', 'MuseTalk', 'Chatterbox TTS',
-    'open source avatar', 'self-hosted AI',
+    'life story', 'family history', 'oral history', 'guided interview',
+    'legacy video', 'memoir', 'family archive', 'record grandparents',
+    'personal history', 'storytelling', 'keepsake', 'genealogy',
   ],
   alternates: { canonical: '/' },
   openGraph: {
     type: 'website',
     url: SITE_URL,
-    siteName: 'AvatarAI',
+    siteName: 'Life Capsule',
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
     locale: 'en_US',
@@ -56,20 +56,19 @@ export const metadata: Metadata = {
 const JSON_LD = {
   '@context': 'https://schema.org',
   '@type': 'SoftwareApplication',
-  name: 'AvatarAI',
-  applicationCategory: 'MultimediaApplication',
-  operatingSystem: 'Web, Linux, Docker',
+  name: 'Life Capsule',
+  applicationCategory: 'LifestyleApplication',
+  operatingSystem: 'Web',
   description: SITE_DESCRIPTION,
   url: SITE_URL,
-  offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
-  softwareHelp: 'https://github.com/PunithVT/ai-avatar-system',
-  sameAs: ['https://github.com/PunithVT/ai-avatar-system'],
+  // The upstream avatar repo's links are deliberately NOT carried over: they
+  // point at a different product, and `sameAs` is an identity claim.
   featureList: [
-    'Real-time lip-sync avatar video (MuseTalk)',
-    'Zero-shot voice cloning in 23 languages (Chatterbox)',
-    'Streaming LLM conversations (Claude / GPT)',
-    'Whisper speech-to-text',
-    'Self-hostable with Docker',
+    'A guided interview of 129 questions across 16 chapters of a life',
+    'Record answers as video, one question at a time, at your own pace',
+    'Answers about a person, place or year come back as the storyteller’s own footage',
+    'A family tree and timeline built from what was actually said',
+    'Relatives can ask the archive questions in their own words',
   ],
 }
 

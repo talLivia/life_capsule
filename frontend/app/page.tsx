@@ -3,6 +3,7 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
+import Image from 'next/image'
 import { AvatarUpload } from '@/components/AvatarUpload'
 import { AvatarList } from '@/components/AvatarList'
 import { ConnectionStatus } from '@/components/ui/ConnectionStatus'
@@ -294,11 +295,19 @@ export default function Home() {
       {/* ── Navigation ── */}
       <nav className="fixed top-0 left-0 right-0 z-50 h-16">
         <div className="h-full mx-auto max-w-7xl px-6 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-accent-600 flex items-center justify-center shadow-glow-sm">
-              <Sparkles size={16} className="text-white" />
-            </div>
-            <span className="font-bold text-lg gradient-text">AvatarAI</span>
+          <div className="flex items-center">
+            {/* The real wordmark, not an icon plus type: "life capsule" is
+                one locked-up mark. The dark-surface variant is used because
+                this bar is always dark — "capsule" is pure black in the
+                source file and would be invisible on it. */}
+            <Image
+              src="/lifecapsule-wordmark.png"
+              alt="Life Capsule"
+              width={132}
+              height={57}
+              priority
+              className="h-9 w-auto"
+            />
           </div>
 
           <div className="flex items-center gap-1 p-1 rounded-xl bg-surface-800/80 backdrop-blur-xl border border-white/8 overflow-x-auto">

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- The mark from lifecapsule-logo.png — the circle-and-play glyph set into
+       the "a" of "capsule". Redrawn rather than cropped: in the source file
+       that glyph is ~19px across, so any crop of it is soft at every favicon
+       size. Brand teal reads on both a light and a dark browser tab, which a
+       near-black or near-white mark would not. -->
+  <circle cx="32" cy="32" r="21" fill="none" stroke="#2a8f96" stroke-width="5" />
+  <path d="M26 21.5 L45 32 L26 42.5 Z" fill="none" stroke="#2a8f96"
+        stroke-width="5" stroke-linejoin="round" />
+</svg>

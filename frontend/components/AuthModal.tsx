@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import { useEffect, useRef, useState } from 'react'
 import { Sparkles, Loader2, Eye, EyeOff, UserPlus, LogIn, User } from 'lucide-react'
 import { toast } from 'react-hot-toast'
@@ -134,12 +135,24 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
     >
       <div ref={dialogRef} className="w-full max-w-md mx-4 glass-card rounded-2xl p-8 animate-scale-in">
         {/* Logo */}
-        <div className="flex flex-col items-center gap-3 mb-8">
-          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary-500 to-accent-600 flex items-center justify-center shadow-glow">
-            <Sparkles size={22} className="text-white" />
-          </div>
+        <div className="flex flex-col items-center gap-4 mb-8">
+          {/* Larger here than in the nav — this is the first screen anyone
+              sees, and the mark is doing the introducing. */}
+          <Image
+            src="/lifecapsule-wordmark.png"
+            alt="Life Capsule"
+            width={132}
+            height={57}
+            priority
+            className="h-14 w-auto"
+          />
           <div className="text-center">
-            <h1 id="auth-modal-title" className="text-2xl font-black gradient-text">{title ?? 'AvatarAI'}</h1>
+            {/* The heading is only rendered when a caller passes one — the
+                wordmark above already says the product's name, and printing
+                it twice reads as a mistake. */}
+            {title && (
+              <h1 id="auth-modal-title" className="text-2xl font-black gradient-text">{title}</h1>
+            )}
             <p id="auth-modal-desc" className="text-sm text-gray-500 mt-0.5">
               {description ?? 'Sign in to your account'}
             </p>
