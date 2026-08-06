@@ -227,3 +227,63 @@ async def test_the_prompt_says_to_omit_what_fits_no_category():
     # "other" must NOT be offered as a category, or the model has somewhere to
     # park exactly the leftovers it is being told to drop.
     assert '"other"' not in prompt
+
+
+# ── Hebrew gershayim breaks JSON ─────────────────────────────────────────────
+#
+# Found on a real recording: "לאמא שלי קוראים אילנה … הייתה מורה לתנ״ך".
+# The model wrote a correct summary containing תנ"ך, whose gershayim is an
+# ASCII double quote, which terminated the JSON string early. json.loads
+# raised, the parser returned [], and every entity from that recording was
+# silently dropped — no entity, no tree entry, no confirmation question.
+# Reproducible 3/3 against the live model.
+
+
+def test_gershayim_in_a_summary_does_not_drop_the_entities():
+    raw = (
+        '[\n'
+        '  {"name": "אילנה", "type": "person", "alternative_type": null,\n'
+        '   "summary": "אמא של הדובר, הייתה מורה לתנ"ך ועובדת היום בעירייה."},\n'
+        '  {"name": "טבריה", "type": "place", "alternative_type": null,\n'
+        '   "summary": "המקום בו נולדה אמו של הדובר."}\n'
+        ']'
+    )
+    entities = parse(raw)
+    assert [e.name for e in entities] == ["אילנה", "טבריה"]
+    # The summary keeps the quote as written — it is the producer's language,
+    # not a defect to normalise away.
+    assert 'תנ"ך' in entities[0].summary
+
+
+def test_gershayim_in_relation_evidence_does_not_drop_the_relations():
+    """`evidence` quotes the transcript verbatim, so it is the field most
+    likely to carry one."""
+    raw = (
+        'ENTITIES:\n[{"name": "אילנה", "type": "person", '
+        '"alternative_type": null, "summary": "s"}]\n'
+        'RELATIONS:\n[{"from": "אילנה", "to": "__SELF__", "type": "parent", '
+        '"evidence": "אמא שלי לימדה תנ"ך בבית הספר"}]'
+    )
+    relations = ex.parse_extracted_relations(raw, ["אילנה"], ["parent"])
+    assert len(relations) == 1
+    assert relations[0].relation_type == "parent"
+
+
+def test_well_formed_json_is_not_touched_by_the_repair():
+    """The repair only runs on text that already failed to parse, so a valid
+    reply cannot be altered by it — including one with ESCAPED quotes."""
+    raw = (
+        '[{"name": "X", "type": "person", "alternative_type": null, '
+        '"summary": "he said \\"hello\\" once"}]'
+    )
+    entities = parse(raw)
+    assert entities[0].summary == 'he said "hello" once'
+
+
+def test_several_gershayim_in_one_reply():
+    raw = (
+        '[{"name": "צה\"ל", "type": "organisation", "alternative_type": null, '
+        '"summary": "שירת בצה"ל ולמד אח"כ באוני"ב"}]'
+    )
+    entities = parse(raw)
+    assert len(entities) == 1

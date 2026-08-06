@@ -1630,14 +1630,54 @@ async def run_segment_analysis(segment_id: str) -> Dict[str, Any]:
         logger.error(f"run_segment_analysis: segment {segment_id} not found")
         return {"status": "failed"}
 
-    async with _open_checkpointer() as checkpointer:
-        graph = build_graph(checkpointer)
-        result = await graph.ainvoke(
-            {"segment_id": segment_id, "group_id": user.id},
-            config=_thread_config(segment_id),
-        )
-        await _sync_segment_from_result(segment_id, result)
-        return result
+    try:
+        async with _open_checkpointer() as checkpointer:
+            graph = build_graph(checkpointer)
+            result = await graph.ainvoke(
+                {"segment_id": segment_id, "group_id": user.id},
+                config=_thread_config(segment_id),
+            )
+            await _sync_segment_from_result(segment_id, result)
+            return result
+    except Exception:
+        # STRANDED OTHERWISE, AND INVISIBLY.
+        #
+        # `_sync_segment_from_result` is the ONLY thing that moves a segment
+        # off its initial status, and it runs after `ainvoke` returns. If the
+        # run dies — a dropped checkpointer connection, a killed worker, a
+        # crash inside a node — the row keeps `pending_transcription` while
+        # `progress_stage` shows how far it got. That state appears NOWHERE:
+        # /talk loads `status == "ready"`, the notification bell queries
+        # `status == "pending_confirmation"`, and this is neither. The producer
+        # records a story and nothing anywhere says it is missing.
+        #
+        # Seen on a real recording (1ffc53b7, stage=human_confirm), found only
+        # because the producer noticed the content was absent.
+        #
+        # Marking it failed does not recover it, and is not meant to: it makes
+        # it VISIBLE. `failed` already renders as "Something went wrong
+        # processing this" in the recordings list, and
+        # `scripts/recover_lost_segments.py` re-runs it from the stored
+        # transcript.
+        logger.exception(f"Segment analysis crashed for {segment_id}; marking failed")
+        try:
+            async with AsyncSessionLocal() as db:
+                crashed = (
+                    await db.execute(select(RawSegment).where(RawSegment.id == segment_id))
+                ).scalar_one_or_none()
+                if crashed is not None and crashed.status not in (
+                    "ready",
+                    "analyzed",
+                    "pending_confirmation",
+                ):
+                    crashed.status = "failed"
+                    crashed.progress_stage = None
+                    await db.commit()
+        except Exception:
+            # The database is the thing that just failed, most likely. Nothing
+            # further to try, and re-raising here would hide the original.
+            logger.exception(f"Could not mark segment {segment_id} as failed")
+        raise
 
 
 async def resume_segment_analysis(segment_id: str, resume_value: Dict[str, Any]) -> Dict[str, Any]:

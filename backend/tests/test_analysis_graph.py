@@ -1386,3 +1386,58 @@ async def test_answering_yes_to_a_pending_candidate_renames_onto_it(db_session):
         },
     )
     assert resolved[0].name == "איציק", "written under the other recording's name"
+
+
+async def test_a_crashed_run_is_marked_failed_not_left_stranded(
+    db_session, segment, analysis_session_factory, fake_checkpointer, monkeypatch
+):
+    """A crash must leave a VISIBLE state, not an invisible one.
+
+    _sync_segment_from_result is the only thing that moves a segment off its
+    initial status, and it runs after the graph returns. When the run died the
+    row kept `pending_transcription` while progress_stage showed how far it
+    got — a state that appears nowhere: /talk loads `ready`, the bell queries
+    `pending_confirmation`, and this is neither. Seen on a real recording,
+    found only because the producer noticed the content was missing.
+    """
+    segment.status = "pending_transcription"
+    segment.progress_stage = "human_confirm"
+    await db_session.commit()
+
+    async def boom(*a, **kw):
+        raise RuntimeError("checkpointer connection dropped")
+
+    monkeypatch.setattr(ag, "build_graph", lambda checkpointer: type(
+        "G", (), {"ainvoke": staticmethod(boom)}
+    )())
+
+    with pytest.raises(RuntimeError):
+        await ag.run_segment_analysis(segment.id)
+
+    db_session.expire_all()
+    await db_session.refresh(segment)
+    assert segment.status == "failed", "a crashed run must not stay invisible"
+    assert segment.progress_stage is None
+
+
+async def test_a_crash_never_downgrades_a_finished_segment(
+    db_session, segment, analysis_session_factory, fake_checkpointer, monkeypatch
+):
+    """A late crash must not overwrite a status that already settled — a
+    recording that reached `ready` is done, whatever happens on the way out."""
+    segment.status = "ready"
+    await db_session.commit()
+
+    async def boom(*a, **kw):
+        raise RuntimeError("late failure")
+
+    monkeypatch.setattr(ag, "build_graph", lambda checkpointer: type(
+        "G", (), {"ainvoke": staticmethod(boom)}
+    )())
+
+    with pytest.raises(RuntimeError):
+        await ag.run_segment_analysis(segment.id)
+
+    db_session.expire_all()
+    await db_session.refresh(segment)
+    assert segment.status == "ready"

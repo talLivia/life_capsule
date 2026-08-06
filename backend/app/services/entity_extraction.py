@@ -248,6 +248,76 @@ class ExtractedRelation:
         )
 
 
+def _escape_inner_quotes(raw: str) -> str:
+    """Escape double quotes that appear INSIDE a JSON string value.
+
+    HEBREW BREAKS JSON, and it does it silently. Gershayim — the mark in
+    תנ"ך, צה"ל, ארה"ב, ד"ר, עו"ד — is an ASCII double quote, so a model
+    writing a perfectly good Hebrew summary emits
+
+        "summary": "הייתה מורה לתנ"ך ועובדת בעירייה"
+
+    which terminates the string at `לתנ` and makes the whole array
+    unparseable. `json.loads` raises, the parser returns [], and EVERY entity
+    from that recording is dropped — no entity, no tree entry, no confirmation
+    question, and nothing to distinguish it from a recording that genuinely
+    mentioned nobody. Found on a real recording ("לאמא שלי קוראים אילנה…"),
+    reproducible 3/3, and it cost that producer their mother.
+
+    A repair pass rather than a prompt instruction, because the prompt cannot
+    make this safe: the model is not making a mistake — it is writing Hebrew,
+    and any Hebrew summary may contain the character.
+
+    Only quotes that cannot be structural are escaped. A `"` closing a string
+    is followed, ignoring whitespace, by one of `,:}]` or the end of input;
+    anything else is text the model meant literally.
+    """
+    out: List[str] = []
+    in_string = False
+    i = 0
+    while i < len(raw):
+        char = raw[i]
+        if char == "\\" and in_string and i + 1 < len(raw):
+            # Already escaped — copy the pair through untouched.
+            out.append(raw[i : i + 2])
+            i += 2
+            continue
+        if char == '"':
+            if not in_string:
+                in_string = True
+                out.append(char)
+            else:
+                following = raw[i + 1 :].lstrip()
+                if following[:1] in (",", ":", "}", "]", ""):
+                    in_string = False
+                    out.append(char)
+                else:
+                    out.append('\\"')
+            i += 1
+            continue
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
+def _loads_tolerant(blob: str):
+    """`json.loads`, retried once with inner quotes escaped.
+
+    The happy path is untouched — the repair only ever runs on text that has
+    already failed to parse, so well-formed output cannot be altered by it.
+    """
+    try:
+        return json.loads(blob)
+    except json.JSONDecodeError:
+        pass
+    try:
+        repaired = json.loads(_escape_inner_quotes(blob))
+    except json.JSONDecodeError:
+        return None
+    logger.info("extraction JSON repaired: an unescaped quote inside a string value")
+    return repaired
+
+
 def parse_extracted_relations(
     text: str, entity_names: List[str], allowed_types: List[str]
 ) -> List[ExtractedRelation]:
@@ -270,10 +340,9 @@ def parse_extracted_relations(
     match = re.search(r"\[.*\]", marker[1], re.DOTALL)
     if not match:
         return []
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return []
+    # Same repair as the entities array: `evidence` quotes the transcript
+    # verbatim, so it is the field MOST likely to carry a gershayim.
+    data = _loads_tolerant(match.group(0))
     if not isinstance(data, list):
         return []
 
@@ -372,10 +441,7 @@ def parse_extracted_entities(text: str) -> List[ExtractedEntity]:
     match = re.search(r"\[.*\]", head, re.DOTALL)
     if not match:
         return []
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return []
+    data = _loads_tolerant(match.group(0))
     if not isinstance(data, list):
         return []
 
