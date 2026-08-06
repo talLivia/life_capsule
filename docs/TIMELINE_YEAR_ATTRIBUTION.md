@@ -1,177 +1,178 @@
 # Timeline year ranges — attributing a year to whose life it is about
 
-**Written 2026-08-06. Nothing built.** A plan for showing each timeline
-category a year range ("1984 to 1995") derived only from years about the
-PRODUCER, not from every year mentioned in that category's recordings.
+**Rewritten 2026-08-06 after the first draft was rejected. Nothing built.**
 
-Its own file rather than folded into an existing one: it spans two systems
-that neither doc owns. `FAMILY_TREE_TIMELINE.md` documents the timeline that
-was built; `GUIDED_INTERVIEW.md` covers the `/record` experience. This needs a
-change to the QUESTIONNAIRE's metadata and a change to how a year is stored,
-and sits across both.
+Goal: each timeline period shows a year range ("1984 to 1995") derived only
+from years about the PRODUCER — not from every year mentioned in that period's
+recordings, so a grandmother's 1920 does not stretch a childhood to eighty
+years.
+
+Its own file rather than folded into another: it needs a change to how a year
+is STORED and a judgement the system does not currently make, and sits across
+the timeline and the interview.
 
 ---
 
-## 1. The problem, measured on the live archive
+## 1. What the first draft proposed, and why it is withdrawn
 
-Every year currently held, with the category of the recordings mentioning it:
+It proposed classifying each of the 129 questions once, as
+`speaker` / `other` / `context`, and counting only years from `speaker`
+questions.
 
-| entity | type | year | categories |
-| --- | --- | --- | --- |
-| טבריה | place | **1984** | childhood ×4 |
-| צבי | person | 1956 | childhood |
-| מרוקו | place | 1920 | childhood |
-| עיראק | place | 1915 | childhood |
-| ארליך | organisation | **1995** | childhood |
+**That is the wrong model.** The same question yields answers about different
+people depending on what was actually said — "tell me about your family's
+origins" can produce "where I grew up" or "where my grandmother came from", and
+the question cannot tell you which.
 
-A naive range over the `childhood` category is **1915–1995**: eighty years, for
-a childhood. The two years actually about the producer's childhood are **1984**
-(born in טבריה) and **1995** (started school at ארליך). The rest are a father's
-birth and two grandparents' countries of origin.
+The live archive demonstrates it more sharply than the counter-example does.
+טבריה is ONE entity with ONE year and **four mentions with four different
+subjects**:
 
-This is exactly the failure described. It is also worse than expected, because
-of §2.
-
-## 2. Two cheap options are already dead
-
-Both were considered and are ruled out by the table above, not by argument.
-
-**Per-CATEGORY attribution does not work.** The obvious idea — "years from
-recordings in this category are about this period" — fails because *all five*
-years above came from `childhood` recordings. The category cannot separate the
-producer's birth from their grandmother's emigration, because the interview
-asks about both under "childhood".
-
-**Entity TYPE does not work either.** "Years on people are about that person;
-years on places are about the producer's involvement" is tempting and wrong:
-טבריה (1984, the producer's birth) and מרוקו (1920, where grandparents came
-from) are both `place`.
-
-## 3. What DOES separate them: the question, not the category
-
-Look at which question elicited each year:
-
-| year | elicited by | about |
+| question | what this recording said about טבריה | about |
 | --- | --- | --- |
-| 1984 | `childhood_q01` — "when and where were you born?" | **the producer** |
-| 1995 | `childhood_q06` — "the city you grew up in" | **the producer** |
-| 1956 | `childhood_q02` — "tell me about your father" | someone else |
-| 1920 | `childhood_q05` — "your family's roots… grandparents" | ancestors |
-| 1915 | `childhood_q05` | ancestors |
+| `childhood_q01` | מקום הולדתו של הדובר — the speaker's birthplace | **the speaker** |
+| `childhood_q03` | המקום בו נולדה אמו של הדובר — where his mother was born | his mother |
+| `childhood_q04` | המקום שבו הכירו ההורים — where his parents met | his parents |
+| `childhood_q06` | המקום שבו גדל הדובר — where the speaker grew up | **the speaker** |
 
-The split is clean and it is at QUESTION granularity. `childhood_q01` and
-`childhood_q05` live in the same category and ask about different people's
-lives. Nothing in the current data model records that difference.
+Four subjects, one entity, and `childhood_q01` and `childhood_q03` are both
+"childhood" questions that differ only in whose life they happened to be
+answered about. A per-question label would have to be wrong for at least two
+of these four rows.
 
-## 4. What it would take
+## 2. The structural finding: the year is at the wrong GRAIN
 
-Two additions. Neither is large; the second is the one with real cost.
+Mention-level attribution is the right instinct, and it does not rescue this on
+its own — because **there is no year at mention level to attribute.**
 
-### 4.1 Record which recording a year came from
+`Entity.year_start` is one value per entity. טבריה's is `1984`. That is the
+speaker's birth year, so it belongs to the `childhood_q01` mention — but
+nothing records that, and the other three mentions have no year of their own
+and no claim on this one.
 
-`Entity.year_start` is a property of the entity, and the year question is asked
-**once per entity, ever** (`year_asked_at`). So the recording that elicited a
-year is not recoverable today — `year_asked_at` is a timestamp, not a link.
+So the field already means something the schema never says: not "the year of
+this place", but **"the year of one particular event connecting the speaker to
+this place"** — and which event is not stored anywhere.
 
-Add `Entity.year_source_segment_id` (nullable FK to `raw_segments`, ON DELETE
-SET NULL), written by the same code that writes `year_start`. One column, one
-migration.
-
-**Backfill:** the earliest mention's recording is the best available guess for
-the five existing rows, and it happens to be correct for all five. Say so in
-the migration rather than implying it is derived — it is a guess, and a
-producer editing a year later should overwrite it with the real source.
-
-### 4.2 Classify the 129 questions by whose life they ask about
-
-A new field in `interview_questions.json`:
-
-```json
-{ "id": "childhood_q01", "text": "…", "subject": "speaker" }
-```
-
-Proposed vocabulary, deliberately small:
-
-| value | meaning | example |
-| --- | --- | --- |
-| `speaker` | an event in the producer's own life | "when were you born?" |
-| `other` | about another named person's life | "tell me about your father" |
-| `context` | background, ancestry, or open reflection | "your family's roots", "your philosophy of life" |
-
-Only `speaker` years feed a range. `other` and `context` years are still
-captured, still shown on the entity, and still power the family tree — they
-just do not define the producer's own chronology.
-
-**This is the expensive part, and it is a content change rather than a code
-change:** 129 manual judgements. It should be done as a data migration with the
-producer's review, not inferred by an LLM — a misclassification silently shifts
-a life period by decades, which is precisely the class of error the archive is
-built to avoid.
-
-`interview_schema` should require the field, so a question added later cannot
-omit it and quietly fall into a default.
-
-### 4.3 Deriving the range
+Anything built on `Entity.year_start` inherits that ambiguity. Attribution at
+mention level therefore requires the year to move to mention level FIRST:
 
 ```
-for each category:
-    years = [ e.year_start for e in entities
-              if e.year_source_segment_id is in this category's recordings
-              and question_subject(that recording) == "speaker" ]
-    range = (min(years), max(years))   # omitted entirely when years is empty
+entity_mentions.year_start   -- the year THIS recording attached to this entity
+entity_mentions.year_subject -- whose life that year belongs to
 ```
 
-Consistent with the timeline's existing rules: a category with no qualifying
-years shows **no range at all** rather than a guessed one — the same call
-`FAMILY_TREE_TIMELINE.md` §8.4 makes for question counters and the tree makes
-for unplaced people. No invented denominators, no invented dates.
+That is a migration and a change to the year question (asked once per entity
+today; it would become once per entity per recording, or once and then
+attributable). Neither is large. Both are prerequisites, and the first draft
+missed them entirely.
 
-## 5. The deeper issue, stated so it is a choice
+## 3. Can the subject be derived without judgement? No.
 
-`Entity.year_start` conflates two different facts:
+Worth stating plainly, because the summaries look like they contain the answer.
 
-- **when the thing existed** — מרוקו did not begin in 1920;
-- **when the producer was involved with it** — 1920 is when their grandparents
-  left.
+They do contain it — as free text, in the producer's language:
 
-טבריה's 1984 is not "when טבריה began" either; it is when the producer was born
-there. So the field already means "the year of the event connecting this entity
-to this story", and the schema does not say so anywhere.
+```
+טבריה  q01: "מקום הולדתו של הדובר"                       -> the speaker
+מרוקו  q05: "מקום מוצאם של סבא וסבתא של הדובר מצד האמא"   -> his grandparents
+צבי    q02: "האבא של הדובר שמתעסק בפיתוח מוצרים רפואיים"  -> his father
+```
 
-A timeline wants **periods of a life**, which is a property of a STORY, not of
-an entity. The alternative design is therefore to stop deriving ranges from
-entity years and instead ask, once per recording, *"roughly when did this
-happen?"* — a per-segment year, on exactly the axis a timeline needs.
+**The obvious lexical shortcut does not work, and here is the proof rather than
+the assertion.** "Is the speaker the subject?" cannot be answered by looking
+for הדובר ("the speaker"), because the phrase appears in every one of these —
+`של הדובר` is how a summary says "his", so it is present when the subject is
+the speaker AND when the subject is the speaker's grandparents. The
+distinguishing word is `מוצאם` / `הולדתו` / `האבא`, which is a sentence to be
+understood, not a token to be matched.
 
-| | entity years + §4 | per-recording year |
-| --- | --- | --- |
-| new schema | 1 column | 1 column (`raw_segments.happened_year`) |
-| new questionnaire metadata | **129 classifications** | 129 classifications, still |
-| asks the producer more | no — reuses answers already given | yes — one more question per recording |
-| existing answers usable | yes, 5 years already captured | no, starts empty |
-| semantics | "year of the entity", reinterpreted | "year of the story", direct |
+There is no `is_self` to join through either: `is_self` marks the producer's own
+entity, and none of these mentions are OF the producer — they are of places and
+people, with the producer as an implied participant or not.
 
-Both need §4.2. The per-recording version is the cleaner model and the more
-honest question; the entity version ships without asking for anything new.
-**Recommendation: §4 now, because it uses answers that already exist**, and
-treat the per-recording year as the thing to build if ranges later need to be
-finer than one year per entity.
+**So subject attribution is an LLM judgement.** No structural derivation exists
+at any grain. Saying otherwise would produce a design that reads cleanly and
+fails on the first real transcript, which is the failure mode of the draft this
+replaces.
+
+## 4. The three real options
+
+### 4.1 Ask the producer — RECOMMENDED
+
+Add one control to the year question the confirmation screen already shows:
+
+```
+Roughly what year was "טבריה"?   [ 1984 ]
+   ( ) something that happened to me
+   ( ) something about someone else
+```
+
+- **Zero misclassification.** The only person who knows is answering.
+- **It matches the governing rule.** PROJECT_STATUS states it for the merge
+  key: *"when the system isn't sure, it asks"*, and the parentage design says
+  *"NOTHING IS INFERRED… only ever written from a ticked box."* Subject
+  attribution is exactly that kind of fact.
+- **The volume is tiny.** The whole archive has FIVE years. This is one extra
+  tap on a question already being asked, not a new screen.
+- Still needs §2's grain change if a producer should be able to give טבריה a
+  year in more than one recording.
+
+### 4.2 An LLM classifies each mention
+
+Feasible, and the honest cost is higher than it looks:
+
+- It is a **per-mention call** on every recording, forever — not a one-off.
+- Ingestion runs `gemini-flash-lite`, which CLAUDE.md already records as
+  *"measured weak at exactly the coreference task"*. Subject attribution IS a
+  coreference task, in Hebrew, on one-line summaries.
+- Today's evidence is not encouraging: on this same archive, that model
+  silently returned zero entities for a recording naming a person and a place
+  (see `docs/PROJECT_STATUS.md`, the gershayim bug — the model was fine there,
+  but the pipeline's tolerance for its output is what saved it).
+- A wrong answer here is **invisible**. It does not fail loudly; it shifts a
+  life period by decades on a page nobody will double-check.
+
+Defensible as a DRAFT the producer confirms — which is §4.1 with a pre-filled
+answer, and strictly better than either alone.
+
+### 4.3 Do not attribute — ask when the STORY happened
+
+Sidestep subject entirely: one question per recording, *"roughly when did this
+happen?"*, and a period's range is the min/max over its recordings.
+
+Cleaner in principle, and it does not survive contact with this archive: the
+family-roots recording's honest answer is 1920, so `childhood` still stretches
+to eighty years. The subject problem reappears unchanged, because a producer
+telling their grandparents' story is still telling it inside their own
+childhood chapter.
+
+**Rejected** — it moves the question without answering it.
+
+## 5. Recommendation
+
+1. **Move the year to mention grain** (§2) — without it there is nothing to
+   attribute, whatever the mechanism.
+2. **Ask the producer** (§4.1), optionally pre-filled by an LLM draft (§4.2) if
+   the tap ever becomes tedious. Five years today; revisit at fifty.
+3. **Derive the range** as min/max over mentions marked "about me", within the
+   period's recordings. No qualifying years means **no range shown at all** —
+   the same rule §8.4 of `FAMILY_TREE_TIMELINE.md` sets for question counters
+   and the tree sets for unplaced people. No invented dates.
 
 ## 6. Open decisions
 
 | # | Decision | Recommendation |
 | --- | --- | --- |
-| 1 | `subject` vocabulary — three values, or just `speaker` / not? | Three. `context` and `other` differ in whether a year is about a *person* at all, which the family tree may want later. |
-| 2 | Who classifies the 129? | The producer, in a review pass. An LLM draft is fine as a starting point; a silent misclassification moves a life period by decades. |
-| 3 | A range from ONE year — show "1984" or nothing? | Show the single year. It is true, and a range needing two points is a display rule, not a fact. |
-| 4 | `year_end` — currently never populated. Does a range need it? | No. min/max across a category's `year_start` values is the range; `year_end` stays for entities that genuinely have a span. |
-| 5 | Backfill the 5 existing rows from earliest mention? | Yes, and record in the migration that it is a guess. |
+| 1 | Year at mention grain — new columns, or a `year_source_mention_id` on the entity? | Columns on the mention. The entity pointer keeps one year per entity, which is the thing §2 says is wrong. |
+| 2 | Ask subject for every year, or only where it is ambiguous? | Every year. "Ambiguous" is the judgement we just established cannot be made. |
+| 3 | Backfill the five existing years? | Ask once, in the UI, next time each is seen. Guessing them re-introduces the problem the doc rejects. |
+| 4 | Two subject values or three? | Two — "me" / "someone else". The third value in the withdrawn draft existed to classify questions, and questions are no longer being classified. |
+| 5 | A period with one qualifying year — show "1984" or nothing? | Show the year. It is true; needing two points is a display rule, not a fact. |
 
 ## 7. Not in scope
 
 - Ordering the timeline by year. `timeline.py` states the rule already:
-  *"Years decorate a sub-bubble; they never move it"* — a page ordered two ways
-  disagrees with itself.
-- Editing a year after the fact. There is no edit path for `year_start` today;
-  that is its own change.
-- Anything about photos or galleries — see `docs/MEDIA_GALLERY.md`.
+  *"Years decorate a sub-bubble; they never move it."*
+- Editing a year after the fact — there is no edit path for `year_start` today.
+- Photos and galleries — see `docs/MEDIA_GALLERY.md`.
