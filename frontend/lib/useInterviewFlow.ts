@@ -52,6 +52,10 @@ export interface UseInterviewFlow {
   goBack: () => void
   canGoBack: boolean
 
+  /** Move on without recording. See `skip`. */
+  skip: () => void
+  canSkip: boolean
+
   answerGate: (gateId: string, value: string) => Promise<void>
   answering: boolean
   /** Call after a recording is accepted — refetches and auto-advances. */
@@ -249,6 +253,45 @@ export function useInterviewFlow(): UseInterviewFlow {
     setViewingOverride(openCategory.steps[viewingIndex - 1].id)
   }, [openCategory, viewingIndex])
 
+  /**
+   * Move on without recording — "I have nothing to say about this one".
+   *
+   * PURE NAVIGATION. Nothing is written, and the question stays unanswered
+   * and reachable in the accordion, so skipping is "not now" rather than
+   * "never". That is deliberately unlike the year and parentage questions,
+   * which stamp a skip precisely so they stop coming back: those interrupt
+   * the producer unasked, and an unanswerable one that returns on every
+   * recording teaches them to click past the whole screen. A question in the
+   * interview is the opposite — it is the thing they came to answer, and
+   * silently retiring it because they moved past it once would quietly shrink
+   * the archive they meant to build.
+   *
+   * Consequence worth knowing: skipping the CURRENT question leaves the
+   * server's derived position on it, so it is where the interview resumes
+   * next visit. The producer can walk past it as often as they like; nothing
+   * makes it go away except an answer.
+   *
+   * Forward within a category is safe even though `selectStep` refuses it:
+   * that guard mirrors the accordion's, and `interview_flow.can_record`
+   * checks only that the CATEGORY is reachable, never the position.
+   */
+  const canSkip = Boolean(
+    openCategory && viewingStep?.kind === 'question' && viewingIndex >= 0
+  )
+
+  const skip = useCallback(() => {
+    if (!openCategory || viewingIndex < 0) return
+    const next = openCategory.steps[viewingIndex + 1]
+    if (next) {
+      setViewingOverride(next.id)
+      return
+    }
+    // End of the category — hand back to the server's own position rather
+    // than inventing a next category here.
+    setViewingOverride(null)
+    setOpenOverride(null)
+  }, [openCategory, viewingIndex])
+
   const answerGate = useCallback(async (gateId: string, value: string) => {
     setAnswering(true)
     try {
@@ -269,10 +312,23 @@ export function useInterviewFlow(): UseInterviewFlow {
     // done, and the server recomputes position from that. Clearing the
     // override is what makes it AUTO-advance rather than sitting on the
     // question just answered.
-    setViewingOverride(null)
-    setOpenOverride(null)
+    //
+    // EXCEPT when the producer deliberately went BACK. Clearing
+    // unconditionally snapped them from question 3 to the frontier at
+    // question 9 the moment they finished recording, discarding the jump
+    // they had just made and leaving "what comes next" genuinely
+    // unguessable. `isReviewing` already knows they are looking at an
+    // earlier step; reading order is what they expect, so step forward by
+    // one and keep the section open. The accordion is how they get back to
+    // the frontier, and it names the question it goes to.
+    const next =
+      isReviewing && openCategory && viewingIndex >= 0
+        ? openCategory.steps[viewingIndex + 1]
+        : undefined
+    setViewingOverride(next?.id ?? null)
+    if (!next) setOpenOverride(null)
     await load()
-  }, [load])
+  }, [load, isReviewing, openCategory, viewingIndex])
 
   return {
     flow,
@@ -289,6 +345,8 @@ export function useInterviewFlow(): UseInterviewFlow {
     selectStep,
     goBack,
     canGoBack,
+    skip,
+    canSkip,
     answerGate,
     answering,
     onRecordingAccepted,

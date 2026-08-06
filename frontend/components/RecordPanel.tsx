@@ -11,6 +11,7 @@ import {
   PartyPopper,
   Plus,
   ShieldOff,
+  SkipForward,
 } from 'lucide-react'
 import { GateStep } from '@/components/record/GateStep'
 import { InterviewAccordion } from '@/components/record/InterviewAccordion'
@@ -72,7 +73,7 @@ export function RecordPanel() {
   const {
     flow, loading, error, reload,
     openCategory, viewingStep, isReviewing, progressLabel, overall,
-    openCategoryId, setOpenCategory, selectStep,
+    openCategoryId, setOpenCategory, selectStep, skip, canSkip,
     answerGate, answering, onRecordingAccepted,
   } = useInterviewFlow()
 
@@ -297,12 +298,27 @@ export function RecordPanel() {
                     mid-answer is a stronger guarantee than one that must
                     remember not to be. */}
                 {!capturing && (
-                  <div className="mt-2">
+                  <div className="mt-2 flex items-center gap-4">
                     <ReadAloudButton
                       key={viewingStep.id}
                       questionId={viewingStep.id}
                       onPlayingChange={setReadingAloud}
                     />
+                    {/* Nothing is written and nothing is retired — the
+                        question stays unanswered and one click away in the
+                        accordion. Worded as "not now" because that is exactly
+                        what it does; "skip" alone reads like a decision that
+                        removes the question for good. */}
+                    {canSkip && (
+                      <button
+                        type="button"
+                        onClick={skip}
+                        className="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
+                      >
+                        <SkipForward size={14} />
+                        Nothing to say — next question
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
