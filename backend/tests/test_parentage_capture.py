@@ -1514,3 +1514,116 @@ async def test_an_earlier_recordings_sibling_edge_is_deleted(db_session, family)
     parents = await _parents_of(db_session, family["sib"].id)
     # _parents_of returns RELATION rows, so the parent is from_entity_id.
     assert [p.from_entity_id for p in parents] == [uncle.id]
+
+
+# ── Grandparents: the same side question, one generation up ──────────────────
+
+
+async def test_a_grandparent_with_no_link_to_a_parent_is_asked(db_session, family):
+    """Found on live data: יוכבד and ג'ולי, both correctly captured as
+    grandparents, both correctly placed in row -2, and neither connected to
+    either parent — because nothing had ever asked whose mother they are.
+
+    A grandparent edge draws its only line to the PRODUCER, skipping the
+    parent between, which on the chart reads as floating.
+    """
+    granny = await family["person"]("Granny")
+    await family["relate"](granny, "grandparent", family["root"])
+
+    found = await entity_store.grandparent_candidates(db_session, family["user"].id)
+    assert [r["name"] for r in found["relatives"]] == ["Granny"]
+    assert {p["name"] for p in found["parents"]} == {"Dad", "Mum"}
+
+
+async def test_a_grandparent_already_linked_to_a_parent_is_not_asked(db_session, family):
+    granny = await family["person"]("Granny")
+    await family["relate"](granny, "grandparent", family["root"])
+    await family["relate"](granny, "parent", family["dad"])
+
+    found = await entity_store.grandparent_candidates(db_session, family["user"].id)
+    assert found["relatives"] == []
+
+
+async def test_an_already_asked_grandparent_is_never_asked_again(db_session, family):
+    """Ask-once, shared with the aunt/uncle question via side_asked_at — the
+    same column because it is the same question."""
+    granny = await family["person"]("Granny")
+    await family["relate"](granny, "grandparent", family["root"])
+    granny.side_asked_at = datetime.now(timezone.utc)
+    await db_session.flush()
+
+    found = await entity_store.grandparent_candidates(db_session, family["user"].id)
+    assert found["relatives"] == []
+
+
+async def test_the_grandparent_answer_writes_a_PARENT_edge(db_session, family):
+    """The whole point of the distinction: an aunt or uncle is the chosen
+    parent's SIBLING, a grandparent is their PARENT. Same question, same
+    answer shape, different edge."""
+    granny = await family["person"]("Granny")
+    await family["relate"](granny, "grandparent", family["root"])
+
+    written = await entity_store.write_sides(
+        db_session,
+        producer_id=family["user"].id,
+        segment_id=family["segment"].id,
+        asked_names=["Granny"],
+        answers={"Granny": "Dad"},
+        kinds={"Granny": "grandparent"},
+    )
+    assert written["relations"] == 1
+    parents = await _parents_of(db_session, family["dad"].id)
+    assert [p.from_entity_id for p in parents] == [granny.id], (
+        "Granny is Dad's parent, which is the edge the chart draws"
+    )
+    assert granny.side_asked_at is not None
+
+
+async def test_an_aunt_uncle_answer_still_writes_a_SIBLING_edge(db_session, family):
+    """The existing behaviour must survive sharing the writer."""
+    uncle = await family["person"]("Uncle")
+    await family["relate"](uncle, "aunt_uncle", family["root"])
+
+    await entity_store.write_sides(
+        db_session,
+        producer_id=family["user"].id,
+        segment_id=family["segment"].id,
+        asked_names=["Uncle"],
+        answers={"Uncle": "Dad"},
+        # No kinds map at all — a payload stored before grandparents existed.
+    )
+    rows = (
+        await db_session.execute(
+            EntityRelation.__table__.select().where(
+                EntityRelation.from_entity_id == uncle.id,
+                EntityRelation.relation_type == "sibling",
+            )
+        )
+    ).all()
+    assert len(rows) == 1
+
+
+def test_the_question_carries_each_relative_s_kind():
+    from app.analysis_graph import _merge_side_candidates
+
+    merged = _merge_side_candidates(
+        {"parents": [{"name": "Dad"}, {"name": "Mum"}], "relatives": [{"name": "Uncle"}]},
+        {"parents": [{"name": "Dad"}, {"name": "Mum"}], "relatives": [{"name": "Granny"}]},
+    )
+    kinds = {r["name"]: r["kind"] for r in side_questions(merged)[0]["relatives"]}
+    assert kinds == {"Uncle": "aunt_uncle", "Granny": "grandparent"}
+
+
+def test_grandparents_are_asked_even_when_no_aunt_or_uncle_qualifies():
+    """The parent list must not be taken from the aunt/uncle side by
+    precedence — that side returns an EMPTY parents list when it has nothing
+    to ask, which would drop the options for a grandparent-only question."""
+    from app.analysis_graph import _merge_side_candidates
+
+    merged = _merge_side_candidates(
+        {"parents": [], "relatives": []},
+        {"parents": [{"name": "Dad"}, {"name": "Mum"}], "relatives": [{"name": "Granny"}]},
+    )
+    questions = side_questions(merged)
+    assert len(questions) == 1
+    assert [r["name"] for r in questions[0]["relatives"]] == ["Granny"]

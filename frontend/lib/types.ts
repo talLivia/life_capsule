@@ -336,6 +336,10 @@ export interface ParentagePerson {
   /** Their sibling relation is already recorded, so an answer stands alone.
    *  Otherwise it is conditional on the sibling proposal being accepted. */
   recorded?: boolean
+  /** Side questions only: which edge the answer writes. A grandparent is the
+   *  PARENT of the chosen parent, an aunt or uncle their SIBLING. Absent on a
+   *  payload stored before grandparents were asked about. */
+  kind?: 'aunt_uncle' | 'grandparent'
 }
 
 /** ONE question for every sibling at once.

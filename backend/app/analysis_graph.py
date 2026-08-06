@@ -149,7 +149,14 @@ array of short topic tags (1-3 words each, lowercase, in the SAME \
 language as the transcript) describing what the story is actually \
 about - its real content, not the interview question that prompted it. \
 Do not include any commentary, explanation, or text outside the JSON \
-array. Example output: ["military service", "friendship", "loss"]"""
+array.
+
+The example below is ENGLISH because this instruction is written in \
+English. Do NOT copy its language - it shows the SHAPE of the reply, not \
+the language of the tags. Tag a Hebrew transcript in Hebrew, a Spanish one \
+in Spanish, and so on.
+
+Example shape only: ["military service", "friendship", "loss"]"""
 
 # Entity extraction moved to services/entity_extraction.py, which returns
 # {name, type, alternative_type, summary} instead of bare names. It had to:
@@ -693,6 +700,14 @@ async def check_entities_node(state: AnalysisState) -> dict:
         sides = await entity_store.aunt_uncle_candidates(
             db, group_id, proposed_dicts, entity_extraction.SELF
         )
+        # Grandparents ask the SAME question — "which of your parents is this
+        # person on the side of?" — and differ only in the edge the answer
+        # writes, so they join the same grouped question rather than adding a
+        # second near-identical screen. `kind` is what tells them apart.
+        grandparents = await entity_store.grandparent_candidates(
+            db, group_id, proposed_dicts, entity_extraction.SELF
+        )
+        sides = _merge_side_candidates(sides, grandparents)
         # What a WRONG relation may be corrected to. Both read here for the
         # same reason as the two above — the database is open and
         # human_confirm stays a pure function over state.
@@ -935,20 +950,61 @@ def parentage_questions(parentage: Optional[Dict[str, Any]]) -> List[Dict[str, A
 # remembered. A sixth class added here is asked about AND gates the route; a
 # sixth class added anywhere else does not exist. Same fix, and same reason, as
 # sharing `_chosen_option` between resolve_steps and category_is_settled.
+def _merge_side_candidates(
+    aunts: Dict[str, Any], grandparents: Dict[str, Any]
+) -> Dict[str, Any]:
+    """One question covering both kinds, each relative carrying its own.
+
+    Either query returns `{"parents": [], "relatives": []}` when it has nothing
+    to ask, INCLUDING when the producer has no recorded parents — so the parent
+    list is taken from whichever side actually found one rather than from a
+    fixed precedence, which would drop the options when only the other kind
+    qualifies.
+    """
+    relatives = [
+        {**r, "kind": entity_store.AUNT_UNCLE_RELATION}
+        for r in aunts.get("relatives") or []
+    ]
+    known = {r["name"] for r in relatives}
+    relatives += [
+        {**r, "kind": entity_store.GRANDPARENT_RELATION}
+        for r in grandparents.get("relatives") or []
+        # A person recorded as both is asked once, as the closer relation.
+        if r["name"] not in known
+    ]
+    parents = (aunts.get("parents") or []) or (grandparents.get("parents") or [])
+    if not relatives or not parents:
+        return {"parents": [], "relatives": []}
+    return {"parents": parents, "relatives": relatives}
+
+
 def side_questions(sides: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Which parent each aunt or uncle is a sibling of. ONE grouped question.
+    """Which of the producer's parents a relative attaches to. ONE question.
 
     An `aunt_uncle` edge places somebody in the parents' row and says nothing
     about which of the two parents they belong to, so the row ends up as four
-    boxes with no way to tell the parents from their siblings. This is the
-    question that produces the edge the chart can draw.
+    boxes with no way to tell the parents from their siblings. A `grandparent`
+    edge has the identical gap one generation up: it places somebody in the
+    grandparents' row and draws their only line to the PRODUCER, skipping the
+    parent between, which reads on the chart as a grandparent floating
+    unattached to either parent. Found on live data — יוכבד and ג'ולי, both
+    correctly captured, both correctly placed, neither connected.
+
+    Both kinds are asked together because it is the same question. Only the
+    edge the answer writes differs, and `kind` on each relative carries that
+    through to `write_sides`.
 
     Grouped from the start rather than after four repetitions — see the
     parentage question, which learned that the expensive way.
     """
     sides = sides or {}
     parents = [_canonical_person(p) for p in sides.get("parents") or []]
-    relatives = [_canonical_person(r, sibling=True) for r in sides.get("relatives") or []]
+    relatives = [
+        # `kind` is not part of _canonical_person's contract, so it is carried
+        # across explicitly rather than hoping the helper preserves it.
+        {**_canonical_person(r, sibling=True), "kind": r.get("kind") or "aunt_uncle"}
+        for r in sides.get("relatives") or []
+    ]
     if not parents or not relatives:
         return []
 
@@ -1315,19 +1371,42 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         corrected_name(name): given
         for name, given in (answer.get("sides") or {}).items()
     }
-    accepted_aunt_uncle_names = {
-        r["from_name"] if r["to_name"] == entity_extraction.SELF else r["to_name"]
-        for r in accepted
-        if r.get("relation_type") == entity_store.AUNT_UNCLE_RELATION
-        and entity_extraction.SELF in (r.get("from_name"), r.get("to_name"))
+    # Either relation qualifies its own kind: an aunt/uncle proposal makes the
+    # aunt/uncle question answerable, a grandparent proposal the grandparent
+    # one. Keyed by kind so accepting one does not unlock the other.
+    accepted_by_kind = {
+        entity_store.AUNT_UNCLE_RELATION: set(),
+        entity_store.GRANDPARENT_RELATION: set(),
     }
+    for relation in accepted:
+        kind = relation.get("relation_type")
+        if kind not in accepted_by_kind:
+            continue
+        if entity_extraction.SELF not in (relation.get("from_name"), relation.get("to_name")):
+            continue
+        other = (
+            relation["from_name"]
+            if relation["to_name"] == entity_extraction.SELF
+            else relation["to_name"]
+        )
+        accepted_by_kind[kind].add(other)
+
     asked_sides = [
         corrected_name(relative["name"])
         for question in pending_sides
         for relative in question["relatives"]
         if relative.get("recorded")
-        or corrected_name(relative["name"]) in accepted_aunt_uncle_names
+        or corrected_name(relative["name"])
+        in accepted_by_kind.get(relative.get("kind") or entity_store.AUNT_UNCLE_RELATION, set())
     ]
+    # Which edge each answer writes. Carried from the question the producer
+    # actually saw, not re-derived, so it cannot disagree with what was asked.
+    side_kinds = {
+        corrected_name(relative["name"]): relative.get("kind")
+        or entity_store.AUNT_UNCLE_RELATION
+        for question in pending_sides
+        for relative in question["relatives"]
+    }
 
     # A sibling this recording only PROPOSED is asked about on the same screen
     # — that is what makes the question work on a first recording. But their
@@ -1371,6 +1450,7 @@ async def human_confirm_node(state: AnalysisState) -> dict:
             **(state.get("sides") or {}),
             "asked_names": asked_sides,
             "answers": side_answers,
+            "kinds": side_kinds,
         },
     }
 
@@ -1460,6 +1540,7 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
                     segment_id=segment_id,
                     asked_names=sides.get("asked_names") or [],
                     answers=sides.get("answers") or {},
+                    kinds=sides.get("kinds") or {},
                 )
 
             parentage = state.get("parentage") or {}

@@ -797,6 +797,7 @@ async def ensure_self_entity(db: AsyncSession, user) -> Tuple[Optional[Entity], 
 PARENT_RELATION = "parent"
 SIBLING_RELATION = "sibling"
 AUNT_UNCLE_RELATION = "aunt_uncle"
+GRANDPARENT_RELATION = "grandparent"
 
 
 def _proposed_names(
@@ -1264,6 +1265,136 @@ async def aunt_uncle_candidates(
     }
 
 
+async def grandparent_candidates(
+    db: AsyncSession,
+    producer_id: str,
+    proposed_relations: Optional[Sequence[dict]] = None,
+    self_marker: str = "__SELF__",
+) -> Dict[str, list]:
+    """Which grandparents still need a side, and which parents to offer.
+
+    The SAME gap as `aunt_uncle_candidates`, one generation up.
+    `יוכבד -grandparent-> Tal` says she is the producer's grandmother. It does
+    not say WHOSE mother she is, so no edge joins her to צבי and she draws a
+    line straight to the producer, skipping the generation between — which on
+    the chart reads as a grandparent floating unattached to either parent.
+
+    Found on live data: יוכבד and ג'ולי both correctly captured, both correctly
+    placed in row -2, and neither connected to a parent, because nothing had
+    ever asked.
+
+    Someone qualifies when no parent edge joins them to any of the producer's
+    parents and they have never been asked. `side_asked_at` is REUSED rather
+    than given a sibling column: it already means "we asked which of your
+    parents this person attaches to", which is exactly this question — the
+    only difference is the edge the answer writes.
+    """
+    self_entity = (
+        await db.execute(
+            select(Entity).where(Entity.producer_id == producer_id, Entity.is_self)
+        )
+    ).scalars().first()
+    if self_entity is None:
+        return {"parents": [], "relatives": []}
+
+    everyone = {
+        e.normalized_name: e
+        for e in (
+            await db.execute(select(Entity).where(Entity.producer_id == producer_id))
+        ).scalars().all()
+    }
+
+    recorded_parents = list(
+        (
+            await db.execute(
+                select(Entity)
+                .join(EntityRelation, EntityRelation.from_entity_id == Entity.id)
+                .where(
+                    EntityRelation.to_entity_id == self_entity.id,
+                    EntityRelation.relation_type == PARENT_RELATION,
+                )
+                .order_by(Entity.name)
+                .distinct()
+            )
+        ).scalars().all()
+    )
+    parents: Dict[str, dict] = {
+        p.normalized_name: {"name": p.name, "entity_id": p.id} for p in recorded_parents
+    }
+    for name in _proposed_names(proposed_relations, self_marker, PARENT_RELATION):
+        key = normalize_entity_name(name)
+        if key and key not in parents:
+            existing = everyone.get(key)
+            parents[key] = {
+                "name": existing.name if existing else name,
+                "entity_id": existing.id if existing else None,
+            }
+    if not parents:
+        return {"parents": [], "relatives": []}
+
+    # Already the parent of one of those parents — they have their answer.
+    parent_ids = {p["entity_id"] for p in parents.values() if p["entity_id"]}
+    settled = set()
+    if parent_ids:
+        rows = (
+            await db.execute(
+                select(EntityRelation.from_entity_id).where(
+                    EntityRelation.relation_type == PARENT_RELATION,
+                    EntityRelation.to_entity_id.in_(parent_ids),
+                )
+            )
+        ).all()
+        settled = {from_id for (from_id,) in rows}
+
+    recorded_rows = (
+        await db.execute(
+            select(EntityRelation.from_entity_id, EntityRelation.to_entity_id).where(
+                EntityRelation.relation_type == GRANDPARENT_RELATION,
+                (EntityRelation.from_entity_id == self_entity.id)
+                | (EntityRelation.to_entity_id == self_entity.id),
+            )
+        )
+    ).all()
+    recorded_ids = {
+        (to_id if from_id == self_entity.id else from_id) for from_id, to_id in recorded_rows
+    }
+    recorded_ids.discard(self_entity.id)
+
+    candidates: Dict[str, dict] = {}
+    for entity in everyone.values():
+        if entity.id not in recorded_ids:
+            continue
+        if entity.id in settled or entity.side_asked_at is not None:
+            continue
+        candidates[entity.normalized_name] = {
+            "name": entity.name,
+            "entity_id": entity.id,
+            "recorded": True,
+        }
+    for name in _proposed_names(proposed_relations, self_marker, GRANDPARENT_RELATION):
+        key = normalize_entity_name(name)
+        if not key or key in candidates or key in parents:
+            continue
+        existing = everyone.get(key)
+        if existing is not None and (
+            existing.id in settled or existing.side_asked_at is not None
+        ):
+            continue
+        candidates[key] = {
+            "name": existing.name if existing else name,
+            "entity_id": existing.id if existing else None,
+            "recorded": False,
+        }
+
+    if not candidates:
+        return {"parents": [], "relatives": []}
+
+    return {
+        "parents": sorted(parents.values(), key=lambda p: p["name"]),
+        "relatives": sorted(candidates.values(), key=lambda r: r["name"]),
+    }
+
+
 async def write_sides(
     db: AsyncSession,
     *,
@@ -1271,19 +1402,30 @@ async def write_sides(
     segment_id: str,
     asked_names: Sequence[str],
     answers: Dict[str, str],
+    kinds: Optional[Dict[str, str]] = None,
 ) -> Dict[str, int]:
-    """Record which parent each aunt or uncle is a sibling of.
+    """Record which of the producer's parents a relative attaches to.
+
+    ONE question, TWO consequences, because "which side of the family are they
+    on?" is the same question for both kinds and only the resulting edge
+    differs:
+
+      * an aunt or uncle is that parent's SIBLING;
+      * a grandparent is that parent's PARENT.
+
+    `kinds` maps relative NAME -> "aunt_uncle" | "grandparent", defaulting to
+    aunt_uncle so a payload stored before grandparents were asked about still
+    writes what it always did.
 
     `answers` maps relative NAME -> parent NAME. Anyone asked is stamped
     `side_asked_at` whether or not they answered — "not sure" is an answer, and
     a question that returns every recording teaches people to skip the screen.
 
-    The existing `aunt_uncle` row is KEPT. It is true — they ARE the producer's
-    uncle — and the two agree rather than compete: `aunt_uncle` is one
-    generation up from the producer and `sibling` is level with a parent
-    already one generation up, so both place the person in the same row and the
-    tree reports no contradiction. Replacing a true statement with a more
-    specific one would lose the recording it came from.
+    The existing `aunt_uncle` / `grandparent` row is KEPT. It is true — they
+    ARE the producer's uncle — and the two agree rather than compete: each pair
+    places the person in the same row, so the tree reports no contradiction.
+    Replacing a true statement with a more specific one would lose the
+    recording it came from.
     """
     now = datetime.now(timezone.utc)
     result = {"relations": 0, "asked": 0}
@@ -1311,11 +1453,18 @@ async def write_sides(
         if parent is None or parent.id == relative.id:
             continue
 
+        # A grandparent is the PARENT of that parent; an aunt or uncle is their
+        # SIBLING. Same question, same answer shape, different edge.
+        edge = (
+            PARENT_RELATION
+            if (kinds or {}).get(relative_name) == GRANDPARENT_RELATION
+            else SIBLING_RELATION
+        )
         db.add(
             EntityRelation(
                 from_entity_id=relative.id,
                 to_entity_id=parent.id,
-                relation_type=SIBLING_RELATION,
+                relation_type=edge,
                 source_segment_id=segment_id,
                 origin="confirmation",
             )

@@ -278,6 +278,12 @@ export function EntityConfirmModal({
         ) ?? null
       const sideGroup =
         sideQuestions.find(g => (g.relatives ?? []).some(r => r.name === name)) ?? null
+      // Which edge this person's answer writes — a grandparent is the PARENT
+      // of the chosen parent, an aunt or uncle their SIBLING. Absent on a
+      // payload stored before grandparents were asked about, which then reads
+      // as the aunt/uncle it always was.
+      const sideKind =
+        (sideGroup?.relatives ?? []).find(r => r.name === name)?.kind ?? 'aunt_uncle'
 
       return {
         name,
@@ -288,6 +294,7 @@ export function EntityConfirmModal({
         relations,
         parentageGroup,
         sideGroup,
+        sideKind,
       }
     })
   }, [
@@ -934,8 +941,14 @@ export function EntityConfirmModal({
                   floating in the parents' row. */}
               {group.sideGroup && sideParents.length > 0 && (
                 <fieldset className="flex flex-col gap-2">
+                  {/* The same question for both kinds — which of your parents
+                      is this person on the side of — but asked in the words
+                      that fit. A grandparent is that parent's PARENT; an aunt
+                      or uncle is their SIBLING. */}
                   <legend className="text-sm text-white leading-relaxed mb-1">
-                    Whose brother or sister are they?
+                    {group.sideKind === 'grandparent'
+                      ? 'Whose mother or father are they?'
+                      : 'Whose brother or sister are they?'}
                   </legend>
                   <div className="flex flex-wrap items-center gap-2">
                     {sideParents.map((parent) => {
