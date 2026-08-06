@@ -32,8 +32,14 @@ from app.schemas import (
     SegmentExtractionResponse,
     SegmentPresignRequest,
     SegmentPresignResponse,
+    TranscriptCorrectionRequest,
 )
-from app.services import entity_extraction, gate_answers, interview_flow
+from app.services import (
+    entity_extraction,
+    gate_answers,
+    interview_flow,
+    transcript_correction,
+)
 from app.services.gate_answers import InvalidGateAnswer
 from app.services.storage import storage_service
 from app.services.tts import tts_service
@@ -663,6 +669,74 @@ async def delete_segment(
             detail="The recording was only partly deleted — please try again",
         )
     logger.info(f"Segment deleted: {segment_id} (producer={user.id})")
+
+
+@router.post("/segments/{segment_id}/correct-transcript")
+async def correct_transcript(
+    segment_id: str,
+    payload: TranscriptCorrectionRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """Fix a word the machine misheard, everywhere this recording stores it.
+
+    Corrects what was HEARD, never what was said: the audio is untouched, and
+    every word keeps the moment it was spoken. Only the machine's reading of
+    it changes.
+
+    Scoped to same-word-count replacements. Each word is anchored to a
+    `{word, start_sec, end_sec}` entry and a unit's play range comes from the
+    first and last of them, so an added word has no moment to be said at and a
+    removed one would leave audio with nothing against it.
+
+    This is deliberately NOT the same thing as editing a transcript to say
+    something new — see docs/TRANSCRIPT_EDITING.md. That tool changes what the
+    extractor reads and leaves /talk alone; this one changes what /talk reads
+    and plays.
+    """
+    # Ownership by joining through the session, and 404 for both "no such
+    # recording" and "not yours" — the same rule DELETE follows, so a producer
+    # cannot confirm another's recording exists.
+    segment = (
+        await db.execute(
+            select(RawSegment)
+            .join(InterviewSession, RawSegment.interview_session_id == InterviewSession.id)
+            .where(RawSegment.id == segment_id, InterviewSession.user_id == user.id)
+        )
+    ).scalar_one_or_none()
+    if segment is None:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    # Refused while the pipeline may still be running: a write racing it lands
+    # somewhere unpredictable, which is the lesson the stranded-segment bug
+    # taught. Re-analysis rewrites chunks only when it re-transcribes, but the
+    # entity write is live either way.
+    if segment.status not in ("ready", "analyzed"):
+        raise HTTPException(
+            status_code=409,
+            detail="This recording is still being processed — try again once it settles.",
+        )
+
+    try:
+        result = await transcript_correction.correct_token(
+            db, segment_id=segment_id, old=payload.old, new=payload.new
+        )
+    except transcript_correction.CorrectionRefused as refused:
+        raise HTTPException(status_code=400, detail=str(refused))
+
+    await db.commit()
+    logger.info(
+        f"Transcript correction on {segment_id}: {payload.old!r} -> {payload.new!r} "
+        f"({result.chunks_rewritten} chunks, {result.chunks_reembedded} re-embedded)"
+    )
+    return {
+        "chunks_rewritten": result.chunks_rewritten,
+        "words_rewritten": result.words_rewritten,
+        "transcript_rewritten": result.transcript_rewritten,
+        "chunks_reembedded": result.chunks_reembedded,
+        "segment_reembedded": result.segment_reembedded,
+        "warnings": result.warnings,
+    }
 
 
 @router.get("/segments/pending-confirmations", response_model=List[PendingConfirmationResponse])
