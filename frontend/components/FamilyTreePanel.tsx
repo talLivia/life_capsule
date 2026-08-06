@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AlertTriangle, Loader2, Network, User as UserIcon, X } from 'lucide-react'
 import { FamilyTreeGraph } from '@/components/FamilyTreeGraph'
+import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
 import type { ApiError, EntityMoment, FamilyTree, TreePerson } from '@/lib/types'
 
@@ -80,16 +81,158 @@ function PersonChip({
  * than to the viewport, and this page has all three above it. Portalling puts
  * the overlay out of reach of anything a future ancestor might do to it.
  */
+/**
+ * Set how this person is related to somebody else, from the tree itself.
+ *
+ * Extraction proposals are one-shot: the confirmation screen appears once per
+ * recording and never comes back, so a relation the extractor missed had no
+ * later home at all. This is that home.
+ *
+ * SAVING REPLACES. A relation that contradicts this one is removed rather than
+ * kept beside it — the producer is making a deliberate statement while looking
+ * at the tree it changes, and two edges the tree cannot both honour would
+ * leave it to pick one at render, which is what made an earlier chosen parent
+ * look as though it had failed to save. What was replaced is reported after,
+ * never asked about before.
+ */
+function RelationEditor({
+  person,
+  people,
+  types,
+  onSaved,
+}: {
+  person: TreePerson
+  people: TreePerson[]
+  types: { value: string; label: string }[]
+  onSaved: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [relationType, setRelationType] = useState('')
+  const [otherId, setOtherId] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const others = people.filter((p) => p.id !== person.id)
+
+  const save = async () => {
+    if (!relationType || !otherId) return
+    setSaving(true)
+    try {
+      const result = await api.setEntityRelation(person.id, {
+        other_entity_id: otherId,
+        relation_type: relationType,
+        // The card belongs to `person`, and the sentence reads
+        // "<person> is the <type> of <other>" — so this end is the subject.
+        direction: 'outgoing',
+      })
+      const replaced = result?.replaced?.length ?? 0
+      toast.success(
+        replaced
+          ? `Saved — the ${result.replaced[0].relation_type} link was replaced`
+          : 'Saved',
+      )
+      setOpen(false)
+      setRelationType('')
+      setOtherId('')
+      onSaved()
+    } catch (err: unknown) {
+      const detail = (err as ApiError)?.response?.data?.detail || (err as ApiError)?.message
+      toast.error(detail || 'Could not save that')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="self-start text-xs text-primary-300 hover:text-primary-200"
+      >
+        Set how {person.name} is related
+      </button>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-2 p-3 rounded-xl border border-primary-500/30 bg-primary-500/5">
+      <div className="flex flex-wrap items-center gap-2 text-sm text-white">
+        <span dir="auto" className="font-medium">{person.name}</span>
+        <span className="text-gray-400">is the</span>
+        <select
+          value={relationType}
+          onChange={(e) => setRelationType(e.target.value)}
+          disabled={saving}
+          aria-label="Relation"
+          className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white"
+        >
+          <option value="">choose…</option>
+          {/* Straight from the relation_types table, so adding a type is a
+              data change and an invented one cannot be picked at all. */}
+          {types.map((t) => (
+            <option key={t.value} value={t.value}>{t.label}</option>
+          ))}
+        </select>
+        <span className="text-gray-400">of</span>
+        <select
+          value={otherId}
+          onChange={(e) => setOtherId(e.target.value)}
+          disabled={saving}
+          aria-label="Of whom"
+          dir="auto"
+          className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white max-w-[11rem]"
+        >
+          <option value="">choose…</option>
+          {others.map((p) => (
+            <option key={p.id} value={p.id}>{p.is_self ? 'you' : p.name}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Stated before the click, on the same screen — not a dialog asking
+          permission. The producer went out of their way to say this. */}
+      <p className="text-[11px] text-gray-500">
+        Saving replaces any relation that contradicts this one.
+      </p>
+
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving || !relationType || !otherId}
+          className="btn-primary py-1.5 text-xs disabled:opacity-40"
+        >
+          {saving ? <Loader2 size={13} className="animate-spin" /> : 'Save'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          disabled={saving}
+          className="text-xs text-gray-400 hover:text-white"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function MomentsModal({
   person,
+  people,
+  relationTypes,
   moments,
   loading,
   onClose,
+  onSaved,
 }: {
   person: TreePerson
+  people: TreePerson[]
+  relationTypes: { value: string; label: string }[]
   moments: EntityMoment[] | null
   loading: boolean
   onClose: () => void
+  onSaved: () => void
 }) {
   const closeRef = useRef<HTMLButtonElement>(null)
   const [mounted, setMounted] = useState(false)
@@ -148,6 +291,19 @@ function MomentsModal({
           </button>
         </div>
 
+        {/* Offered for ANYONE, not only the unplaced. A relation that is
+            wrong is at least as worth fixing as one that is missing, and
+            restricting this to floating people would put the fix out of reach
+            exactly when the tree looks confidently wrong. */}
+        {!person.is_self && (
+          <RelationEditor
+            person={person}
+            people={people}
+            types={relationTypes}
+            onSaved={onSaved}
+          />
+        )}
+
         {loading && <Loader2 size={20} className="animate-spin text-primary-400 self-center" />}
 
         {moments?.length === 0 && (
@@ -196,6 +352,9 @@ export function FamilyTreePanel() {
   const [selected, setSelected] = useState<TreePerson | null>(null)
   const [moments, setMoments] = useState<EntityMoment[] | null>(null)
   const [momentsLoading, setMomentsLoading] = useState(false)
+  // The relation vocabulary, fetched once. From the relation_types table, so
+  // the picker cannot offer a value the write would refuse.
+  const [relationTypes, setRelationTypes] = useState<{ value: string; label: string }[]>([])
 
   const load = useCallback(async () => {
     setError(null)
@@ -212,6 +371,22 @@ export function FamilyTreePanel() {
   useEffect(() => {
     load()
   }, [load])
+
+  // Every person the archive knows, placed or not — the picker's options. An
+  // unplaced person is exactly who a producer opens this to connect, so
+  // leaving them out would omit the common case.
+  const everyone: TreePerson[] = tree
+    ? [...tree.generations.flatMap((row) => row.people), ...tree.unplaced]
+    : []
+
+  useEffect(() => {
+    api
+      .getRelationTypes()
+      .then(setRelationTypes)
+      // Fail soft: without the vocabulary the editor simply is not offered,
+      // which is better than a picker that cannot be submitted.
+      .catch(() => setRelationTypes([]))
+  }, [])
 
   const selectPerson = async (person: TreePerson) => {
     setSelected(person)
@@ -333,9 +508,12 @@ export function FamilyTreePanel() {
       {selected && (
         <MomentsModal
           person={selected}
+          people={everyone}
+          relationTypes={relationTypes}
           moments={moments}
           loading={momentsLoading}
           onClose={() => setSelected(null)}
+          onSaved={load}
         />
       )}
     </div>

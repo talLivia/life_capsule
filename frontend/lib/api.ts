@@ -343,6 +343,24 @@ export const api = {
     return response.data
   },
 
+  /** Set how one person is related to another, from the tree.
+   *  Replaces whatever contradicts it; returns what was replaced. */
+  setEntityRelation: async (
+    entityId: string,
+    body: { other_entity_id: string; relation_type: string; direction?: 'outgoing' | 'incoming' },
+  ) => {
+    const response = await apiClient.post(`/api/v1/entities/${entityId}/relations`, body)
+    return response.data
+  },
+
+  /** The relation vocabulary, from the relation_types TABLE — so adding a
+   *  type is a data change and the picker cannot offer one that would be
+   *  refused. */
+  getRelationTypes: async () => {
+    const response = await apiClient.get('/api/v1/entities/relation-types')
+    return response.data
+  },
+
   getFamilyTree: async () => {
     const response = await apiClient.get('/api/v1/entities/tree')
     return response.data

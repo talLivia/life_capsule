@@ -649,10 +649,16 @@ class EntityRelation(Base):
     # outlive the recording that established it. Same ghost problem as
     # חיל האוויר, and worse here: a wrong edge in a family tree is highly
     # visible.
+    # NULL for a relation the producer set by hand from the tree — there is no
+    # recording behind it. Such an edge is therefore PERMANENT in a way no
+    # other is: it survives deleting every recording about that person. That
+    # breaks the invariant the cascade exists for, deliberately, because a
+    # statement somebody made directly is not owned by any recording. See
+    # migration 0020.
     source_segment_id = Column(
         String,
         ForeignKey("raw_segments.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     # "recording" — the words in source_segment_id stated this relation.
@@ -660,5 +666,7 @@ class EntityRelation(Base):
     # recording, which may never mention the person at all. The tree offers to
     # play the recording a relation came from; that offer is only honest for
     # the first kind. See migration 0017.
+    # "manual" — the producer set it from the family tree, with no recording
+    # behind it at all. See migration 0020.
     origin = Column(String, nullable=False, server_default="recording", default="recording")
     created_at = Column(DateTime(timezone=True), server_default=func.now())

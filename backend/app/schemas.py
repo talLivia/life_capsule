@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -442,6 +442,20 @@ class ParentageAnswer(BaseModel):
     # A parent never mentioned in any recording. Becomes an ordinary entity
     # with an ordinary parent relation, exactly as any other capture would.
     new_parent_name: Optional[str] = None
+
+
+class SetRelationRequest(BaseModel):
+    """How one person is related to another, set by hand from the tree.
+
+    `direction` says which end the entity in the URL is: `outgoing` reads
+    "<this person> is the <type> of <other>", `incoming` reads the reverse.
+    Both endpoints must already exist — the tree edits relations between
+    people the archive knows, and never invents a person.
+    """
+
+    other_entity_id: str = Field(min_length=1)
+    relation_type: str = Field(min_length=1)
+    direction: Literal["outgoing", "incoming"] = "outgoing"
 
 
 class TranscriptCorrectionRequest(BaseModel):

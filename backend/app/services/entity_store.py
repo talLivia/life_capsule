@@ -217,6 +217,19 @@ async def write_segment_relations(
         if source.id == target.id:
             continue  # ck_entity_relations_not_self
 
+        # A HAND-MADE EDGE OUTRANKS THE RECORDING, and this is the guard
+        # without which the tree editor silently undoes itself: the delete
+        # above is scoped to origin="recording", so a manual edge survives a
+        # re-analysis — and then this loop would happily re-add the very
+        # relation the producer replaced, leaving both. The producer's later,
+        # deliberate statement wins over the words that prompted it.
+        if await _manual_edge_exists(db, source.id, target.id):
+            logger.info(
+                f"Not re-adding {rel.from_name!r} -{rel.relation_type}-> "
+                f"{rel.to_name!r}: the producer set this pair by hand"
+            )
+            continue
+
         db.add(
             EntityRelation(
                 from_entity_id=source.id,
@@ -554,6 +567,170 @@ async def get_entity_candidates(
 
 #: Marks a candidate that has no entity row yet — see `pending_entity_candidates`.
 PENDING_CANDIDATE_PREFIX = "pending:"
+
+
+MANUAL_ORIGIN = "manual"
+
+
+async def _manual_edge_exists(db: AsyncSession, a_id: str, b_id: str) -> bool:
+    """Is this pair already joined by a relation the producer set by hand?
+
+    Direction-agnostic: the producer stated something about these two people,
+    and re-deriving it from a recording in the other direction would be the
+    same contradiction wearing a different hat.
+    """
+    found = (
+        await db.execute(
+            select(EntityRelation.id).where(
+                EntityRelation.origin == MANUAL_ORIGIN,
+                (
+                    (EntityRelation.from_entity_id == a_id)
+                    & (EntityRelation.to_entity_id == b_id)
+                )
+                | (
+                    (EntityRelation.from_entity_id == b_id)
+                    & (EntityRelation.to_entity_id == a_id)
+                ),
+            )
+        )
+    ).scalars().first()
+    return found is not None
+
+
+async def set_relation_by_hand(
+    db: AsyncSession,
+    *,
+    producer_id: str,
+    from_entity_id: str,
+    to_entity_id: str,
+    relation_type: str,
+) -> Dict[str, Any]:
+    """Write a relation the producer stated directly, REPLACING what it contradicts.
+
+    docs/TREE_EDITING.md's governing rule: a manual edit always wins. No
+    dialog, and — this is the part that matters — no silent coexistence. Two
+    edges that cannot both be true would leave the tree to pick one at render,
+    which is exactly the bug that made a chosen parent look like it had failed
+    to save.
+
+    WHAT COUNTS AS CONTRADICTING is computed from `generation_delta`, never
+    from a hardcoded list of types. The delta IS the claim an edge makes about
+    where somebody sits relative to the other end, so two edges between the
+    same pair conflict precisely when their deltas disagree — and a relation
+    type added to the lookup table later is covered without editing this
+    function. That is the whole reason `relation_types` is a table.
+
+    Scoped to edges between THESE TWO PEOPLE. "חן is רז's child" says nothing
+    about who רז's parents are, and must not disturb them.
+    """
+    if from_entity_id == to_entity_id:
+        raise ValueError("A relation needs two different people.")
+
+    rows = (
+        await db.execute(
+            select(Entity).where(
+                Entity.producer_id == producer_id,
+                Entity.id.in_([from_entity_id, to_entity_id]),
+            )
+        )
+    ).scalars().all()
+    if len(rows) != 2:
+        raise ValueError("Both people must be in this archive.")
+
+    wanted = (
+        await db.execute(
+            select(RelationType).where(RelationType.relation_type == relation_type)
+        )
+    ).scalars().first()
+    if wanted is None:
+        raise ValueError(f"{relation_type!r} is not a relation this archive knows.")
+
+    # Every edge currently joining this pair, in either direction.
+    existing = (
+        await db.execute(
+            select(EntityRelation, RelationType)
+            .join(RelationType, RelationType.relation_type == EntityRelation.relation_type)
+            .where(
+                (
+                    (EntityRelation.from_entity_id == from_entity_id)
+                    & (EntityRelation.to_entity_id == to_entity_id)
+                )
+                | (
+                    (EntityRelation.from_entity_id == to_entity_id)
+                    & (EntityRelation.to_entity_id == from_entity_id)
+                )
+            )
+        )
+    ).all()
+
+    replaced: List[Dict[str, Any]] = []
+    for relation, rtype in existing:
+        # The delta AS SEEN from the new edge's direction, so a stored
+        # `child` and a new `parent` between the same pair are recognised as
+        # the same claim rather than as a conflict.
+        delta = rtype.generation_delta
+        if delta is not None and relation.from_entity_id == to_entity_id:
+            delta = -delta
+        if delta is not None and delta == wanted.generation_delta:
+            # Same claim about where they sit. Keep it — replacing a true
+            # statement with an equivalent one would lose the recording it
+            # came from for nothing.
+            continue
+        replaced.append(
+            {
+                "relation_type": relation.relation_type,
+                "origin": relation.origin,
+                "source_segment_id": relation.source_segment_id,
+            }
+        )
+        await db.delete(relation)
+
+    await db.flush()
+    written = EntityRelation(
+        from_entity_id=from_entity_id,
+        to_entity_id=to_entity_id,
+        relation_type=relation_type,
+        # No recording behind it, so no segment and no cascade. Permanent by
+        # construction — see migration 0020.
+        source_segment_id=None,
+        origin=MANUAL_ORIGIN,
+    )
+    db.add(written)
+    await db.flush()
+
+    logger.info(
+        f"Manual relation set: {from_entity_id[:8]} -{relation_type}-> "
+        f"{to_entity_id[:8]}, replacing {len(replaced)}"
+    )
+    return {"relation_id": written.id, "replaced": replaced}
+
+
+async def mark_placement_asked(db: AsyncSession, entity_ids: Sequence[str]) -> int:
+    """Stamp the ask-once questions as settled for these people.
+
+    `parentage_asked_at` and `side_asked_at` gate the QUESTIONS, not direct
+    writes — so without this a producer who places somebody by hand is asked
+    where that person belongs on their next recording, and answering would
+    contradict the edit they just made. Stamping is what makes the manual
+    answer count as the answer.
+
+    Only ever sets a stamp, never clears one: nothing here should make a
+    question that has already been settled come back.
+    """
+    now = datetime.now(timezone.utc)
+    rows = (
+        await db.execute(select(Entity).where(Entity.id.in_(list(entity_ids))))
+    ).scalars().all()
+    stamped = 0
+    for entity in rows:
+        if entity.parentage_asked_at is None:
+            entity.parentage_asked_at = now
+            stamped += 1
+        if entity.side_asked_at is None:
+            entity.side_asked_at = now
+            stamped += 1
+    await db.flush()
+    return stamped
 
 
 async def speaker_name_for(db: AsyncSession, producer_id: str) -> Optional[str]:
