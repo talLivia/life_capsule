@@ -942,6 +942,85 @@ What was actually happening (found in the persisted `Message` rows):
 
 ---
 
+## Identity confirmation across concurrent recordings (2026-08-06)
+
+**Fixed.** A recording analysed while an EARLIER one was still awaiting
+confirmation could not see that earlier recording's people, so the same person
+named two ways silently became two entities with no question asked.
+
+Measured on the live archive:
+
+| time | event |
+| --- | --- |
+| 08:36:20 | recording 1 ingested ("חבר בשם איציק") |
+| ~08:36:30 | recording 1 **pauses** on a type question |
+| 08:36:51 | recording 2 ingested ("עם איציק כהן") — its identity check runs here |
+| 08:37:51 | producer answers → recording 1 finalizes → `איציק` **written** |
+| 08:38:14 | recording 2 finalizes → `איציק כהן` written as a second person |
+
+The matching logic was never at fault: `get_entity_candidates` returns `איציק`
+for `איציק כהן`, and `_names_are_similar` scores them similar. At the moment
+of asking there was genuinely nothing to match against.
+
+**A write-lock cannot fix this, and the reason is the graph order:**
+
+```
+check_entities → [human_confirm PAUSE] → score_importance → finalize_ingest ← entities written
+```
+
+The entity write is DOWNSTREAM of the human pause, so "wait for the previous
+recording's write" means "wait for the producer's answer" — 91 seconds in the
+case above. Considered and rejected for that reason; it would only help when
+the earlier recording raises no questions at all.
+
+**The fix:** `entity_store.pending_entity_candidates` also offers names from
+the producer's other recordings that are still awaiting confirmation. It works
+because **a confirmed identity is applied by RENAMING** —
+`_apply_entity_resolutions` reads `resolved_name` and treats `same_as_uuid` as
+nothing but a boolean gate. So a candidate needs no entity row: answering "yes,
+the same" writes this recording's entity under the other name, and both land on
+one row via `UNIQUE (producer_id, normalized_name)` whenever that row appears.
+Candidate ids carry a `pending:` prefix so they can never be mistaken for real
+entity ids.
+
+Known cost: if the producer then renames that person on the earlier recording's
+screen, this answer points at a name that no longer exists and a third row
+appears. Rare, visible in the extraction panel, and preferable to silent
+fragmentation.
+
+`איציק` / `איציק כהן` were merged by hand afterwards — one row, two mentions,
+both per-recording summaries intact.
+
+### 🛑 SETTLED — this does NOT change `/talk` answers in `video_clips_v2`
+
+Do not re-litigate. Traced through the code and confirmed by A/B measurement:
+
+- The only retrieval consumer of confirmed identity in v2 is
+  `full_archive_retrieval._build_entity_map` (line ~835), which now emits one
+  line instead of two.
+- **That block does not drive selection.** Same question, three map variants
+  (real / removed entirely / both names forced onto one line), two runs each:
+  byte-identical unit selections. Retrieval matches on text similarity between
+  the question and unit content. This is a sixth data point agreeing with the
+  0.9987-with-and-without measurement already recorded above.
+- The prompt introduces the block only as `ENTITY MAP (entity name -> the
+  RECORDINGS that mention it)` — an index, with no instruction that separate
+  lines mean separate people.
+
+So the fix corrects the **entity table, family tree, timeline, repeat-question
+avoidance (`get_entity_candidates` for later recordings), and deletion safety**
+— and changes nothing about what `/talk` answers in v2.
+
+Two things worth keeping straight, because they were conflated during the
+investigation:
+
+- **The entity map is not the family tree.** Different systems, different
+  consumers.
+- In `video_clips` (v1) and `avatar` the merge IS load-bearing —
+  `retrieval_service.find_segments_mentioning[_scored]` finds other recordings
+  sharing an entity, and `relevance_scorer`/`response_assembler` use entity
+  names as a ranking signal. Only v2 is insensitive to it.
+
 ## Known gaps / tech debt
 
 - **The eval's scored set contains no broad question**, which is exactly where

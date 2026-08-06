@@ -49,7 +49,14 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Entity, EntityMention, EntityRelation, RelationType
+from app.models import (
+    Entity,
+    EntityMention,
+    EntityRelation,
+    InterviewSession,
+    RawSegment,
+    RelationType,
+)
 from app.services.entity_extraction import ExtractedEntity, ExtractedRelation
 from app.services.entity_names import normalize_entity_name
 
@@ -542,6 +549,65 @@ async def get_entity_candidates(
         )
         candidate["summary"] = summaries.scalar_one_or_none()
     return candidates
+
+
+#: Marks a candidate that has no entity row yet — see `pending_entity_candidates`.
+PENDING_CANDIDATE_PREFIX = "pending:"
+
+
+async def pending_entity_candidates(
+    db: AsyncSession, producer_id: str, exclude_segment_id: str
+) -> List[Dict[str, Optional[str]]]:
+    """Names this producer's OTHER unanswered recordings have already proposed.
+
+    Closes a window that silently fragments people across stories. Entities are
+    written by `finalize_ingest`, which runs AFTER the confirmation pause — so a
+    recording analysed while an earlier one is still waiting for answers cannot
+    see that earlier recording's entities at all. Measured on the live archive:
+    a recording naming "איציק" paused for 91 seconds waiting on a human, and a
+    second recording naming "איציק כהן" ran its identity check inside that
+    window, matched nothing, and created a second person. No question was ever
+    asked, because at the moment of asking there was genuinely nothing to ask
+    about.
+
+    Waiting for the earlier write is not an option: it happens after the human
+    answers, so waiting on it means waiting on them.
+
+    WHY A CANDIDATE NEEDS NO ROW. A confirmed identity is applied by RENAMING —
+    `_apply_entity_resolutions` reads `resolved_name` and treats `same_as_uuid`
+    as nothing but a boolean gate, because in Postgres the merge is
+    UNIQUE (producer_id, normalized_name) rather than a suggestion to an
+    engine. So answering "yes, the same" writes this recording's entity under
+    the other name, and both land on one row whenever that row is created. The
+    candidate is a NAME; the id is ceremony, and carries a marker prefix so it
+    can never be mistaken for a real entity id.
+    """
+    rows = await db.execute(
+        select(RawSegment.pending_confirmation)
+        .join(InterviewSession, InterviewSession.id == RawSegment.interview_session_id)
+        .where(
+            InterviewSession.user_id == producer_id,
+            RawSegment.status == "pending_confirmation",
+            RawSegment.id != exclude_segment_id,
+        )
+    )
+    seen: Dict[str, str] = {}
+    for (payload,) in rows:
+        # `editable_entities` is every entity that recording extracted — the
+        # same superset the confirmation screen offers for name correction.
+        for item in (payload or {}).get("editable_entities") or []:
+            name = (item or {}).get("name")
+            key = normalize_entity_name(name or "")
+            if key and key not in seen:
+                seen[key] = name
+    return [
+        {
+            "uuid": f"{PENDING_CANDIDATE_PREFIX}{name}",
+            "name": name,
+            "summary": "from a recording you haven't finished checking yet",
+        }
+        for name in sorted(seen.values())
+    ]
 
 
 # ── Write internals ─────────────────────────────────────────────────────────

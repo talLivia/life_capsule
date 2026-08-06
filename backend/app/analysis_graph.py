@@ -611,6 +611,27 @@ async def check_entities_node(state: AnalysisState) -> dict:
 
         async with AsyncSessionLocal() as db:
             candidates = await entity_store.get_entity_candidates(db, name, group_id)
+            # Plus anyone this producer's OTHER unanswered recordings have
+            # already named. Entities are written after the confirmation
+            # pause, so a recording analysed while an earlier one waits on a
+            # human sees none of its people — which silently fragmented
+            # "איציק" and "איציק כהן" into two strangers with no question
+            # asked. See pending_entity_candidates for why a candidate with
+            # no row still resolves correctly.
+            candidates = candidates + [
+                pending
+                for pending in await entity_store.pending_entity_candidates(
+                    db, group_id, segment_id
+                )
+                # A name the archive already holds is a better candidate than
+                # the same name from an unfinished recording — it has a row,
+                # a summary and a history.
+                if not any(
+                    normalize_entity_name(pending["name"])
+                    == normalize_entity_name(existing["name"])
+                    for existing in candidates
+                )
+            ]
         # get_entity_candidates has no minimum-relevance floor by design
         # (Prompt 3: "deliberately NOT a single 'best' match" — filtering is
         # the caller's job) — confirmed live that it returns a small graph's

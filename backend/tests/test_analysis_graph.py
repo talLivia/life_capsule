@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import analysis_graph as ag
 from app.models import Entity, EntityMention, InterviewSession, RawSegment
-from app.services import entity_extraction
+from app.services import entity_extraction, entity_store
 from app.services.entity_names import normalize_entity_name
 from app.services.entity_extraction import ExtractedEntity
 
@@ -1300,3 +1300,89 @@ async def test_a_relation_correction_must_name_an_offered_type(
     # which is the property under test.
     assert resp.status_code in (400, 409)
     assert "brother-ish" in resp.text or "not questions" in resp.text.lower()
+
+
+async def test_identity_asks_about_a_person_from_an_unanswered_recording(
+    db_session, test_user, segment, analysis_session_factory, monkeypatch
+):
+    """The איציק / איציק כהן case, from the live archive.
+
+    Entities are written by finalize_ingest, which runs AFTER the confirmation
+    pause. Measured on real data: a recording naming "איציק" sat paused for 91
+    seconds waiting on a human, and a second recording naming "איציק כהן" ran
+    its identity check inside that window. It matched nothing, asked nothing,
+    and created a second person — so two stories about one man had no link
+    between them and nothing ever offered to make one.
+
+    Waiting for the earlier write cannot fix it: that write is downstream of
+    the human. So the unanswered recording's OWN proposed names are offered as
+    candidates instead.
+    """
+    from app.models import RawSegment
+
+    # An earlier recording, still waiting on the producer, that named איציק.
+    earlier = RawSegment(
+        interview_session_id=segment.interview_session_id,
+        question_asked="army?",
+        question_index=1,
+        video_key="k",
+        transcript="היה לי חבר בשם איציק",
+        status="pending_confirmation",
+        pending_confirmation={
+            "identity_questions": [],
+            "type_questions": [
+                {"name": "חיל האוויר", "type": "organisation",
+                 "alternative_type": "place", "question": "?"}
+            ],
+            "editable_entities": [{"name": "איציק"}, {"name": "חיל האוויר"}],
+        },
+    )
+    db_session.add(earlier)
+    await db_session.commit()
+
+    async def fake_generate(messages, system_prompt=None, thinking=False, temperature=None):
+        return json.dumps(
+            [{"name": "איציק כהן", "type": "person",
+              "alternative_type": None, "summary": "s"}]
+        )
+
+    monkeypatch.setattr(ag.llm_service, "generate_response", fake_generate)
+
+    result = await ag.check_entities_node(
+        {
+            "segment_id": segment.id,
+            "group_id": test_user.id,
+            "transcript": "נסעתי לקולומביה עם איציק כהן",
+        }
+    )
+
+    asked = {q["name"]: q for q in result["names_to_check"]}
+    assert "איציק כהן" in asked, (
+        "the identity question must fire even though איציק has no entity row "
+        "yet — the recording that names him is still awaiting confirmation"
+    )
+    candidates = asked["איציק כהן"]["candidates"]
+    assert "איציק" in [c["name"] for c in candidates]
+    # The id is a marker, never a real entity id: _apply_entity_resolutions
+    # uses it only as a boolean gate and applies the answer by RENAMING.
+    pending = next(c for c in candidates if c["name"] == "איציק")
+    assert pending["uuid"].startswith(entity_store.PENDING_CANDIDATE_PREFIX)
+
+
+async def test_answering_yes_to_a_pending_candidate_renames_onto_it(db_session):
+    """The answer must still land both recordings on ONE row.
+
+    A candidate with no row would be useless if the answer needed its id. It
+    does not: the resolution carries a NAME, and the merge key does the rest
+    whenever that row is created.
+    """
+    resolved = ag._apply_entity_resolutions(
+        [ExtractedEntity(name="איציק כהן", type="person", summary="s")],
+        {
+            "איציק כהן": {
+                "same_as_uuid": f"{entity_store.PENDING_CANDIDATE_PREFIX}איציק",
+                "resolved_name": "איציק",
+            }
+        },
+    )
+    assert resolved[0].name == "איציק", "written under the other recording's name"
