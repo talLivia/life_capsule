@@ -1,223 +1,142 @@
-# Editing a recording's transcript, and re-processing it
+# One correction tool, for both kinds of fix
 
-**Written 2026-08-06. Nothing built.** Scoping the proposal to make
-`RawSegment.transcript` editable and re-runnable, so a correction feeds the
-existing extractor rather than needing a separate tree-editing feature.
+**Rewritten 2026-08-06. Supersedes the two-tool plan.** The chunk-level
+correction shipped (`transcript_correction.correct_token`) and currently
+refuses any edit that changes the word count. This extends it to accept those
+too, in the same endpoint and the same UI, rather than adding a second editor
+with different rules.
 
-**Headline: the two questions asked have inverted answers.** Adding words that
-were never said is *structurally* safe in a way that policy could not achieve —
-and correcting a genuine mishearing is *less* effective than it looks, because
-it does not reach the surface that plays the clip.
-
----
-
-## 1. What re-processing actually touches — traced, not assumed
-
-### 1.1 The transcript is stored TWICE, and the copies feed different things
-
-| stored where | fed by | consumed by |
-| --- | --- | --- |
-| `RawSegment.transcript` | STT, once at ingest | entity extraction, relation proposal, topic tags, the segment embedding, the extraction panel |
-| `TranscriptChunk.text` + `word_timestamps` | the same STT pass | **everything `/talk` does** |
-
-This is the hazard `PROJECT_STATUS.md` already records from the Graphiti era:
-*"The transcript is stored twice and the copies can drift. חיל האוויר survived
-in the graph on a transcript that no longer existed in Postgres."* Editing one
-copy institutionalises exactly that drift.
-
-### 1.2 `/talk` never reads `RawSegment.transcript`
-
-Traced through `full_archive_retrieval`:
-
-- `_load_archive` selects segments **and their chunks**, and drops any segment
-  with no chunks: *"A segment with no chunks yet contributes nothing readable."*
-- `_split_segment_into_units` builds every unit from `word_timestamps`:
-  `text=" ".join(w for w, _, _ in words)`, `start_sec=words[0][1]`,
-  `end_sec=words[-1][2]`.
-
-So **every word `/talk` displays, and every second of video it plays, comes
-from `word_timestamps`** — never from `RawSegment.transcript`.
-
-### 1.3 Re-processing does NOT rebuild chunks
-
-`transcribe_node` short-circuits when a transcript already exists and returns
-`{"transcript": ...}` with **no `phrases`** — and its own comment says what
-follows: *"create_transcript_chunks_node creates no chunks for it this pass."*
-
-So a re-run over an edited transcript touches:
-
-| | re-run? |
-| --- | --- |
-| entity extraction + relation proposals | ✅ re-extracted from the edited text |
-| topic tags | ✅ re-tagged |
-| `RawSegment.embedding` | ✅ re-embedded from the edited text |
-| importance score | ✅ re-scored |
-| entities / mentions / relations | ✅ **replaced** (`entity_store` replaces per segment; relations replace scoped to `origin="recording"`) |
-| **chunks, `word_timestamps`, units** | ❌ **untouched** |
-| **what `/talk` shows and plays** | ❌ **untouched** |
-
-Confirmed idempotent by design — `entity_store` replaces a segment's mentions
-rather than appending — so re-processing is not a duplicating operation.
+**Verdict: merging is straightforward, and better than two tools.** There is no
+structural reason to keep them apart. What differs is a CONSEQUENCE of each
+edit, which should be shown after the fact — not a mode the producer has to
+choose in advance.
 
 ---
 
-## 2. Case 2 — adding words that were not said
+## 1. Why it merges cleanly — verified, not assumed
 
-### 2.1 It cannot corrupt a clip, and that is structural
+`_split_segment_into_units` builds a unit's text from `word_timestamps`, and
+falls back to `chunk.text` ONLY when a chunk has no timings at all. So when
+timings exist, `chunk.text` is not what `/talk` reads.
 
-A unit's text and its play range both come from `word_timestamps`. **A word
-that was never spoken has no timestamp**, so it cannot enter a unit, cannot be
-displayed, and cannot extend a clip. There is no code path by which invented
-text reaches `/talk`.
-
-That is a much stronger guarantee than a rule saying "don't do that" — the
-feared failure ("the words on screen won't match the words in the video") is
-not merely discouraged, it is unrepresentable.
-
-### 2.2 So what does an added sentence actually do?
-
-It changes what the **extractor** reads, which is precisely the intent. Editing
-*"אנחנו חמישה משפחה"* to *"יש לי חמישה אחים"* and re-processing would produce
-the sibling relations the never-infer rule correctly declined to guess — and
-`/talk` would carry on quoting the original words, because that is what was
-said.
-
-The transcript stops being a record of what was said and becomes **a record of
-what was meant, used to derive structure**. That is a real change of kind, and
-it should be visible rather than implied.
-
-### 2.3 Two consequences that do need handling
-
-**An edit is silently destroyed by re-ingestion.**
-`scripts/reingest_archive.py` *clears* `segment.transcript` and re-transcribes
-— its docstring says it must, or the run is "a silent no-op reusing the bad
-text". Any edit is wiped, with no warning and no way to tell it ever existed.
-This is the single most important thing to handle: an edit must be durable, or
-recoverable, across a re-transcription.
-
-**The extraction panel would show words the audio does not contain.** Whoever
-reads it later — a grandchild, or the producer in five years — has no way to
-know which sentence was spoken and which was typed.
-
-Both point the same way: **store the edit, do not overwrite the original.**
+Confirmed against the live archive, in a rolled-back transaction: rewriting
+chunk 0's text to *"יש לי חמישה אחים בדיוק"* and rebuilding units produced
 
 ```
-raw_segments.transcript            -- STT output, never edited
-raw_segments.transcript_edited     -- nullable; the producer's version
-raw_segments.transcript_edited_at
+u1: 'אנחנו חמישה משפחה'   [2.32-4.56]     <- unchanged, from word_timestamps
 ```
 
-Extraction reads `COALESCE(transcript_edited, transcript)`. `/talk` is
-unaffected either way. Re-ingestion replaces `transcript` and leaves the edit
-alone — the bug in §2.3 disappears rather than being mitigated. And the
-extraction panel can show both, marking the edited sentences honestly.
+So the two behaviours the producer wants already fall out of which fields an
+edit touches. No new mechanism is needed — only a rule about when to touch
+which.
 
----
+## 2. The rule
 
-## 3. Case 1 — correcting a genuine mishearing
+> **The archive's understanding always updates. Your family's answers update
+> only when the words still line up one-to-one.**
 
-### 3.1 This is the one that does NOT work as expected
+| edit | `RawSegment.transcript` | `chunk.text` + `word_timestamps` | reaches |
+| --- | --- | --- | --- |
+| same word count (`יוכרת` → `יוכבד`) | rewritten | rewritten, timings kept, window re-embedded | extraction **and** `/talk` |
+| word count changes (`אנחנו חמישה משפחה` → `יש לי חמישה אחים`) | rewritten | **untouched** | extraction only |
 
-Correcting `ליאן` → `אליאן` in the transcript fixes:
+### 2.1 Why a count-changing edit touches NO chunk, rather than just no timings
 
-- the entity that extraction creates ✅
-- the relations pointing at it ✅
-- the topic tags and segment embedding ✅
+This is the one place I would not do what was proposed. The suggestion was to
+rewrite `chunk.text` and leave the added words without timestamps. That works,
+and two things make "leave the chunks entirely alone" better:
 
-and does **not** fix:
+- **There is no principled answer to WHICH chunk gained the words.** "אנחנו
+  חמישה משפחה" may sit in one chunk, or straddle two. Inserting "יש לי" means
+  choosing a chunk for words that were never spoken in any of them.
+- **Chunk text feeds chunk EMBEDDINGS**, which `retrieval_service` (v1
+  `video_clips`) and the avatar path rank on. Adding unspoken words there
+  makes a clip retrievable *because of words it does not contain* — a subtler
+  version of exactly the mismatch this whole design avoids. The current
+  producer is on `video_clips_v2`, which does not use those embeddings, so the
+  hazard is latent rather than live — which is the best time to close it.
 
-- `TranscriptChunk.text` ❌
-- `word_timestamps` ❌
-- therefore what `/talk` displays and searches ❌
+Leaving chunks untouched keeps every chunk a faithful record of the audio, and
+confines the producer's rewording to the field that drives understanding.
 
-So after the correction, the archive says `אליאן` in the tree and still says
-`ליאן` in every clip. A family member asking about אליאן gets the moments only
-because the ENTITY matches — the text `/talk` reads still carries the old
-spelling, and would still be what appears on screen.
+### 2.2 What the producer sees
 
-**Transcript editing therefore does not replace the name-propagation work
-scoped earlier this session** — it is a different half of the same problem.
-Offering it as a fix for mishearings would be worse than not offering it,
-because the correction would look complete and be half-applied.
+The distinction is never presented as a choice. It is reported as an outcome,
+once the edit is saved:
 
-### 3.2 What case 1 actually needs
+```
+✓ Saved. Your family will hear the original wording in this clip —
+  the archive now understands it as "יש לי חמישה אחים".
 
-The chunk-level change already scoped earlier: rewrite the token inside
-`TranscriptChunk.text` and inside the matching `word_timestamps` entry, keeping
-its start/end, then re-embed the affected chunk. Feasible for a single token of
-the same count; refused with a clear message otherwise, because a correction
-that changes token count has no defined timing.
+✓ Saved and corrected everywhere, including what your family hears.
+```
 
-That is a separate, larger piece of work and should not be smuggled inside
-this one.
+## 3. The faithfulness warning
 
----
+Shown beside the editor, always — not as a blocking dialog:
 
-## 4. Recommendation
+> **Keep this faithful to what you said.** Rewording so the archive understands
+> you properly is exactly what this is for — it is how people and relationships
+> are worked out. But if you want to say something *different*, delete this
+> recording and record it again. Your family always hears the original.
 
-**Allow editing. Do not restrict it to case 1, and do not require a "this was
-not said" marker as a gate.**
+Held as one constant in the codebase rather than typed into a component, so
+the endpoint's own docs and the UI cannot drift apart on what the tool is for.
 
-- Case 2 is structurally safe for `/talk` (§2.1), so the risk it was feared for
-  does not exist.
-- Case 1 is not fully served by this feature at all (§3.1), so restricting to
-  it would leave the feature doing nothing useful.
+## 4. What this replaces
 
-Instead:
+`docs/TREE_EDITING.md` stays unbuilt and stays on file. The cases it covers
+that this does not are unchanged: a relation no recording states at all, and a
+relation between people named in two different recordings. Neither is
+reachable by editing one transcript, and neither is urgent.
 
-1. **Keep the original.** `transcript_edited` alongside `transcript`, never in
-   place of it. This is what makes the edit durable and honest, and it removes
-   the re-ingestion bug rather than warning about it.
-2. **Say what an edit is for**, in the UI: *"Rewrite this so the archive
-   understands it correctly. What you type is used to work out people and
-   relationships — your family will always hear the original recording."* That
-   is the accurate description of what the two copies do, and it sets the
-   expectation without a policy gate.
-3. **Show both in the extraction panel**, with the edited version marked.
-4. **Do not offer it as a spelling fix.** Name corrections keep going through
-   the existing per-entity name edit, which lands on the entity. Direct people
-   at the right tool rather than one that half-works.
+The "second tool" (structure-only transcript editing) is **cancelled** — it is
+now this tool's count-changing branch.
 
-## 5. Does this replace tree editing?
+## 5. Scope of the change
 
-**Partly — and the remainder is the interesting part.**
+Small, because the hard part shipped:
 
-| case | transcript editing | tree editing |
-| --- | --- | --- |
-| The recording says it; the extractor missed it | ✅ the right tool | overkill |
-| The recording says it; the extractor got it wrong | ✅ re-process replaces the segment's relations | also works |
-| A relation NO recording states ("חן is רז's child", never said aloud) | ✍️ requires inventing a sentence | ✅ the honest tool |
-| A relation between people from two DIFFERENT recordings | ❌ no single transcript contains it | ✅ |
-| Correcting an entity created by another recording | ❌ | ✅ |
-
-So transcript editing covers the case that prompted it, and covers it better —
-the extractor stays the single place relations are derived, and no second
-write path into `entity_relations` is created. Tree editing remains the answer
-for relations that no recording states and for anything spanning recordings.
-
-**Recommendation: build transcript editing first**, use it for a while, and see
-whether the remaining tree-editing cases still feel worth the second write
-path. `docs/TREE_EDITING.md` stays as the plan for them, not deleted.
-
-## 6. Build order
-
-| Phase | Work |
+| # | Work |
 | --- | --- |
-| **1** | Migration: `transcript_edited`, `transcript_edited_at` |
-| **2** | Extraction reads `COALESCE(transcript_edited, transcript)` — one change, in `check_entities_node` |
-| **3** | `PATCH /segments/{id}/transcript` + `POST /segments/{id}/reprocess` |
-| **4** | Extraction panel: edit the text, show both versions, re-process button |
-| **5** | Progress + the confirmation questions the re-run raises (it pauses exactly as a first ingest does) |
+| 1 | `correct_token` gains `allow_reword`; when counts differ it rewrites `RawSegment.transcript` only and re-embeds the segment |
+| 2 | The refusal becomes conditional — same message, only when the caller has not opted in |
+| 3 | Result reports which kind of edit happened, so the UI can say the right sentence (§2.2) |
+| 4 | Endpoint passes it through; the `ready`/`analyzed` guard and the 404 rule are unchanged |
+| 5 | The faithfulness copy as a shared constant |
+| 6 | UI: an editable transcript in the extraction panel, the warning, and the outcome message |
 
-Phase 5 is not an afterthought: re-processing goes through `human_confirm`, so
-an edited recording will raise its questions again and they surface in the
-bell. That is correct, and it should be expected rather than surprising.
+Tests to add: a count-changing edit leaves chunks and timings untouched;
+`RawSegment.transcript` and the segment embedding do change; units built after
+one are byte-identical to before; and the same-count path keeps every existing
+behaviour.
+
+## 6. The durability hazard, stated plainly
+
+**`scripts/reingest_archive.py` clears `segment.transcript` and
+re-transcribes, which rebuilds chunks from scratch.** Every correction — the
+one already shipped as much as anything added here — is destroyed by a re-ingest,
+silently and with no record it existed.
+
+That is a pre-existing consequence of the shipped feature, not something this
+change introduces, and it is the strongest argument for a corrections LOG:
+
+```sql
+segment_corrections(id, segment_id, old_text, new_text, kind, created_at)
+```
+
+Written on every correction, replayed after a re-transcription. It also buys
+provenance — "this word was corrected by the producer" is worth knowing when
+reading a transcript years later.
+
+**Not in this change**, but it should be next, and it should not wait for a
+re-ingest to be scheduled before anyone remembers.
 
 ## 7. Open decisions
 
 | # | Decision | Recommendation |
 | --- | --- | --- |
-| 1 | Can a family member (`/talk`) ever see the edited text? | No. They hear the recording; the edit is a producer-side derivation aid. |
-| 2 | Should re-processing be automatic on save, or an explicit button? | Explicit. It costs several LLM calls and raises questions — a save that quietly does that is a surprise. |
-| 3 | Keep an edit history, or just the latest? | Latest. The original is always preserved separately, which is the version that matters. |
-| 4 | What if the producer edits and the segment is mid-analysis? | Refuse while `status` is not settled, for the reason the stranded-segment bug taught: a write racing the pipeline lands somewhere unpredictable. |
+| 1 | Should a count-changing edit be opt-in per request, or just allowed? | Opt-in flag from the UI, so a same-count typo cannot silently become a reword when a word is accidentally deleted. |
+| 2 | Re-run extraction automatically after a reword? | No — explicit, for the reason already settled: it costs several LLM calls and raises confirmation questions. |
+| 3 | Should the extraction panel show that a transcript was edited? | Yes, once the corrections log exists. Until then there is nothing to show it from. |
+| 4 | Cap the size of a reword? | No cap, but the warning copy carries the intent. A producer rewriting a whole answer should be told to re-record, not blocked by a character count. |
