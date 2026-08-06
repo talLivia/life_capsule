@@ -308,8 +308,10 @@ class TreeEdge(BaseModel):
     label_en: str
     label_he: str
     # The recording that established this relation, so "brother" can play the
-    # producer saying so.
-    source_segment_id: str
+    # producer saying so. NULL when the producer set the relation by hand from
+    # the tree — there is no recording behind it, and the page must offer
+    # nothing rather than a dead control. See migration 0020.
+    source_segment_id: Optional[str] = None
 
 
 class TreeContradiction(BaseModel):
@@ -321,7 +323,8 @@ class TreeContradiction(BaseModel):
     from_id: str
     to_id: str
     relation_type: str
-    source_segment_id: str
+    # NULL for a hand-made edge, as above.
+    source_segment_id: Optional[str] = None
     kept_generation: int
     implied_generation: int
 

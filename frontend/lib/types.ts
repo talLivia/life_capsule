@@ -443,14 +443,18 @@ export interface TreeEdge {
   label_en: string
   label_he: string
   /** The recording that established it — "brother" can play them saying so. */
-  source_segment_id: string
+  /** Null when the producer set this relation by hand from the tree — there
+   *  is no recording behind it, so there is no moment to offer. */
+  source_segment_id: string | null
 }
 
 export interface TreeContradiction {
   from_id: string
   to_id: string
   relation_type: string
-  source_segment_id: string
+  /** Null when the producer set this relation by hand from the tree — there
+   *  is no recording behind it, so there is no moment to offer. */
+  source_segment_id: string | null
   kept_generation: number
   implied_generation: number
 }

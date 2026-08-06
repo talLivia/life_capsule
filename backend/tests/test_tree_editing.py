@@ -271,3 +271,37 @@ async def test_someone_elses_person_is_refused(db_session, archive):
             to_entity_id=theirs.id,
             relation_type="parent",
         )
+
+
+async def test_the_tree_endpoint_serialises_a_hand_made_edge(client, db_session, archive):
+    """The bug this pins cost a working tree page.
+
+    Making source_segment_id nullable in the DB is only half the change: the
+    RESPONSE schema still declared it a plain str, so the first hand-made edge
+    made /entities/tree raise ResponseValidationError. And because an
+    unhandled exception is caught by ServerErrorMiddleware, which sits OUTSIDE
+    CORSMiddleware, the 500 carried no CORS headers — so the browser reported
+    a CORS policy error and the real cause was invisible.
+
+    Serialising the response is what the service-level tests never exercised.
+    """
+    from app.api.v1.users import create_access_token
+
+    await entity_store.set_relation_by_hand(
+        db_session,
+        producer_id=archive["user"].id,
+        from_entity_id=archive["raz"].id,
+        to_entity_id=archive["chen"].id,
+        relation_type="parent",
+    )
+    await db_session.commit()
+
+    token = create_access_token({"sub": archive["user"].id})
+    response = await client.get(
+        "/api/v1/entities/tree", headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 200
+    edges = response.json()["edges"]
+    hand_made = [e for e in edges if e["source_segment_id"] is None]
+    assert len(hand_made) == 1, "a hand-made edge has no recording, and must still serialise"
