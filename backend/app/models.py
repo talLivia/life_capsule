@@ -511,6 +511,19 @@ class Entity(Base):
     # and same reason as the two above: "no sibling edge to a parent" cannot
     # distinguish never-asked from asked-and-skipped. See migration 0019.
     side_asked_at = Column(DateTime(timezone=True), nullable=True)
+    # When the producer last confirmed WHO this row is — that a recording
+    # naming this name meant this person and not a second one who happens to
+    # share it. Fourth of the same shape, and the reason is sharper than the
+    # others: the merge key IS the name, so a name matching verbatim used to
+    # auto-merge on the assumption that one name means one person. It does not
+    # — one אמנון row ended up holding both an uncle and an army friend. Now a
+    # verbatim match ASKS, and this stamp is what stops it asking again on
+    # every later recording that mentions the same confirmed person.
+    #
+    # Deliberately NOT backfilled (migration 0021): stamping the entities that
+    # already exist would declare exactly the conflations this is meant to
+    # catch already settled.
+    identity_asked_at = Column(DateTime(timezone=True), nullable=True)
     # The producer themselves. Extracted summaries are phrased relative to
     # "the speaker", so relations need a node for that person to point at;
     # the family tree roots here. One per producer (partial unique index).

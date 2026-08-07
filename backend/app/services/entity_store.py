@@ -524,33 +524,65 @@ async def get_entity_candidates(
         # the tests below necessarily exercise the fallback instead.
         similarity = func.similarity(Entity.normalized_name, key).label("sim")
         rows = await db.execute(
-            select(Entity.id, Entity.name, similarity)
+            select(
+                Entity.id,
+                Entity.name,
+                Entity.type,
+                Entity.identity_asked_at,
+                similarity,
+            )
             .where(Entity.producer_id == producer_id)
             .where(~Entity.is_self)
             .order_by(similarity.desc(), Entity.name)
             .limit(limit)
         )
-        ranked = [(eid, ename) for eid, ename, _ in rows]
+        ranked = [(eid, ename, etype, asked) for eid, ename, etype, asked, _ in rows]
     else:
         # SQLite (tests) has no pg_trgm. Rank in Python over the producer's
         # entities — correct, and affordable at any size this ever reaches,
         # but NOT what production runs, which is why the branch is explicit
         # rather than hidden behind a helper that pretends they are the same.
         rows = await db.execute(
-            select(Entity.id, Entity.name, Entity.normalized_name)
+            select(
+                Entity.id,
+                Entity.name,
+                Entity.normalized_name,
+                Entity.type,
+                Entity.identity_asked_at,
+            )
             .where(Entity.producer_id == producer_id)
             .where(~Entity.is_self)
         )
         scored = sorted(
             (
-                (SequenceMatcher(None, key, norm).ratio(), ename, eid)
-                for eid, ename, norm in rows
+                (SequenceMatcher(None, key, norm).ratio(), ename, eid, etype, asked)
+                for eid, ename, norm, etype, asked in rows
             ),
             key=lambda t: (-t[0], t[1]),
         )
-        ranked = [(eid, ename) for _, ename, eid in scored[:limit]]
+        ranked = [
+            (eid, ename, etype, asked) for _, ename, eid, etype, asked in scored[:limit]
+        ]
 
-    candidates = [{"uuid": eid, "name": ename, "summary": None} for eid, ename in ranked]
+    candidates = [
+        {
+            "uuid": eid,
+            "name": ename,
+            "summary": None,
+            # person | place | organisation | event | other. Carried so a
+            # question about a PLACE does not ask whether it is the same
+            # person — which it did, and תל אביב is mentioned in as many
+            # recordings as anybody.
+            "type": etype,
+            # Has the producer already confirmed who this row is? The caller
+            # uses it to decide whether a VERBATIM name match may be merged
+            # without asking — see check_entities_node. Carried on the
+            # candidate rather than fetched separately so the decision and the
+            # evidence for it arrive together.
+            "identity_asked": asked is not None,
+        }
+        for eid, ename, etype, asked in ranked
+    ]
     # Summaries come from the mentions, newest first — "which Gila is this"
     # is answered by what was most recently said about her.
     for candidate in candidates:
@@ -803,6 +835,50 @@ async def mark_placement_asked(db: AsyncSession, entity_ids: Sequence[str]) -> i
     return stamped
 
 
+async def mark_identity_asked(
+    db: AsyncSession, producer_id: str, entity_ids: Sequence[str]
+) -> int:
+    """Record that the producer has settled WHO these rows are.
+
+    The stamp that makes always-asking bearable. A name matching an existing
+    entity verbatim now raises an identity question instead of merging on the
+    assumption that one name means one person — but asked on every recording
+    that mentions a brother, that question would be noise, and noise is
+    answered without reading. Stamped once, it never comes back for that
+    person.
+
+    Set whether the answer was "yes, the same" or "someone different", and set
+    even when the question went unanswered — identical to `year_asked_at` and
+    for the identical reason. Silence is a real answer here ("someone new", the
+    safe default), and a question that comes back until answered a particular
+    way is not a question.
+
+    Scoped by producer as well as id: entity ids are unguessable uuids, but a
+    write should not rest on that.
+
+    Only ever SETS a stamp. Nothing should make a settled question return, and
+    the two callers — this pipeline and any repair script — must not be able to
+    undo each other by ordering.
+    """
+    ids = [i for i in entity_ids if i]
+    if not ids:
+        return 0
+    now = datetime.now(timezone.utc)
+    rows = (
+        await db.execute(
+            select(Entity).where(
+                Entity.id.in_(ids),
+                Entity.producer_id == producer_id,
+                Entity.identity_asked_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    for entity in rows:
+        entity.identity_asked_at = now
+    await db.flush()
+    return len(rows)
+
+
 async def speaker_name_for(db: AsyncSession, producer_id: str) -> Optional[str]:
     """What to tell the extractor the narrator is called.
 
@@ -929,7 +1005,7 @@ async def pending_entity_candidates(
             RawSegment.id != exclude_segment_id,
         )
     )
-    seen: Dict[str, str] = {}
+    seen: Dict[str, Tuple[str, Optional[str]]] = {}
     for (payload,) in rows:
         # `editable_entities` is every entity that recording extracted — the
         # same superset the confirmation screen offers for name correction.
@@ -937,14 +1013,23 @@ async def pending_entity_candidates(
             name = (item or {}).get("name")
             key = normalize_entity_name(name or "")
             if key and key not in seen:
-                seen[key] = name
+                seen[key] = (name, (item or {}).get("type"))
     return [
         {
             "uuid": f"{PENDING_CANDIDATE_PREFIX}{name}",
             "name": name,
             "summary": "from a recording you haven't finished checking yet",
+            # The extractor's guess, unconfirmed — which is all this candidate
+            # is. Enough to word the question ("the same place") without
+            # claiming more than is known.
+            "type": etype,
+            # Never settled, and it cannot be: there is no row to have
+            # confirmed. A verbatim match against one of these therefore always
+            # asks — which is the right outcome, since an unanswered recording
+            # is the least verified thing the archive knows about anybody.
+            "identity_asked": False,
         }
-        for name in sorted(seen.values())
+        for name, etype in sorted(seen.values())
     ]
 
 

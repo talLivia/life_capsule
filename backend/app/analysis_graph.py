@@ -108,6 +108,10 @@ class AnalysisState(TypedDict, total=False):
     topic_tags: List[str]
     names_to_check: List[Dict[str, str]]
     entity_resolutions: Dict[str, Dict[str, Optional[str]]]
+    # Existing entity ids the confirmation screen asked "who is this?" about.
+    # Stamped identity_asked_at by finalize_ingest so the question is asked
+    # once per person rather than once per mention.
+    asked_identity_ids: List[str]
     # The structured extraction from check_entities_node, as plain dicts —
     # {name, type, alternative_type, summary}. Carried through state rather
     # than re-extracted in finalize_ingest so that the names a human is asked
@@ -664,30 +668,63 @@ async def check_entities_node(state: AnalysisState) -> dict:
         if not relevant:
             continue  # brand-new entity — entity_store will just create it
 
-        if len(relevant) == 1 and relevant[0]["name"].strip().lower() == key:
-            # Exactly one real match AND it's the same name verbatim —
-            # confident enough to auto-resolve without interrupting the
-            # storyteller every time a previously-confirmed name recurs.
+        if (
+            len(relevant) == 1
+            and relevant[0]["name"].strip().lower() == key
+            # ...AND the producer has already said who that row is. Without
+            # this clause a verbatim match auto-merged outright, on the
+            # assumption that one name means one person. It does not: two
+            # people called אמנון — an uncle and an army friend — merged onto
+            # one row across three recordings, with no question ever asked,
+            # because at no point was there anything the code recognised as
+            # ambiguous. The name is the merge key, so the merge is not a
+            # guess that can be revisited later; it is the loss of the
+            # distinction.
+            #
+            # ASKED ONCE, not every time. `identity_asked_at` is the whole
+            # reason this is affordable — the question fires on the FIRST
+            # recording that names an existing person and never again, so the
+            # cost is one question per person in the archive rather than one
+            # per mention. Same shape as year/parentage/side, same rule:
+            # asked-and-answered is a state the archive records.
+            and relevant[0].get("identity_asked")
+        ):
             only = relevant[0]
             auto_resolutions[name] = {"same_as_uuid": only["uuid"], "resolved_name": only["name"]}
             continue
 
-        # Ambiguous: either 2+ real matches (even if one of them is an exact
-        # name match — a bare "Moshe" against both an existing "Moshe" and a
-        # "Moshe Cohen" is still genuinely ambiguous), or a single non-exact
-        # fuzzy match. Keep every real match so human_confirm can ask about
+        # Everything else is a question: 2+ real matches (a bare "Moshe"
+        # against both an existing "Moshe" and a "Moshe Cohen"), a single
+        # non-exact fuzzy match, or — new — a single verbatim match nobody has
+        # confirmed yet. Keep every real match so human_confirm can ask about
         # all of them at once instead of an arbitrary single guess.
+        candidate_views = [
+            {
+                "uuid": c["uuid"],
+                "name": c["name"],
+                "summary": c.get("summary") or "",
+            }
+            for c in relevant
+        ]
         to_check.append(
             {
                 "name": name,
-                "candidates": [
-                    {
-                        "uuid": c["uuid"],
-                        "name": c["name"],
-                        "summary": c.get("summary") or "",
-                    }
-                    for c in relevant
-                ],
+                "candidates": candidate_views,
+                # The wording the screen shows. It was built here's-equivalent
+                # once and lost when chunk 4 batched the interrupt: the payload
+                # carried `question` per name, the batched one passes
+                # `names_to_check` straight through, and the modal has been
+                # rendering an EMPTY legend above the options ever since —
+                # every identity question since 64eef15 asked nothing in
+                # words. Cheap to miss, because the options below it still
+                # read sensibly. Restored here, at the one place that knows
+                # both the extracted name and what it matched.
+                #
+                # Built from `relevant`, not from the views: the wording needs
+                # the candidate's TYPE, which the client has no use for and so
+                # is not sent. The views stay exactly the shape the modal
+                # already reads.
+                "question": _confirmation_question(name, relevant),
             }
         )
 
@@ -751,9 +788,32 @@ async def check_entities_node(state: AnalysisState) -> dict:
 
 def _confirmation_question(entity_name: str, candidates: List[Dict[str, str]]) -> str:
     if len(candidates) == 1:
+        only = candidates[0]
+        if only["name"].strip().lower() == entity_name.strip().lower():
+            # SAME NAME, and that is exactly what makes this worth asking. The
+            # generic wording below — "is X the same as X already in your
+            # archive" — reads as a typo and invites a reflexive yes, which is
+            # the answer that merges two people. So say what the archive
+            # already has, in the producer's own words about them, and offer
+            # the other answer explicitly.
+            # Trailing "." stripped: the summaries are written as sentences
+            # and the join adds its own, so it reads "...ודור.. Is this".
+            summary = (only.get("summary") or "").strip().rstrip(".")
+            known = f" — {summary}" if summary else ""
+            kind = only.get("type")
+            # "the same person" is wrong for four of the five types, and תל
+            # אביב is named in as many recordings as anybody. Neutral when the
+            # type is unknown (a candidate from an unconfirmed recording)
+            # rather than assuming the commonest one.
+            same = "the same person" if kind == "person" else "the same one"
+            other = "someone else" if kind == "person" else "a different one"
+            return (
+                f'You already have {_article(entity_name)} "{entity_name}"{known}. '
+                f"Is this {same}, or {other}?"
+            )
         return (
             f'Is "{entity_name}" mentioned in this new segment the same as '
-            f'"{candidates[0]["name"]}" already in your story archive?'
+            f'"{only["name"]}" already in your story archive?'
         )
     options = "; ".join(
         f'{c["name"]} ({c["summary"]})' if c["summary"] else c["name"] for c in candidates
@@ -1463,10 +1523,33 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         or _answered_parentage(corrected_name(sibling["name"]))
     ]
 
+    # Every EXISTING person the screen asked about, answered or not. These are
+    # the rows that stop being asked about — not the entities this recording
+    # wrote, which is the distinction that makes the stamp land in the right
+    # place on the "someone different" answer: the producer confirms that the
+    # אמנון already in the archive is his own person, and the NEW אמנון נחום
+    # has never been asked about at all.
+    #
+    # `pending:` candidates are excluded because they have no row yet (see
+    # pending_entity_candidates) — there is nothing to stamp, and stamping the
+    # entity that recording eventually creates would settle a question its own
+    # producer has not been asked.
+    asked_identity_ids = sorted(
+        {
+            candidate["uuid"]
+            for question in identity_questions
+            for candidate in question["candidates"]
+            if not str(candidate["uuid"]).startswith(
+                entity_store.PENDING_CANDIDATE_PREFIX
+            )
+        }
+    )
+
     return {
         "names_to_check": [],
         "entity_resolutions": resolutions,
         "extracted_entities": entities,
+        "asked_identity_ids": asked_identity_ids,
         # Overwritten with the accepted subset, so finalize_ingest writes
         # exactly what the producer approved and nothing else.
         "proposed_relations": accepted,
@@ -1575,6 +1658,15 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
                     asked_names=sides.get("asked_names") or [],
                     answers=sides.get("answers") or {},
                     kinds=sides.get("kinds") or {},
+                )
+
+            # The ask-once stamp for identity. In the same transaction as the
+            # entities on purpose: stamped without the write landing, a
+            # question would be recorded as settled by an answer that was
+            # rolled back.
+            if state.get("asked_identity_ids"):
+                await entity_store.mark_identity_asked(
+                    db, state["group_id"], state["asked_identity_ids"]
                 )
 
             parentage = state.get("parentage") or {}

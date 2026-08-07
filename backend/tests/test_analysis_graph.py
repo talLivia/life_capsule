@@ -470,12 +470,27 @@ async def test_extract_topics_node_tolerates_llm_failure(segment, monkeypatch):
     assert result["topic_tags"] == []
 
 
-async def test_check_entities_node_auto_resolves_exact_match(segment, monkeypatch):
+async def test_check_entities_node_auto_resolves_settled_exact_match(segment, monkeypatch):
+    """A verbatim match the producer has ALREADY confirmed merges silently.
+
+    The other half of always-asking, and the half that makes it bearable: once
+    "who is this Gila" has been answered, every later recording that mentions
+    her must go through without a question.
+    """
     monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Gila")))
     monkeypatch.setattr(
         ag.entity_store,
         "get_entity_candidates",
-        AsyncMock(return_value=[{"uuid": "u1", "name": "Gila", "summary": "grandmother"}]),
+        AsyncMock(
+            return_value=[
+                {
+                    "uuid": "u1",
+                    "name": "Gila",
+                    "summary": "grandmother",
+                    "identity_asked": True,
+                }
+            ]
+        ),
     )
 
     result = await ag.check_entities_node(
@@ -484,6 +499,119 @@ async def test_check_entities_node_auto_resolves_exact_match(segment, monkeypatc
 
     assert result["names_to_check"] == []
     assert result["entity_resolutions"] == {"Gila": {"same_as_uuid": "u1", "resolved_name": "Gila"}}
+
+
+async def test_check_entities_node_asks_about_unsettled_exact_match(segment, monkeypatch):
+    """THE אמנון BUG. A name matching verbatim is not proof of one person.
+
+    This auto-merged, on the assumption that an identical name meant an
+    identical person — so an uncle and an army friend both called אמנון landed
+    on one row across three recordings with no question ever asked. The merge
+    key IS the name, so that merge is not a guess to revisit later; it is the
+    loss of the distinction.
+    """
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("אמנון")))
+    monkeypatch.setattr(
+        ag.entity_store,
+        "get_entity_candidates",
+        AsyncMock(
+            return_value=[
+                {
+                    "uuid": "u1",
+                    "name": "אמנון",
+                    "type": "person",
+                    "summary": "דודו של הדובר מצד אבא",
+                    "identity_asked": False,
+                }
+            ]
+        ),
+    )
+
+    result = await ag.check_entities_node(
+        {"segment_id": segment.id, "group_id": "g1", "transcript": segment.transcript}
+    )
+
+    assert result["entity_resolutions"] == {}
+    assert [q["name"] for q in result["names_to_check"]] == ["אמנון"]
+    question = result["names_to_check"][0]
+    assert question["candidates"] == [
+        {"uuid": "u1", "name": "אמנון", "summary": "דודו של הדובר מצד אבא"}
+    ]
+    # Worded for the case, not the generic "is X the same as X" that reads as
+    # a typo and invites a reflexive yes — the answer that merges two people.
+    assert "דודו של הדובר מצד אבא" in question["question"]
+    assert "someone else" in question["question"]
+
+
+async def test_a_place_is_not_asked_whether_it_is_the_same_person(segment, monkeypatch):
+    """Four of the five entity types are not people.
+
+    Worth its own test because places are where this fires MOST: תל אביב is
+    named in as many recordings as any relative, so "Is this the same person?"
+    about a city would be the first thing a producer saw.
+    """
+    monkeypatch.setattr(
+        ag.llm_service,
+        "generate_response",
+        AsyncMock(
+            return_value=json.dumps(
+                [{"name": "תל אביב", "type": "place", "alternative_type": None, "summary": "s"}]
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        ag.entity_store,
+        "get_entity_candidates",
+        AsyncMock(
+            return_value=[
+                {
+                    "uuid": "p1",
+                    "name": "תל אביב",
+                    "type": "place",
+                    "summary": "where the speaker grew up",
+                    "identity_asked": False,
+                }
+            ]
+        ),
+    )
+
+    result = await ag.check_entities_node(
+        {"segment_id": segment.id, "group_id": "g1", "transcript": segment.transcript}
+    )
+
+    question = result["names_to_check"][0]["question"]
+    assert "person" not in question
+    assert "the same one" in question
+
+
+async def test_identity_questions_carry_their_wording(segment, monkeypatch):
+    """Every identity question says something in words.
+
+    It did not. `_confirmation_question` was called from the per-name
+    interrupt, and when chunk 4 batched them `names_to_check` began going
+    straight through — so the modal rendered an EMPTY legend above the
+    options. Nothing failed, because the options still read sensibly on their
+    own, which is why it survived. Asserted here rather than trusted.
+    """
+    monkeypatch.setattr(ag.llm_service, "generate_response", AsyncMock(return_value=_extraction_reply("Gila")))
+    monkeypatch.setattr(
+        ag.entity_store,
+        "get_entity_candidates",
+        AsyncMock(
+            return_value=[
+                {"uuid": "u2", "name": "Gila Cohen", "summary": "a neighbor", "identity_asked": False},
+                {"uuid": "u3", "name": "Gila Levi", "summary": "", "identity_asked": True},
+            ]
+        ),
+    )
+
+    result = await ag.check_entities_node(
+        {"segment_id": segment.id, "group_id": "g1", "transcript": segment.transcript}
+    )
+
+    question = result["names_to_check"][0]["question"]
+    assert question.strip()
+    assert "Gila Cohen" in question and "Gila Levi" in question
 
 
 async def test_check_entities_node_flags_fuzzy_match(segment, monkeypatch):
@@ -762,6 +890,177 @@ async def _mock_all_llm_calls(
         return {normalize_entity_name(n) for n in names}
 
     monkeypatch.setattr(ag.entity_store, "names_with_year_settled", settled)
+
+
+async def test_identity_is_asked_once_per_person_then_never_again(
+    db_session, segment, test_user, analysis_session_factory, fake_checkpointer, monkeypatch
+):
+    """The whole of step 1, end to end, against a real candidate lookup.
+
+    Deliberately does NOT mock `get_entity_candidates`: the stamp is written by
+    one node and read by another through the database, and a mocked lookup
+    would assert the two halves in isolation while proving nothing about the
+    round trip — which is the only thing that decides whether the second
+    recording interrupts.
+
+    Both halves matter and they pull in opposite directions. Asking is what
+    stops two people with one name silently merging; STOPPING asking is what
+    keeps that from becoming a question on every recording that mentions
+    anybody, which is how a safeguard turns into something answered without
+    reading.
+    """
+    db_session.add(
+        Entity(
+            producer_id=test_user.id,
+            name="Gila",
+            normalized_name=normalize_entity_name("Gila"),
+            type="person",
+        )
+    )
+    await db_session.commit()
+
+    # Captured BEFORE the mock goes on, because `ag.entity_store` and
+    # `entity_store` are the same module object — reading the attribute back
+    # afterwards would restore the mock onto itself.
+    real_candidates = entity_store.get_entity_candidates
+    await _mock_all_llm_calls(monkeypatch, entity_candidates=[])
+    monkeypatch.setattr(ag.entity_store, "get_entity_candidates", real_candidates)
+
+    result = await ag.run_segment_analysis(segment.id)
+
+    assert "__interrupt__" in result, "an unconfirmed verbatim match must ask"
+    payload = result["__interrupt__"][0].value
+    assert [q["name"] for q in payload["identity_questions"]] == ["Gila"]
+
+    await ag.resume_segment_analysis(
+        segment.id,
+        {"identity": {"Gila": {"same_as_existing": True}}},
+    )
+
+    gila = (
+        await db_session.execute(select(Entity).where(Entity.name == "Gila"))
+    ).scalars().one()
+    await db_session.refresh(gila)
+    assert gila.identity_asked_at is not None, "answering settles who this row is"
+
+    # A SECOND recording naming the same person. Nothing about it is unclear
+    # any more, so it must run straight through.
+    second = RawSegment(
+        interview_session_id=segment.interview_session_id,
+        question_asked="What else do you remember about her?",
+        question_index=1,
+        video_key=f"segments/{test_user.id}/x/1/take.webm",
+        transcript="Gila taught me to bake.",
+        status="pending_analysis",
+    )
+    db_session.add(second)
+    await db_session.commit()
+    await db_session.refresh(second)
+
+    again = await ag.run_segment_analysis(second.id)
+
+    assert "__interrupt__" not in again, "a settled person must not be asked about twice"
+    await db_session.refresh(second)
+    assert second.status == "ready"
+
+
+async def test_mark_identity_asked_is_scoped_and_set_once(db_session, test_user):
+    """Only sets, never clears, and never reaches another producer's rows.
+
+    Both properties are load-bearing rather than defensive. Re-stamping would
+    move the timestamp on every later recording, which is harmless now but
+    turns the column into "last mentioned" the first time anything reads it as
+    a date. Producer scoping is because this is a WRITE keyed by an id that
+    arrives from pipeline state.
+    """
+    from datetime import datetime, timezone
+
+    mine = Entity(
+        producer_id=test_user.id,
+        name="Gila",
+        normalized_name=normalize_entity_name("Gila"),
+        type="person",
+        identity_asked_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    )
+    fresh = Entity(
+        producer_id=test_user.id,
+        name="Moshe",
+        normalized_name=normalize_entity_name("Moshe"),
+        type="person",
+    )
+    db_session.add_all([mine, fresh])
+    await db_session.commit()
+
+    stamped = await entity_store.mark_identity_asked(
+        db_session, test_user.id, [mine.id, fresh.id]
+    )
+    await db_session.commit()
+
+    assert stamped == 1, "only the one that had no stamp"
+    await db_session.refresh(mine)
+    await db_session.refresh(fresh)
+    # Compared naive: SQLite has no timezone type and drops the offset on the
+    # way back. Postgres, which is what runs, keeps it.
+    assert mine.identity_asked_at.replace(tzinfo=None) == datetime(2020, 1, 1)
+    assert fresh.identity_asked_at is not None
+
+    # Another producer's id, passed by a caller that should not be trusted.
+    someone_else = await entity_store.mark_identity_asked(
+        db_session, "not-this-producer", [fresh.id]
+    )
+    assert someone_else == 0
+
+
+async def test_human_confirm_stamps_the_existing_row_not_the_new_one(segment):
+    """"Someone different" settles the OLD person, and only them.
+
+    The distinction is the reason this is carried as ids rather than derived
+    from the entities that get written. Told "this is a different אמנון, call
+    him אמנון נחום", the archive now holds two rows — and only the first has
+    been confirmed. Stamping the new one would declare a question settled that
+    its producer has never been asked.
+
+    `pending:` candidates are excluded for the same reason: they have no row.
+    """
+    ag.interrupt = lambda payload: {
+        "identity": {
+            "אמנון": {"same_as_existing": False, "new_name": "אמנון נחום"},
+        }
+    }
+    try:
+        result = await ag.human_confirm_node(
+            {
+                "segment_id": segment.id,
+                "group_id": "g1",
+                "names_to_check": [
+                    {
+                        "name": "אמנון",
+                        "question": "?",
+                        "candidates": [
+                            {"uuid": "real-row", "name": "אמנון", "summary": "דוד"},
+                            {
+                                "uuid": f"{entity_store.PENDING_CANDIDATE_PREFIX}אמנון",
+                                "name": "אמנון",
+                                "summary": "",
+                            },
+                        ],
+                    }
+                ],
+                "extracted_entities": [
+                    {"name": "אמנון", "type": "person", "alternative_type": None,
+                     "summary": "s"}
+                ],
+            }
+        )
+    finally:
+        import langgraph.types
+
+        ag.interrupt = langgraph.types.interrupt
+
+    assert result["asked_identity_ids"] == ["real-row"]
+    # And the recording's own entity is written under the distinguishing name,
+    # so the merge key holds them apart.
+    assert [e["name"] for e in result["extracted_entities"]] == ["אמנון נחום"]
 
 
 async def test_full_pipeline_no_ambiguity_reaches_ready(
