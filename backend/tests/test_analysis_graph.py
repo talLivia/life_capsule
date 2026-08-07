@@ -1463,3 +1463,134 @@ async def test_a_crash_never_downgrades_a_finished_segment(
     await db_session.refresh(segment)
     assert segment.status == "ready"
 
+
+
+async def test_someone_new_about_an_identical_name_requires_a_distinguishing_one(
+    client: AsyncClient, db_session, segment, analysis_session_factory,
+    fake_checkpointer, auth_headers, monkeypatch,
+):
+    """The silent-discard this closes, and how it was found.
+
+    One entity row ended up holding both an uncle and an army friend, because
+    the merge key is UNIQUE (producer_id, normalized_name): writing a second
+    "אמנון" lands it on the first. The screen offered "Someone new, not
+    listed", the producer chose it, and the archive recorded the opposite —
+    with a success message.
+    """
+    segment_id = segment.id
+    await _pause_with(
+        monkeypatch, segment_id, extraction=_MOSHE,
+        candidates=[
+            {"uuid": "u1", "name": "Moshe", "summary": "an uncle"},
+            {"uuid": "u2", "name": "Moshe Cohen", "summary": "army friend"},
+        ],
+    )
+    db_session.expire_all()
+
+    refused = await client.post(
+        f"/api/v1/interview/segments/{segment_id}/confirm-entities",
+        json={"identity": {"Moshe": {"same_as_existing": False}}, "types": {}},
+        headers=auth_headers,
+    )
+    assert refused.status_code == 400
+    assert "tells them apart" in refused.json()["detail"]
+
+    accepted = await client.post(
+        f"/api/v1/interview/segments/{segment_id}/confirm-entities",
+        json={
+            "identity": {
+                "Moshe": {"same_as_existing": False, "new_name": "Moshe Levi"}
+            },
+            "types": {},
+        },
+        headers=auth_headers,
+    )
+    assert accepted.status_code == 200
+
+
+async def test_someone_new_about_a_DIFFERENT_name_needs_nothing(
+    client: AsyncClient, db_session, segment, analysis_session_factory,
+    fake_checkpointer, auth_headers, monkeypatch,
+):
+    """The requirement must stay narrow. A bare "Moshe" that is not the
+    existing "Moshe Cohen" already has its own merge key — demanding a third
+    name there would be asking the producer to solve a problem they do not
+    have."""
+    segment_id = segment.id
+    await _pause_with(
+        monkeypatch, segment_id, extraction=_MOSHE,
+        candidates=[{"uuid": "u2", "name": "Moshe Cohen", "summary": "army friend"}],
+    )
+    db_session.expire_all()
+
+    resp = await client.post(
+        f"/api/v1/interview/segments/{segment_id}/confirm-entities",
+        json={"identity": {"Moshe": {"same_as_existing": False}}, "types": {}},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+
+
+async def test_a_distinguishing_name_that_is_also_taken_is_refused(
+    client: AsyncClient, db_session, segment, test_user, analysis_session_factory,
+    fake_checkpointer, auth_headers, monkeypatch,
+):
+    """Checked against the whole archive, not just this question's candidates:
+    any collision merges them, and not merging is the entire point."""
+    db_session.add(
+        Entity(
+            producer_id=test_user.id, name="Moshe Levi",
+            normalized_name=normalize_entity_name("Moshe Levi"), type="person",
+        )
+    )
+    await db_session.commit()
+
+    segment_id = segment.id
+    await _pause_with(
+        monkeypatch, segment_id, extraction=_MOSHE,
+        candidates=[
+            {"uuid": "u1", "name": "Moshe", "summary": "an uncle"},
+            {"uuid": "u2", "name": "Moshe Cohen", "summary": "army friend"},
+        ],
+    )
+    db_session.expire_all()
+
+    resp = await client.post(
+        f"/api/v1/interview/segments/{segment_id}/confirm-entities",
+        json={
+            "identity": {
+                "Moshe": {"same_as_existing": False, "new_name": "Moshe Levi"}
+            },
+            "types": {},
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400
+    assert "already someone in your archive" in resp.json()["detail"]
+
+
+async def test_answering_someone_new_does_not_crash(monkeypatch):
+    """A pre-existing UnboundLocalError, found while building the above.
+
+    `corrected_name` was CALLED in the someone-new branch and DEFINED further
+    down, so every producer who answered "someone new" got a crash instead of
+    an answer. No test covered that branch.
+    """
+    ag.interrupt = lambda payload: {
+        "identity": {"אמנון": {"same_as_existing": False}},
+        "types": {}, "relations": {}, "years": {}, "sides": {},
+        "name_edits": {}, "parentage": {},
+    }
+    result = await ag.human_confirm_node(
+        {
+            "segment_id": "s",
+            "names_to_check": [
+                {"name": "אמנון", "candidates": [{"uuid": "u1", "name": "אמנון", "summary": ""}]}
+            ],
+            "extracted_entities": [
+                {"name": "אמנון", "type": "person", "alternative_type": None, "summary": "s"}
+            ],
+            "proposed_relations": [],
+        }
+    )
+    assert result["entity_resolutions"]["אמנון"]["resolved_name"] == "אמנון"

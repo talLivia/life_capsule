@@ -1149,6 +1149,33 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         }
     )
 
+    # Names the producer corrected outright. Applied BEFORE anything else
+    # reads a name, because two other things are keyed by it.
+    #
+    # The gap this closes: the extractor can be confidently wrong. "אליאן" came
+    # back as "ליאן" — a brand-new name with nothing similar to disambiguate
+    # against, so it raised no identity question and there was no screen on
+    # which it could be fixed. Confidence and correctness are different things.
+    raw_edits = answer.get("name_edits") or {}
+    name_edits = {
+        original: corrected.strip()
+        for original, corrected in raw_edits.items()
+        if isinstance(corrected, str) and corrected.strip() and corrected.strip() != original
+    }
+
+    def corrected_name(name: str) -> str:
+        """The name this entity will actually be WRITTEN under.
+
+        Both kinds of rename, in one place, because everything downstream
+        resolves people by name: a typed correction (`name_edits`) and an
+        identity answer — either "this is the Moshe Cohen you have" or "this
+        is a different אמנון, call them אמנון נחום". A relation endpoint left
+        pointing at the pre-rename name resolves to the wrong row or to
+        nothing, and is dropped with a log line nobody reads.
+        """
+        resolved = (resolutions.get(name) or {}).get("resolved_name")
+        return name_edits.get(name) or resolved or name
+
     resolutions = dict(state.get("entity_resolutions") or {})
     identity_answers = answer.get("identity") or {}
     for question in identity_questions:
@@ -1173,27 +1200,21 @@ async def human_confirm_node(state: AnalysisState) -> dict:
             # up in the extraction panel as two similar names and can be
             # merged later. Defaulting to "same" would silently attribute one
             # person's story to another with nothing in the UI to reveal it.
+            # A DISTINGUISHING NAME, when the producer gave one. Without it
+            # "someone new" about a name that exactly matches an existing
+            # entity cannot be honoured at all: the merge key IS the name, so
+            # the new entity lands on the old row and the archive records the
+            # opposite of what was said. The API requires one for exactly that
+            # case; here it is simply applied when present.
+            distinct = (given.get("new_name") or "").strip()
             resolutions[name] = {
                 "same_as_uuid": None,
-                "resolved_name": corrected_name(name),
+                # name_edits only, deliberately: this loop BUILDS the
+                # resolutions that corrected_name reads, so calling it here
+                # would be circular — and calling it before its own
+                # definition is what crashed this branch outright.
+                "resolved_name": distinct or name_edits.get(name, name),
             }
-
-    # Names the producer corrected outright. Applied BEFORE anything else
-    # reads a name, because two other things are keyed by it.
-    #
-    # The gap this closes: the extractor can be confidently wrong. "אליאן" came
-    # back as "ליאן" — a brand-new name with nothing similar to disambiguate
-    # against, so it raised no identity question and there was no screen on
-    # which it could be fixed. Confidence and correctness are different things.
-    raw_edits = answer.get("name_edits") or {}
-    name_edits = {
-        original: corrected.strip()
-        for original, corrected in raw_edits.items()
-        if isinstance(corrected, str) and corrected.strip() and corrected.strip() != original
-    }
-
-    def corrected_name(name: str) -> str:
-        return name_edits.get(name, name)
 
     # Types: rewrite the extraction the confirmed answer disagrees with, and
     # clear alternative_type either way — the question has been asked, so it

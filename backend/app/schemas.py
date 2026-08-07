@@ -423,6 +423,14 @@ class IdentityAnswer(BaseModel):
     # than one candidate. Validated against that question's own candidates —
     # a uuid from a different question is rejected, not silently applied.
     candidate_uuid: Optional[str] = None
+    # A name that tells this person apart from the one already in the archive.
+    # REQUIRED when saying "someone new" about a name that EXACTLY matches an
+    # existing entity, because the merge key is the name: without a different
+    # one, "this is a different אמנון" is written as "this is the same אמנון",
+    # and the producer is told it saved. Optional otherwise — a bare "משה"
+    # that is not the existing "משה כהן" needs nothing, since the two names
+    # already differ.
+    new_name: Optional[str] = None
 
 
 class ParentageAnswer(BaseModel):

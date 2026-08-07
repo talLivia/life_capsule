@@ -391,7 +391,18 @@ export interface EntityBatchAnswer {
   name_edits?: Record<string, string>
   /** Aunt/uncle name -> the parent they are a sibling of. Skippable. */
   sides?: Record<string, string>
-  identity: Record<string, { same_as_existing: boolean; candidate_uuid?: string }>
+  identity: Record<
+    string,
+    {
+      same_as_existing: boolean
+      candidate_uuid?: string
+      /** A name telling this person apart from the one already in the
+       *  archive. REQUIRED when saying "someone new" about a name that
+       *  exactly matches an existing entity — the merge key is the name, so
+       *  without a different one the two silently become one person. */
+      new_name?: string
+    }
+  >
   types: Record<string, string>
 }
 

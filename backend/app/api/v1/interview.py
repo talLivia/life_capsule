@@ -34,6 +34,7 @@ from app.schemas import (
     SegmentPresignResponse,
 )
 from app.services import entity_extraction, gate_answers, interview_flow
+from app.services.entity_names import normalize_entity_name
 from app.services.gate_answers import InvalidGateAnswer
 from app.services.storage import storage_service
 from app.services.tts import tts_service
@@ -697,6 +698,19 @@ async def list_pending_confirmations(
     ]
 
 
+async def _name_is_taken(db: AsyncSession, producer_id: str, normalized: str) -> bool:
+    """Does this producer already have an entity under this merge key?"""
+    found = (
+        await db.execute(
+            select(Entity.id).where(
+                Entity.producer_id == producer_id,
+                Entity.normalized_name == normalized,
+            )
+        )
+    ).scalars().first()
+    return found is not None
+
+
 @router.post(
     "/segments/{segment_id}/confirm-entities", response_model=ConfirmEntitiesResponse
 )
@@ -810,9 +824,57 @@ async def confirm_entities(
                     status_code=400,
                     detail=f'candidate_uuid for "{name}" must be one of its own candidates',
                 )
+        new_name = (answer.new_name or "").strip()
+        if not answer.same_as_existing:
+            # "SOMEONE NEW" ABOUT AN IDENTICAL NAME NEEDS A DIFFERENT ONE.
+            #
+            # The merge key is UNIQUE (producer_id, normalized_name), so an
+            # entity written under the same name lands on the existing row.
+            # Without a distinguishing name the producer says "this is a
+            # different אמנון" and the archive records "this is the same
+            # אמנון" — accepted, reported as saved, and structurally the
+            # opposite of the answer. That is how one row came to hold both an
+            # uncle and an army friend.
+            #
+            # Only when the names MATCH. A bare "משה" that is not the existing
+            # "משה כהן" already has a different merge key and needs nothing.
+            collides = any(
+                normalize_entity_name(c["name"]) == normalize_entity_name(name)
+                for c in candidates
+            )
+            if collides and not new_name:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f'"{name}" is already someone in your archive. To record a '
+                        f"different person with that name, give a name that tells "
+                        f"them apart."
+                    ),
+                )
+            if new_name:
+                key = normalize_entity_name(new_name)
+                if not key:
+                    raise HTTPException(
+                        status_code=400, detail="That name cannot be used."
+                    )
+                if key == normalize_entity_name(name) or await _name_is_taken(
+                    db, user.id, key
+                ):
+                    # Checked against the whole archive, not just this
+                    # question's candidates: any collision merges them, and
+                    # the point of this answer is that they must not merge.
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f'"{new_name}" is already someone in your archive — '
+                            f"pick a name that is not taken."
+                        ),
+                    )
+
         identity[name] = {
             "same_as_existing": answer.same_as_existing,
             "candidate_uuid": candidate_uuid,
+            "new_name": new_name or None,
         }
 
     for name, chosen in payload.types.items():

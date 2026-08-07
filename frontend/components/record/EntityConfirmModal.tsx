@@ -148,6 +148,12 @@ export function EntityConfirmModal({
   // proposals the producer opened "Not quite" on; an edited proposal is
   // stored as corrected without also needing its tick.
   const [relationEdits, setRelationEdits] = useState<Record<number, RelationEdit>>({})
+  // A name telling a new person apart from the one already in the archive.
+  // Only asked for when the extracted name EXACTLY matches a candidate: the
+  // merge key is the name, so without a different one "a different אמנון" is
+  // stored as "the same אמנון" — which is how one row came to hold both an
+  // uncle and an army friend.
+  const [distinctNames, setDistinctNames] = useState<Record<string, string>>({})
   const [answering, setAnswering] = useState(false)
 
   // Escape leaves, except mid-submit — closing on a request already in flight
@@ -180,6 +186,7 @@ export function EntityConfirmModal({
     setNameEdits({})
     setSides({})
     setRelationEdits({})
+    setDistinctNames({})
   }, [pending?.segment_id])
 
   const identityQuestions = useMemo(
@@ -329,9 +336,21 @@ export function EntityConfirmModal({
   const brokenEdit = Object.values(relationEdits).some(
     edit => edit.from_name === edit.to_name,
   )
+  // "Someone new" about a name that EXACTLY matches an existing person is not
+  // a complete answer: the merge key is the name, so storing it as given would
+  // record the opposite of what was said. The server refuses it too — blocked
+  // here so the empty field is on screen when it is pointed at, rather than
+  // arriving as a 422 after the whole form is submitted.
+  const missingDistinctName = identityQuestions.some(
+    (q) =>
+      identity[q.name] === NEW_ENTITY &&
+      q.candidates.some((c) => c.name.trim() === q.name.trim()) &&
+      !(distinctNames[q.name] ?? '').trim(),
+  )
   const allAnswered =
     identityQuestions.every((q) => identity[q.name]) &&
     typeQuestions.every((q) => types[q.name]) &&
+    !missingDistinctName &&
     !brokenEdit
   const answeredCount =
     identityQuestions.filter((q) => identity[q.name]).length +
@@ -354,7 +373,10 @@ export function EntityConfirmModal({
             return [
               q.name,
               choice === NEW_ENTITY
-                ? { same_as_existing: false }
+                ? {
+                    same_as_existing: false,
+                    new_name: (distinctNames[q.name] ?? '').trim() || undefined,
+                  }
                 : { same_as_existing: true, candidate_uuid: choice },
             ]
           }),
@@ -635,6 +657,44 @@ export function EntityConfirmModal({
                         : 'Someone new, not listed'}
                     </span>
                   </button>
+
+                  {/* A DIFFERENT PERSON WITH THE SAME NAME NEEDS A DIFFERENT
+                      NAME. The merge key is the name, so without one the
+                      archive stores "the same person" — which is how a single
+                      row came to hold both an uncle and an army friend.
+                      Only when a candidate's name matches exactly: a bare
+                      "משה" that is not "משה כהן" already has its own key. */}
+                  {identity[group.name] === NEW_ENTITY &&
+                    group.identity.candidates.some(
+                      (c) => c.name.trim() === group.name.trim(),
+                    ) && (
+                      <div className="flex flex-col gap-1 pl-1">
+                        <label
+                          htmlFor={`distinct-${group.name}`}
+                          className="text-xs text-gray-400"
+                        >
+                          What should I call this one, to tell them apart?
+                        </label>
+                        <input
+                          id={`distinct-${group.name}`}
+                          type="text"
+                          dir="auto"
+                          value={distinctNames[group.name] ?? ''}
+                          onChange={(e) =>
+                            setDistinctNames((current) => ({
+                              ...current,
+                              [group.name]: e.target.value,
+                            }))
+                          }
+                          disabled={answering}
+                          placeholder={`e.g. ${group.name} ...`}
+                          className="w-64 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
+                        />
+                        <span className="text-[11px] text-gray-500">
+                          Required — otherwise they would be saved as the same person.
+                        </span>
+                      </div>
+                    )}
                 </fieldset>
               )}
 
@@ -1093,7 +1153,13 @@ export function EntityConfirmModal({
                 'Everything here is optional'
               : allAnswered
                 ? 'All answered'
-                : `${answeredCount} of ${requiredCount} answered`}
+                : // Every question can be answered and the button still be
+                  // disabled — a missing distinguishing name is not a question
+                  // and would otherwise read as "3 of 3 answered" beside a
+                  // dead button.
+                  missingDistinctName && answeredCount === requiredCount
+                  ? 'Needs a name to tell them apart'
+                  : `${answeredCount} of ${requiredCount} answered`}
           </span>
           <button
             type="button"
