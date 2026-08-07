@@ -305,3 +305,55 @@ async def test_the_tree_endpoint_serialises_a_hand_made_edge(client, db_session,
     edges = response.json()["edges"]
     hand_made = [e for e in edges if e["source_segment_id"] is None]
     assert len(hand_made) == 1, "a hand-made edge has no recording, and must still serialise"
+
+
+async def test_a_contradiction_with_a_DIFFERENT_pair_is_replaced(db_session, archive):
+    """The bug that made this look broken on the live archive.
+
+    Told "יוסף is רז's child", the edges that disagree are יוסף's SIBLING edge
+    to the producer and his parent edges from אילנה and צבי — none of which
+    involve רז. A replacement scoped to the two people named finds nothing, so
+    nothing is removed, the tree keeps its first placement and the edit appears
+    to have silently failed.
+    """
+    # Raz is the producer's sibling, so Raz sits at generation 0.
+    await archive["relate"](archive["raz"], "sibling", archive["root"])
+    # Chen is placed at generation 0 too — as a sibling AND via a parent.
+    await archive["relate"](archive["chen"], "sibling", archive["root"])
+    await archive["relate"](archive["tzvi"], "parent", archive["chen"])
+    await archive["relate"](archive["tzvi"], "parent", archive["root"])
+
+    result = await entity_store.set_relation_by_hand(
+        db_session,
+        producer_id=archive["user"].id,
+        from_entity_id=archive["chen"].id,
+        to_entity_id=archive["raz"].id,
+        relation_type="child",
+    )
+
+    replaced = {r["relation_type"] for r in result["replaced"]}
+    assert "sibling" in replaced, "the sibling edge to the producer put Chen a generation too high"
+    assert "parent" in replaced, "so did the parent edge from Tzvi"
+
+    # And Tzvi's OWN placement is untouched — the edit was about Chen.
+    from app.services import family_tree
+
+    generations = await family_tree.generations_for(db_session, archive["user"].id)
+    assert generations[archive["chen"].id] == 1, "Chen is now Raz's child, a generation below"
+    assert generations[archive["tzvi"].id] == -1
+
+
+async def test_saving_the_same_relation_twice_does_not_duplicate_it(db_session, archive):
+    """Clicking Save again when nothing appeared to happen is exactly what a
+    producer does — the live archive ended up with three identical rows."""
+    for _ in range(3):
+        await entity_store.set_relation_by_hand(
+            db_session,
+            producer_id=archive["user"].id,
+            from_entity_id=archive["chen"].id,
+            to_entity_id=archive["raz"].id,
+            relation_type="child",
+        )
+
+    edges = await _edges(db_session, archive["chen"], archive["raz"])
+    assert len(edges) == 1, "one statement, one row, however many times it is saved"

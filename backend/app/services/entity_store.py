@@ -620,8 +620,21 @@ async def set_relation_by_hand(
     type added to the lookup table later is covered without editing this
     function. That is the whole reason `relation_types` is a table.
 
-    Scoped to edges between THESE TWO PEOPLE. "חן is רז's child" says nothing
-    about who רז's parents are, and must not disturb them.
+    WHAT GETS REPLACED IS ABOUT THE PERSON, NOT THE PAIR — and getting that
+    wrong is what made the first version of this look broken. Scoping the
+    replacement to edges between the two people named misses the contradiction
+    almost every time: told "יוסף is רז's child", the edges that disagree are
+    יוסף's SIBLING edge to the producer and his parent edges from אילנה and
+    צבי, none of which involve רז at all. Nothing was replaced, the tree kept
+    its first placement, and the edit looked like it had silently failed.
+
+    So the rule is: `from_entity_id` is the person being placed, and every
+    existing edge that implies a DIFFERENT generation for them is removed.
+    Generations are read from the tree as it stands, so "different" means
+    different from where this edit puts them, not different in the abstract.
+
+    The other end is untouched: "יוסף is רז's child" says nothing about who
+    רז's own parents are.
     """
     if from_entity_id == to_entity_id:
         raise ValueError("A relation needs two different people.")
@@ -645,37 +658,94 @@ async def set_relation_by_hand(
     if wanted is None:
         raise ValueError(f"{relation_type!r} is not a relation this archive knows.")
 
-    # Every edge currently joining this pair, in either direction.
+    # Where everyone currently sits, from the tree as it stands. The
+    # replacement is decided against real placements, not against relation
+    # types in the abstract — "different generation" only means anything
+    # relative to somebody.
+    from app.services import family_tree
+
+    generations = await family_tree.generations_for(db, producer_id)
+    anchor_generation = generations.get(to_entity_id)
+    target_generation = (
+        None
+        if anchor_generation is None or wanted.generation_delta is None
+        # `from` is the subject: "<from> is the <type> of <to>", and the delta
+        # is stated from the subject's side.
+        else anchor_generation - wanted.generation_delta
+    )
+
+    # Every edge touching the person being placed, in either direction.
     existing = (
         await db.execute(
             select(EntityRelation, RelationType)
             .join(RelationType, RelationType.relation_type == EntityRelation.relation_type)
             .where(
-                (
-                    (EntityRelation.from_entity_id == from_entity_id)
-                    & (EntityRelation.to_entity_id == to_entity_id)
-                )
-                | (
-                    (EntityRelation.from_entity_id == to_entity_id)
-                    & (EntityRelation.to_entity_id == from_entity_id)
-                )
+                (EntityRelation.from_entity_id == from_entity_id)
+                | (EntityRelation.to_entity_id == from_entity_id)
             )
         )
     ).all()
 
     replaced: List[Dict[str, Any]] = []
     for relation, rtype in existing:
-        # The delta AS SEEN from the new edge's direction, so a stored
-        # `child` and a new `parent` between the same pair are recognised as
-        # the same claim rather than as a conflict.
-        delta = rtype.generation_delta
-        if delta is not None and relation.from_entity_id == to_entity_id:
-            delta = -delta
-        if delta is not None and delta == wanted.generation_delta:
-            # Same claim about where they sit. Keep it — replacing a true
-            # statement with an equivalent one would lose the recording it
-            # came from for nothing.
+        other_id = (
+            relation.to_entity_id
+            if relation.from_entity_id == from_entity_id
+            else relation.from_entity_id
+        )
+        if other_id == to_entity_id:
+            # SAME PAIR. Decided on the relation types alone, not on where the
+            # two are placed: "Raz is Chen's sibling" and "Raz is Chen's
+            # parent" contradict each other whether or not either has a path
+            # to the root, and a producer editing two unplaced people is
+            # exactly who needs this to work.
+            pair_delta = rtype.generation_delta
+            if pair_delta is not None and relation.from_entity_id == to_entity_id:
+                pair_delta = -pair_delta
+            equivalent = (
+                pair_delta is not None
+                and wanted.generation_delta is not None
+                and pair_delta == wanted.generation_delta
+                # An identical restatement is still replaced rather than
+                # duplicated — clicking Save again when nothing appeared to
+                # happen is exactly what a producer does.
+                and relation.relation_type != relation_type
+            )
+            if equivalent:
+                continue
+            replaced.append(
+                {
+                    "relation_type": relation.relation_type,
+                    "origin": relation.origin,
+                    "source_segment_id": relation.source_segment_id,
+                }
+            )
+            await db.delete(relation)
             continue
+
+        other_generation = generations.get(other_id)
+        if (
+            target_generation is None
+            or other_generation is None
+            or rtype.generation_delta is None
+        ):
+            # Nothing placed either end, so this edge makes no claim that can
+            # disagree. Left alone rather than guessed at — the tree's own rule.
+            continue
+
+        # What generation this edge implies for the person being placed.
+        delta = rtype.generation_delta
+        implied = (
+            other_generation - delta
+            if relation.from_entity_id == from_entity_id
+            else other_generation + delta
+        )
+        if implied == target_generation:
+            # Agrees with where this edit puts them. Keep it — replacing a
+            # true statement with an equivalent one would lose the recording
+            # it came from for nothing.
+            continue
+
         replaced.append(
             {
                 "relation_type": relation.relation_type,

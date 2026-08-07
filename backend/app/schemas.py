@@ -461,19 +461,6 @@ class SetRelationRequest(BaseModel):
     direction: Literal["outgoing", "incoming"] = "outgoing"
 
 
-class TranscriptCorrectionRequest(BaseModel):
-    """A word the machine misheard, and what it should have been.
-
-    Same word count both sides, enforced in the service. Every word is
-    anchored to the moment it was said and a clip is cut on those moments, so
-    an added word has no time to occupy — this corrects what was HEARD, never
-    what was said.
-    """
-
-    old: str = Field(min_length=1)
-    new: str = Field(min_length=1)
-
-
 class RelationEdit(BaseModel):
     """A proposed relation, as the producer says it actually is.
 

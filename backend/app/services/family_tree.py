@@ -154,6 +154,26 @@ def _assign_generations(
     return generation, contradictions
 
 
+async def generations_for(db: AsyncSession, producer_id: str) -> Dict[str, int]:
+    """Where each person currently sits, by entity id.
+
+    The same breadth-first placement the page draws, exposed on its own so a
+    WRITE can ask "which generation is this person in right now?" without
+    building a whole tree view. Anyone with no path to the root is absent
+    rather than defaulted — the tree never guesses, and a caller must be able
+    to tell "generation 0" from "nowhere".
+    """
+    root = (
+        await db.execute(
+            select(Entity.id).where(Entity.producer_id == producer_id, Entity.is_self)
+        )
+    ).scalars().first()
+    if root is None:
+        return {}
+    generation, _ = _assign_generations(root, await _load_edges(db, producer_id))
+    return generation
+
+
 async def build_tree(db: AsyncSession, producer_id: str) -> Dict[str, Any]:
     """Nodes, edges and generation rows for one producer's family tree."""
     nodes = await _load_nodes(db, producer_id)
