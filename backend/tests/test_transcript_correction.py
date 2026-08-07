@@ -9,12 +9,24 @@ for.
 """
 
 import pytest
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, Mock
 
 from app.models import InterviewSession, RawSegment, TranscriptChunk, User
 from app.services import transcript_correction as tc
 from app.services.transcript_correction import CorrectionRefused
 
 pytestmark = pytest.mark.asyncio
+
+
+def _Session(session):
+    """finalize_ingest opens its own session; hand it the test's."""
+
+    @asynccontextmanager
+    async def _cm():
+        yield session
+
+    return _cm()
 
 
 @pytest.fixture
@@ -193,3 +205,49 @@ async def test_punctuation_around_the_word_survives(db_session, recording):
         )
     ).first()
     assert after.text == "אצל סבתא יוכבד,"
+
+
+async def test_the_confirmation_screens_name_edit_reaches_the_transcript(
+    db_session, recording, monkeypatch
+):
+    """ONE place a name gets corrected.
+
+    The confirmation screen's name field renamed the ENTITY and stopped there,
+    so the tree said אליאן while every clip still displayed and searched ליאן
+    — /talk builds its units from word_timestamps and never reads the entity
+    table. finalize_ingest now applies the same edit to the transcript, so the
+    producer corrects a name once and it lands everywhere.
+    """
+    import app.analysis_graph as ag
+    from app.models import TranscriptChunk
+
+    monkeypatch.setattr(
+        ag.entity_store, "write_segment_entities", AsyncMock(return_value=Mock(
+            entities_created=0, entities_matched=0, mentions_written=0,
+            orphans_removed=0, needs_confirmation=[], type_changes=[],
+        ))
+    )
+    monkeypatch.setattr(ag.entity_store, "write_segment_relations", AsyncMock(return_value=0))
+    monkeypatch.setattr(ag, "AsyncSessionLocal", lambda: _Session(db_session))
+
+    await ag.finalize_ingest_node(
+        {
+            "segment_id": recording.id,
+            "group_id": "u-tc",
+            "extracted_entities": [],
+            "proposed_relations": [],
+            # What the producer typed into the existing name field.
+            "name_edits": {"יוכרת": "יוכבד"},
+        }
+    )
+
+    chunk = (
+        await db_session.execute(
+            TranscriptChunk.__table__.select().where(
+                TranscriptChunk.raw_segment_id == recording.id,
+                TranscriptChunk.sequence_index == 0,
+            )
+        )
+    ).first()
+    assert "יוכבד" in chunk.text, "the correction must reach what /talk reads"
+    assert [w["word"] for w in chunk.word_timestamps] == ["אצל", "סבתא", "יוכבד"]

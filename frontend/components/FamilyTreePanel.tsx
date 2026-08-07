@@ -106,7 +106,6 @@ function RelationEditor({
   types: { value: string; label: string }[]
   onSaved: () => void
 }) {
-  const [open, setOpen] = useState(false)
   const [relationType, setRelationType] = useState('')
   const [otherId, setOtherId] = useState('')
   const [saving, setSaving] = useState(false)
@@ -130,7 +129,6 @@ function RelationEditor({
           ? `Saved — the ${result.replaced[0].relation_type} link was replaced`
           : 'Saved',
       )
-      setOpen(false)
       setRelationType('')
       setOtherId('')
       onSaved()
@@ -142,20 +140,9 @@ function RelationEditor({
     }
   }
 
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="self-start text-xs text-primary-300 hover:text-primary-200"
-      >
-        Set how {person.name} is related
-      </button>
-    )
-  }
-
   return (
     <div className="flex flex-col gap-2 p-3 rounded-xl border border-primary-500/30 bg-primary-500/5">
+      <p className="text-xs font-semibold text-primary-200">How are they related?</p>
       <div className="flex flex-wrap items-center gap-2 text-sm text-white">
         <span dir="auto" className="font-medium">{person.name}</span>
         <span className="text-gray-400">is the</span>
@@ -203,14 +190,6 @@ function RelationEditor({
           className="btn-primary py-1.5 text-xs disabled:opacity-40"
         >
           {saving ? <Loader2 size={13} className="animate-spin" /> : 'Save'}
-        </button>
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          disabled={saving}
-          className="text-xs text-gray-400 hover:text-white"
-        >
-          Cancel
         </button>
       </div>
     </div>
