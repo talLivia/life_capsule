@@ -1462,3 +1462,4 @@ async def test_a_crash_never_downgrades_a_finished_segment(
     db_session.expire_all()
     await db_session.refresh(segment)
     assert segment.status == "ready"
+

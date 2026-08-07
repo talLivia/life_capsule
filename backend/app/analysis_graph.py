@@ -80,7 +80,7 @@ from sqlalchemy import delete, select, update
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import InterviewSession, RawSegment, TranscriptChunk, User
-from app.services import embeddings, entity_extraction, entity_store, transcript_correction
+from app.services import embeddings, entity_extraction, entity_store
 from app.services.entity_extraction import ExtractedEntity, ExtractedRelation
 from app.services.entity_names import names_are_similar as _names_are_similar
 from app.services.entity_names import normalize_entity_name
@@ -1446,11 +1446,6 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         "names_to_check": [],
         "entity_resolutions": resolutions,
         "extracted_entities": entities,
-        # Carried through so finalize can correct the TRANSCRIPT too, not just
-        # the entity. Renaming the entity alone leaves the tree saying אליאן
-        # while every clip still displays and searches ליאן — /talk builds its
-        # units from word_timestamps and never reads the entity table.
-        "name_edits": name_edits,
         # Overwritten with the accepted subset, so finalize_ingest writes
         # exactly what the producer approved and nothing else.
         "proposed_relations": accepted,
@@ -1571,40 +1566,6 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
                     answers=parentage.get("answers") or {},
                     not_sibling_names=parentage.get("not_sibling_names") or [],
                 )
-
-            # THE SAME CORRECTION, EVERYWHERE THE NAME LIVES.
-            #
-            # Renaming the entity is only half of it. `/talk` builds every
-            # unit's text and play range from `word_timestamps` and never
-            # reads the entity table, so a name fixed on the screen alone
-            # leaves the tree saying אליאן while every clip still displays and
-            # searches ליאן. The producer corrects a name ONCE, on the
-            # confirmation screen, and it reaches the entity, the tree AND the
-            # transcript their family hears.
-            #
-            # Same word count only, which is what a misheard name almost
-            # always is — every word is anchored to the moment it was said and
-            # a clip is cut on those moments, so a replacement of a different
-            # length has nowhere to sit. A longer correction still renames the
-            # entity; it just cannot reach the audio's own record.
-            #
-            # Fail-soft, like every other step here: the recording and its
-            # entities are already saved, and losing a text correction costs
-            # far less than failing an ingest over it.
-            for original, corrected in (state.get("name_edits") or {}).items():
-                try:
-                    await transcript_correction.correct_token(
-                        db, segment_id=segment_id, old=original, new=corrected
-                    )
-                except transcript_correction.CorrectionRefused as refused:
-                    logger.info(
-                        f"Name correction {original!r} -> {corrected!r} did not reach "
-                        f"the transcript: {refused}"
-                    )
-                except Exception:
-                    logger.exception(
-                        f"Correcting {original!r} in the transcript of {segment_id} failed"
-                    )
 
             # ONE commit for the entities AND the status. entity_store
             # deliberately does not commit, so a recording can never be marked
