@@ -256,16 +256,23 @@ ENTITY MAP (entity name -> the RECORDINGS that mention it):
 # conflation being fixed: the conflation affects questions about one name,
 # over-asking affects every question.
 #
-# THIS TEXT HAS A MEASURED SIDE EFFECT ON A QUESTION IT HAS NOTHING TO DO
-# WITH. Isolated n=6, varying tag and instruction independently: the tags do
-# nothing to `army-narrow` on their own (u11,u12 either way), while THIS BLOCK
-# alone broadens it to u11-u14 — pulling in "I had good friends there", a unit
-# containing no name and carrying no tag. The prime suspect is the example
-# below, "my friend from the army", sitting in the prompt while the question
-# asks what role you served in; that is a hypothesis and has NOT been tested
-# (see docs/ENTITY_DISAMBIGUATION.md §8.3). Reword the examples here only with
-# a measured before/after, and expect the wording to matter more than it
-# looks.
+# THE EXAMPLES BELOW ARE LOAD-BEARING IN A DIRECTION NOBODY WOULD PREDICT.
+# Isolated n=6, varying tag and instruction independently: the tags do nothing
+# to `army-narrow` on their own (u11,u12 either way), while THIS BLOCK alone
+# broadens it to u11-u14 — pulling in "I had good friends there", a unit with
+# no name in it and no tag on it. The cause is the example "my friend from the
+# army" sitting in the prompt while the question asks what role you served in;
+# swapping it for "my neighbour" restores u11,u12 at 6/6.
+#
+# That swap was NOT made, because it costs more than it fixes: `school` drops
+# from 8 units to 0 (4/4), losing a real answer about which schools he
+# attended. Three of the four configurations tried do that. All five same-name
+# cases are identical across the examples, so this wording moves ONLY the
+# collateral — and this setting is the best of the four measured.
+#
+# Reword only with a measured before/after on BOTH sides, and note that the
+# clarification gate stayed green through every one of the broken variants.
+# See docs/ENTITY_DISAMBIGUATION.md §8.3 for the full table.
 _DISAMBIGUATION_BLOCK = """
 TWO PEOPLE WITH THE SAME NAME (this archive has some):
 Some names in the transcript are followed by a tag in square brackets naming WHICH person that recording is about, e.g. "אמנון [אמנון נחום: דוד של הדובר מצד אבא]". The tag is an annotation added for you - it is NOT part of what the person said, is not in the video, and must never appear in a follow-up question or anywhere in your output.

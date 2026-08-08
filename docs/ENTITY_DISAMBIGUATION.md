@@ -358,20 +358,58 @@ Two corrections to what was reported before this was isolated: condition 4 is
 NOT stable (5/6, not 5/5 — a wider n found the variance), and the placement
 choice was made on a mechanism that turned out to be wrong.
 
-**Untested hypothesis, recorded so it is not re-derived.** The block's own
-example of a question that identifies which person is meant reads: names their
-role ("my uncle", "my friend from the army"). `army-narrow` asks what role you
-served in. That phrase is the obvious candidate for priming the friend units
-into a role question, and swapping it for a neutral one is a five-minute
-experiment. It was written and not run — the Gemini account's prepayment
-credits were exhausted mid-measurement. **Do this before accepting the cost or
-switching placement**: if the example is the cause, neither trade-off is
-necessary.
+**The cause is the block's own EXAMPLE, and that is confirmed.** The text
+reads: names their role ("my uncle", "my friend from the army"). `army-narrow`
+asks what role you served in. Swapping four words, tags on in both arms:
 
-The §6.1 header placement was measured as the alternative: it fixes
-`army-narrow` (2 units, 6/6) and keeps all five same-name cases, but `school`
-goes 8 -> 0 (5/5). Each placement costs exactly one question. Shipped inline;
-that choice should be revisited once the example-phrase experiment has run.
+```
+army-narrow   example "my friend from the army"   u11-u14   6/6
+              example "my neighbour"              u11,u12   6/6
+army control  both examples                       u11-u14   6/6
+```
+
+So the phrase primes "I had good friends there" into being read as
+role-relevant. Nothing to do with אמנון, who does not appear in the question.
+
+**And the fix costs more than the bug.** Confirmed at n=4 per case per arm,
+with retries and a hard failure on exhausted retries — an earlier pass on this
+same comparison was destroyed by 429s that fail-soft turned into "0 units, no
+clarify", which reads exactly like a result:
+
+```
+                       "my friend from the army"        "my neighbour"
+ambiguous              clarify 4/4                      clarify 4/4
+specific-by-name       uncle,  5 units                  uncle,  5 units
+specific-by-role       uncle,  5 units                  uncle,  5 units
+resolved-by-context    friend, 4 units                  friend, 4 units
+resolved-by-history    friend, 8 units                  friend, 8 units
+army-narrow            u11-u14  (broadened)             u11,u12   FIXED
+school                 8 units                          0 units   LOST
+brothers / family / army                identical in both arms
+```
+
+`school`'s eight units are genuinely about schooling — "I studied at Erlich
+school from grade 1 to 6, then moved to Tachkemoni, then to Hakfar Hayarok" —
+so 0 is a real loss, not a stricter reading of a question the archive cannot
+answer.
+
+**Every variant measured costs exactly one question, and it is always the same
+two.** Four configurations tried: shipped inline (`school` 8, `army-narrow` 4),
+neutral example (`school` 0, `army-narrow` 2), §6.1 header placement (`school`
+0, `army-narrow` 2), and clarify-rule-at-end-of-Rules (`school` 0, plus worse).
+The shipped one is the only one that keeps `school`, and losing a whole answer
+is worse than gaining two units on a narrow question.
+
+Note what the same table shows about the feature itself: all five same-name
+cases are IDENTICAL across both examples. The disambiguation behaviour is
+insensitive to this wording; only the collateral moves. So the wording is a
+pure collateral-damage knob, and the shipped setting is the best of four
+measured.
+
+**Do not reword this block without re-running both sides.** The example phrase
+is load-bearing in a direction nobody would predict from reading it, and three
+of the four configurations tried silently destroyed an unrelated answer while
+leaving the clarification gate green.
 
 ## 8.4 Unrelated defect found while tracing, NOT fixed
 
