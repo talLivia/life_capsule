@@ -255,6 +255,17 @@ ENTITY MAP (entity name -> the RECORDINGS that mention it):
 # asking when the answer was already obvious, and that is worse than the
 # conflation being fixed: the conflation affects questions about one name,
 # over-asking affects every question.
+#
+# THIS TEXT HAS A MEASURED SIDE EFFECT ON A QUESTION IT HAS NOTHING TO DO
+# WITH. Isolated n=6, varying tag and instruction independently: the tags do
+# nothing to `army-narrow` on their own (u11,u12 either way), while THIS BLOCK
+# alone broadens it to u11-u14 — pulling in "I had good friends there", a unit
+# containing no name and carrying no tag. The prime suspect is the example
+# below, "my friend from the army", sitting in the prompt while the question
+# asks what role you served in; that is a hypothesis and has NOT been tested
+# (see docs/ENTITY_DISAMBIGUATION.md §8.3). Reword the examples here only with
+# a measured before/after, and expect the wording to matter more than it
+# looks.
 _DISAMBIGUATION_BLOCK = """
 TWO PEOPLE WITH THE SAME NAME (this archive has some):
 Some names in the transcript are followed by a tag in square brackets naming WHICH person that recording is about, e.g. "אמנון [אמנון נחום: דוד של הדובר מצד אבא]". The tag is an annotation added for you - it is NOT part of what the person said, is not in the video, and must never appear in a follow-up question or anywhere in your output.

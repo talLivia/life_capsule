@@ -327,20 +327,51 @@ case whose answer is not in the archive measures over-reach, not
 disambiguation — the pre-feature arm "passed" it by returning the SPEAKER's own
 service in answer to a question about someone else.
 
-### The one accepted cost
+### The one accepted cost — and what actually causes it
 
 `army-narrow` ("באיזה תפקיד שירתת בצבא?") broadens from `u11,u12` to `u11-u14`,
 picking up "I had good friends there" and "there's אמנון, still my friend".
-Stable 5/5 in BOTH arms, so this is a real effect and not the run-to-run
-variance CLAUDE.md documents for this question. The tag makes אמנון salient
-enough to pull those units into a role question, and that is the
-narrow-vs-broad discrimination CLAUDE.md calls "the mechanism, not a tuning
-detail".
+
+**THE FIRST EXPLANATION HERE WAS WRONG.** It said the tag makes אמנון salient
+enough to pull those units into a role question. That was asserted, not
+measured, and it does not survive the obvious objection: `u13` is
+"והיה לי שם חברים טובים שהכרתי" — it contains no name at all, carries no tag,
+and is byte-identical in both arms. A tag on `u14` cannot explain `u13` moving.
+
+Isolated properly, n=6 per condition, tag and instruction varied independently:
+
+```
+1  no tag, no instruction          u11,u12       6/6
+2  no tag, INSTRUCTION only        u11-u14       6/6   <- broadens
+3  inline tag, no instruction      u11,u12       6/6   <- tag alone: NO effect
+4  inline tag + instruction        u11-u14 5/6, u11,u12 1/6
+5  header tag + instruction        u11,u12       6/6   <- suppresses it
+
+control "מה עשית בצבא?"            u11-u14 in all five conditions
+```
+
+So the cause is the INSTRUCTION TEXT, not the annotation. The tag has no
+measurable effect on this question in either direction; the block does it on
+its own, and the header placement happens to cancel it.
+
+Two corrections to what was reported before this was isolated: condition 4 is
+NOT stable (5/6, not 5/5 — a wider n found the variance), and the placement
+choice was made on a mechanism that turned out to be wrong.
+
+**Untested hypothesis, recorded so it is not re-derived.** The block's own
+example of a question that identifies which person is meant reads: names their
+role ("my uncle", "my friend from the army"). `army-narrow` asks what role you
+served in. That phrase is the obvious candidate for priming the friend units
+into a role question, and swapping it for a neutral one is a five-minute
+experiment. It was written and not run — the Gemini account's prepayment
+credits were exhausted mid-measurement. **Do this before accepting the cost or
+switching placement**: if the example is the cause, neither trade-off is
+necessary.
 
 The §6.1 header placement was measured as the alternative: it fixes
-`army-narrow` (2 units, 5/5) and keeps all five same-name cases, but `school`
-goes 8 -> 0 (5/5). Each placement costs exactly one question. Inline's cost is
-two extra units; the header's is a whole answer. Shipped inline, knowingly.
+`army-narrow` (2 units, 6/6) and keeps all five same-name cases, but `school`
+goes 8 -> 0 (5/5). Each placement costs exactly one question. Shipped inline;
+that choice should be revisited once the example-phrase experiment has run.
 
 ## 8.4 Unrelated defect found while tracing, NOT fixed
 
