@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import InterviewSession, RawSegment, TranscriptChunk
+from app.services import entity_store
 from app.services import full_archive_retrieval as ar
 from app.services import retrieval_service
 from app.services.response_assembler import NO_STORY_FALLBACK
@@ -460,7 +461,7 @@ async def test_read_and_validate_ranges_no_answer_returns_empty(monkeypatch):
     monkeypatch.setattr(ar, "_load_archive", AsyncMock(return_value=archive))
     monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={}))
     monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
-    monkeypatch.setattr(ar, "_read_archive_for_ranges", AsyncMock(return_value=([], None)))
+    monkeypatch.setattr(ar, "_read_archive_for_ranges", AsyncMock(return_value=([], None, None)))
 
     result = await ar.read_and_validate_ranges("q", "group", "he", "sess")
     assert result == []
@@ -474,7 +475,7 @@ async def test_read_and_validate_ranges_happy_path_returns_validated_clips(monke
     monkeypatch.setattr(
         ar,
         "_read_archive_for_ranges",
-        AsyncMock(return_value=(["u1"], None)),
+        AsyncMock(return_value=(["u1"], None, None)),
     )
 
     result = await ar.read_and_validate_ranges("q", "group", "he", "sess")
@@ -612,7 +613,7 @@ async def test_read_archive_for_ranges_fails_soft_on_llm_error(monkeypatch):
         ar.llm_service, "generate_response", AsyncMock(side_effect=RuntimeError("down"))
     )
     result = await ar._read_archive_for_ranges("q", "T", "E", "", "he")
-    assert result == ([], None)  # (unit_ids, follow_up) — fail-soft on both
+    assert result == ([], None, None)  # (unit_ids, follow_up, clarify) — fail-soft on all three
 
 
 # ── already-shown handling (visited-set wired into v2) ───────────────────────
@@ -812,8 +813,8 @@ async def test_archive_bundle_reuses_cache_when_version_unchanged(monkeypatch):
     monkeypatch.setattr(ar, "_load_archive", fake_load)
     monkeypatch.setattr(ar, "_build_entity_map", fake_entities)
 
-    a1, e1, u1 = await ar._archive_bundle("group-1")
-    a2, e2, u2 = await ar._archive_bundle("group-1")
+    a1, e1, u1, t1 = await ar._archive_bundle("group-1")
+    a2, e2, u2, t2 = await ar._archive_bundle("group-1")
 
     assert loads == {"archive": 1, "entities": 1}, "second call must not rebuild"
     assert a1 is a2 and e1 is e2 and u1 is u2
@@ -882,8 +883,8 @@ async def test_archive_bundle_rebuilds_when_version_check_fails(monkeypatch):
 async def test_empty_archive_is_not_cached(monkeypatch):
     monkeypatch.setattr(ar, "_archive_version", AsyncMock(return_value=(0, "t", "t")))
     monkeypatch.setattr(ar, "_load_archive", AsyncMock(return_value=[]))
-    a, e, u = await ar._archive_bundle("group-empty")
-    assert (a, e, u) == ([], {}, [])
+    a, e, u, t = await ar._archive_bundle("group-empty")
+    assert (a, e, u, t) == ([], {}, [], {})
     assert "group-empty" not in ar._ARCHIVE_CACHE
 
 
@@ -1063,3 +1064,193 @@ def test_units_keep_playback_order_within_a_question():
     units = ar._build_units(archive)
     order = [u.segment_id for u in units]
     assert order.index("q1-take1") < order.index("q1-take2") < order.index("q2-only")
+
+
+# ── Two people with one name (docs/ENTITY_DISAMBIGUATION.md step 3) ──────────
+
+
+def _confusable(name, summary, segs):
+    return entity_store.ConfusableEntity(
+        entity_id=f"e-{name}", name=name, summary=summary, segment_ids=tuple(segs)
+    )
+
+
+_AMNON_GROUP = [
+    _confusable("אמנון", "חבר של הדובר מהצבא", ["seg-friend"]),
+    _confusable("אמנון נחום", "דוד של הדובר מצד אבא", ["seg-uncle"]),
+]
+
+
+def test_the_prompt_is_byte_identical_when_no_two_people_share_a_name():
+    """THE CONTROL, and the strongest form it can take.
+
+    The over-asking risk — a model taught to ask "which one?" starting to ask
+    when the answer was obvious — is the likeliest way this feature makes
+    things worse, and it would affect EVERY question rather than only the
+    ambiguous ones. An archive with no repeated names cannot suffer it,
+    because it is handed the same bytes it was handed before this existed.
+
+    Asserted rather than reasoned about: the disambiguation text is inserted
+    by string formatting, and "empty placeholder leaves an extra newline" is
+    exactly the kind of difference that is invisible in review and would
+    silently invalidate every measurement taken against this arm.
+    """
+    plain = ar._ARCHIVE_READER_SYSTEM_PROMPT_TEMPLATE.format(
+        transcript_block="T", entity_map_block="E", disambiguation_block=""
+    )
+    assert "TWO PEOPLE WITH THE SAME NAME" not in plain
+    assert "clarify" not in plain
+    # The exact shape the pre-feature template produced around this seam.
+    assert "seem helpful.\n\nRules:" in plain
+
+    tagged = ar._ARCHIVE_READER_SYSTEM_PROMPT_TEMPLATE.format(
+        transcript_block="T", entity_map_block="E",
+        disambiguation_block=ar._DISAMBIGUATION_BLOCK,
+    )
+    assert "TWO PEOPLE WITH THE SAME NAME" in tagged
+    # The output form must travel WITH the instruction, not as a trailing
+    # rule. Placed at the end of the Rules section it sat straight after
+    # "if nothing answers the question, output {"unit_ids": []}" — two
+    # consecutive empty-answer examples, and `school` measured 8 units -> 0.
+    assert '"clarify"' in tagged
+    assert tagged.index('"clarify"') < tagged.index("Rules:")
+
+
+def test_name_tags_attach_each_recording_to_the_person_it_is_actually_about():
+    tags = ar._build_name_tags([_AMNON_GROUP])
+
+    assert set(tags) == {"seg-friend", "seg-uncle"}
+    assert "אמנון: חבר של הדובר מהצבא" == tags["seg-friend"][0].label
+    assert "אמנון נחום: דוד של הדובר מצד אבא" == tags["seg-uncle"][0].label
+    # Both surface forms are searched in BOTH recordings, longest first: the
+    # uncle's transcript says the bare "אמנון" even though his row carries the
+    # fuller name, which is the whole reason the producer had to give one.
+    assert tags["seg-uncle"][0].surfaces == ("אמנון נחום", "אמנון")
+
+
+def test_a_recording_about_both_people_is_left_untagged():
+    """Nothing in the data says which occurrence is which.
+
+    The mention links a RECORDING to a person, not a word to a person. When
+    one recording links to both, a tag would be a guess — and a confident
+    wrong label in front of the model is worse than the ambiguity it is
+    meant to fix.
+    """
+    both = [
+        _confusable("אמנון", "חבר", ["seg-both"]),
+        _confusable("אמנון נחום", "דוד", ["seg-both"]),
+    ]
+    assert ar._build_name_tags([both]) == {}
+
+
+def test_the_tag_is_written_next_to_the_name_including_hebrew_prefixes():
+    tags = ar._build_name_tags([_AMNON_GROUP])["seg-uncle"]
+
+    # Bare, and with the single-letter prefix Hebrew glues onto names.
+    assert ar._annotate_names("יש לי דוד ושמו אמנון", tags) == (
+        "יש לי דוד ושמו אמנון [אמנון נחום: דוד של הדובר מצד אבא]"
+    )
+    assert ar._annotate_names("הלכתי ואמנון בא", tags) == (
+        "הלכתי ואמנון [אמנון נחום: דוד של הדובר מצד אבא] בא"
+    )
+    # A name that is not there is not invented.
+    assert ar._annotate_names("שום שם כאן", tags) == "שום שם כאן"
+
+
+def test_annotation_never_touches_the_stored_unit_text():
+    """The tag exists for ONE LLM call and nowhere else.
+
+    `unit.text` is what the answer's spoken text is assembled from and what
+    gets persisted on the message. A tag reaching it would put a bracketed
+    note in the chat beside a video that never says it — and the earlier
+    name-correction work established that retrieval text is not ours to
+    rewrite.
+    """
+    archive = [
+        ar.ArchiveSegment(
+            segment=_segment("seg-uncle", "ספר על המשפחה"),
+            chunks=[_chunk("seg-uncle", 0, 0.0, 4.0, "הדוד שלי אמנון גר בתל אביב")],
+        )
+    ]
+    units = ar._build_units(archive)
+    before = [u.text for u in units]
+
+    out = ar._format_annotated_transcript(
+        archive, units, None, ar._build_name_tags([_AMNON_GROUP])
+    )
+
+    assert "[אמנון נחום: דוד של הדובר מצד אבא]" in out
+    assert [u.text for u in units] == before
+    assert all("[" not in t for t in before)
+
+
+def test_clarify_is_ignored_when_the_prompt_never_offered_it():
+    """A model inventing a key it was not told about must not be honoured.
+
+    Without this, an archive with no same-named people could still be turned
+    into a question-back by a model that decided to be helpful — the exact
+    failure the byte-identical control exists to make impossible.
+    """
+    reply = '{"unit_ids": [], "clarify": {"question": "which?", "options": ["a", "b"]}}'
+    assert ar._parse_clarify(reply) == {"question": "which?", "options": ["a", "b"]}
+    # One option is not a choice.
+    assert ar._parse_clarify('{"clarify": {"question": "q", "options": ["a"]}}') is None
+    assert ar._parse_clarify('{"unit_ids": ["u1"]}') is None
+
+
+async def test_a_clarification_is_not_a_no_story(monkeypatch):
+    """The ordering that makes the feature legible instead of alarming.
+
+    A clarification IS an empty selection, so falling through to the no-story
+    branch would tell the listener the archive holds nothing about אמנון — at
+    the exact moment it holds two of them and only needs to know which. The
+    branch order is the whole fix, so it is pinned.
+    """
+    monkeypatch.setattr(
+        ar,
+        "select_units",
+        AsyncMock(
+            return_value=ar.UnitSelection(
+                clips=[],
+                selected_units=[],
+                clarify={"question": "איזה אמנון?", "options": ["הדוד", "החבר"]},
+            )
+        ),
+    )
+
+    result = await ar.assemble_video_clip_response_v2("q", "group", "he", "sess")
+
+    assert result.no_story is False
+    assert result.fallback_text == ""
+    assert result.video_url is None
+    assert result.clarify == {"question": "איזה אמנון?", "options": ["הדוד", "החבר"]}
+
+
+async def test_clarify_replaces_the_answer_rather_than_decorating_it(monkeypatch):
+    """A guess plus "or did you mean the other one?" is still the conflation.
+
+    The listener would receive one person's footage presented as the answer,
+    with the question as a footnote. So units are dropped when a clarification
+    is returned, even though the model sent both.
+    """
+    archive = _resolvable_archive()
+    monkeypatch.setattr(ar, "_load_archive", AsyncMock(return_value=archive))
+    monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        ar, "_build_name_tags_for", AsyncMock(return_value={"seg-a": []})
+    )
+    monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        ar,
+        "_read_archive_for_ranges",
+        AsyncMock(
+            return_value=(["u1"], None, {"question": "q?", "options": ["a", "b"]})
+        ),
+    )
+    ar.invalidate_archive_cache("group")
+
+    selection = await ar.select_units("q", "group", "he", "sess")
+
+    assert selection.clarify == {"question": "q?", "options": ["a", "b"]}
+    assert selection.clips == []
+    assert selection.selected_units == []

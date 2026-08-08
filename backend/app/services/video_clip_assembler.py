@@ -187,6 +187,11 @@ class VideoClipResult:
     # that exists in the archive and hasn't been shown. Chat text ONLY — it is
     # never spoken and never part of the video, which stays verbatim footage.
     follow_up: Optional[dict] = None
+    # v2 only: {"question": str, "options": [str, ...]} when the question could
+    # have meant either of two people who share a name. Set INSTEAD of a video,
+    # never alongside one — a best guess plus "or did you mean the other?" is
+    # the conflation this exists to remove, wearing a question mark.
+    clarify: Optional[dict] = None
 
 
 def _parse_json_object(text: str) -> Optional[dict]:

@@ -799,6 +799,24 @@ class ConnectionManager:
                     session_id=session_id,
                 )
 
+            # Two people share a name and the question did not say which.
+            # Sent BEFORE the no-story check, because a clarification is an
+            # empty selection: falling through would say the archive holds
+            # nothing about אמנון when it holds two of them.
+            if result.clarify:
+                await self._persist_message(
+                    session_id, "assistant", result.clarify["question"]
+                )
+                await self.send_message(
+                    session_id,
+                    {
+                        "type": "video_clip_clarify",
+                        "question": result.clarify["question"],
+                        "options": result.clarify["options"],
+                    },
+                )
+                return
+
             if result.no_story or not result.video_url:
                 await self.send_message(
                     session_id,

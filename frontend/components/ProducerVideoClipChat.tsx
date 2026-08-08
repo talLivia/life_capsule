@@ -39,6 +39,7 @@ export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) 
     sendText,
     acceptFollowUp,
     declineFollowUp,
+    chooseClarification,
     micUnavailable,
     micMuted,
     setMicMuted,
@@ -193,6 +194,26 @@ export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) 
                       {m.videoUrl && !m.content
                         ? 'Playing the matching clip →'
                         : m.content}
+                      {/* "Which אמנון did you mean?" — one button per person.
+                          Choosing re-asks the original question with that
+                          person named, through the same path as any other. */}
+                      {m.clarifyOptions && !m.clarifyDismissed && (
+                        <div className="flex flex-wrap items-center gap-2 mt-2.5">
+                          {m.clarifyOptions.map((option) => (
+                            <button
+                              key={option}
+                              onClick={() =>
+                                chooseClarification(m.id, option, m.clarifyFor ?? '')
+                              }
+                              className="px-3 py-1 rounded-lg text-xs font-medium text-gray-200
+                                         bg-surface-700 border border-white/10 hover:bg-surface-600
+                                         transition-all active:scale-95"
+                            >
+                              {option}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       {/* Proactive offer — chat text with Yes/No. "Yes" re-asks
                           it as a normal question so it takes the same path. */}
                       {m.followUpQuestion && !m.followUpDismissed && (

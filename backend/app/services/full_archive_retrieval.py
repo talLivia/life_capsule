@@ -217,7 +217,7 @@ something the archive cannot actually show.
 already shown.
 - If there is no such material, omit "follow_up" or set it to null. No \
 suggestion is perfectly fine - never invent one to seem helpful.
-
+{disambiguation_block}
 Rules:
 - Output ONLY a JSON object, nothing else, exactly: \
 {{"unit_ids": ["u3", "u4", ...], "follow_up": {{"question": "...", \
@@ -242,6 +242,27 @@ FULL ARCHIVE TRANSCRIPT:
 
 ENTITY MAP (entity name -> the RECORDINGS that mention it):
 {entity_map_block}"""
+
+
+# Added to the prompt ONLY when this archive actually contains two people with
+# similar names. An archive without them produces a byte-identical prompt to
+# the one it produced before this feature existed — asserted by a test, and
+# the strongest available form of "it cannot over-ask where there is nothing
+# to ask about".
+#
+# Written to spend most of its words on when NOT to clarify. The obvious
+# failure mode of teaching a model to ask "which one?" is that it starts
+# asking when the answer was already obvious, and that is worse than the
+# conflation being fixed: the conflation affects questions about one name,
+# over-asking affects every question.
+_DISAMBIGUATION_BLOCK = """
+TWO PEOPLE WITH THE SAME NAME (this archive has some):
+Some names in the transcript are followed by a tag in square brackets naming WHICH person that recording is about, e.g. "אמנון [אמנון נחום: דוד של הדובר מצד אבא]". The tag is an annotation added for you - it is NOT part of what the person said, is not in the video, and must never appear in a follow-up question or anywhere in your output.
+- The tag tells you which of the same-named people a RECORDING is about. Two recordings tagged differently are about DIFFERENT people, however similar their words look. Never build ONE answer out of units about two different people who share a name.
+- When the question makes clear which one is meant - it uses the fuller name, or names their role ("my uncle", "my friend from the army"), or the recent conversation was already about one of them - answer it NORMALLY from that person's recordings. Do not ask, and do not leave out units that genuinely answer it.
+- Ask ONLY when the question is about a same-named person AND nothing in the question or the recent conversation decides which one. Then, and only then, output {{"unit_ids": [], "clarify": {{"question": "...", "options": ["...", "..."]}}}} - a short question naming the choices, in the storyteller's own voice and language. Never output units and "clarify" together.
+- THIS CHANGES NOTHING ABOUT ANY OTHER QUESTION. A question that does not involve a same-named person is chosen for exactly as it would be otherwise. Never clarify about topics, dates, places, or what someone meant - only ever about which of two people who share a name. A tag existing somewhere in the archive is never a reason to narrow, doubt, or hold back an answer about anything else.
+- NEVER return an empty selection because of any of this. If you cannot tell which person is meant, clarify. Otherwise answer. An empty selection still means only what it has always meant: nothing in the archive answers the question at all."""
 
 
 # ── Step 1: load + format the annotated transcript ──────────────────────────
@@ -537,10 +558,134 @@ def _recording_ordinals(
     return {item.segment.id: i for i, item in enumerate(printed, start=1)}
 
 
+# ── Telling two people with one name apart, at query time ───────────────────
+#
+# THE TRANSCRIPT CANNOT DO THIS ON ITS OWN. It says "אמנון" whether the speaker
+# meant his uncle or his army friend, so an answer about one gets assembled
+# from the other's recordings — which it was. The archive is not missing the
+# distinction: `entity_mentions` points each mention at exactly one entity, so
+# it knows which אמנון every RECORDING means. Nothing was reading it.
+#
+# Why inline rather than in the entity map: the entity map is already in the
+# prompt and is inert. Measured this session — real map / no map / both names
+# merged produced byte-identical unit selections across two runs each, and
+# accuracy is 0.9987 with and without. Adding to a block the model demonstrably
+# ignores would change nothing. This goes where the model is already reading.
+#
+# NOTHING IS WRITTEN TO THE ARCHIVE. The annotation exists only in the string
+# handed to the model for one call; `TranscriptChunk.text`, `word_timestamps`
+# and `RawSegment.transcript` are untouched, and the video is cut from unit
+# ids and word times that never saw a tag.
+
+#: Only these, so a tag can never be mistaken for something the person said.
+#: Same convention as [ALREADY SHOWN], which the prompt already establishes.
+_TAG_OPEN, _TAG_CLOSE = "[", "]"
+
+#: Hebrew glues single-letter prefixes onto names — "ואמנון", "לאמנון". Matching
+#: the bare name would miss those, which are common in speech.
+_HEBREW_PREFIXES = "והלבכמש"
+
+#: A summary is one sentence of context, not a biography. Long enough to tell
+#: an uncle from an army friend, short enough not to swamp the words spoken.
+_TAG_SUMMARY_CHARS = 70
+
+
+@dataclass(frozen=True)
+class _NameTag:
+    """What to write next to one name, in one recording."""
+
+    #: The surface forms to look for, longest first — the spoken word is often
+    #: the SHORT one even where the entity carries the longer name ("...דוד
+    #: שקוראים לו אמנון" is the row stored as "אמנון נחום").
+    surfaces: Tuple[str, ...]
+    label: str
+
+
+def _tag_label(member: "entity_store.ConfusableEntity") -> str:
+    summary = " ".join((member.summary or "").split())
+    if len(summary) > _TAG_SUMMARY_CHARS:
+        summary = summary[:_TAG_SUMMARY_CHARS].rstrip() + "…"
+    return f"{member.name}: {summary}" if summary else member.name
+
+
+def _build_name_tags(
+    groups: List[List["entity_store.ConfusableEntity"]],
+) -> Dict[str, List[_NameTag]]:
+    """segment id -> the tags to apply inside that recording's units.
+
+    A recording is tagged only when it links to EXACTLY ONE member of a
+    confusable group. Two members means the recording genuinely talks about
+    both people, and there is nothing in the data saying which occurrence of
+    the name is which — so it is left alone. Guessing there would put a
+    confident wrong label in front of the model, which is worse than the
+    ambiguity it is trying to fix.
+    """
+    tags: Dict[str, List[_NameTag]] = {}
+    for group in groups:
+        surfaces = tuple(
+            sorted({m.name for m in group}, key=lambda n: (-len(n), n))
+        )
+        for member in group:
+            for segment_id in member.segment_ids:
+                if sum(1 for m in group if segment_id in m.segment_ids) > 1:
+                    continue
+                tags.setdefault(segment_id, []).append(
+                    _NameTag(surfaces=surfaces, label=_tag_label(member))
+                )
+    return tags
+
+
+def _annotate_names(text: str, tags: List[_NameTag]) -> str:
+    """Write each tag next to the name it explains, inside one unit's text."""
+    for tag in tags:
+        for surface in tag.surfaces:
+            if not surface.strip():
+                continue
+            # A single optional Hebrew prefix letter, and no Hebrew letter
+            # either side — so "אמנון" matches inside "ואמנון" but not inside a
+            # longer word that merely contains it.
+            pattern = (
+                rf"(?<![א-ת])([{_HEBREW_PREFIXES}]?){re.escape(surface)}"
+                rf"(?![א-ת])"
+            )
+            replaced, count = re.subn(
+                pattern,
+                lambda m: f"{m.group(1)}{surface} {_TAG_OPEN}{tag.label}{_TAG_CLOSE}",
+                text,
+            )
+            if count:
+                # First surface that matches wins. Continuing would tag
+                # "אמנון" a second time inside the label just written.
+                text = replaced
+                break
+    return text
+
+
+async def _build_name_tags_for(group_id: str) -> Dict[str, List[_NameTag]]:
+    """The same-name tags for one producer, or {} when nothing is confusable.
+
+    Fail-soft, exactly like the entity map above it and for the same reason:
+    this is an aid to the model, not a dependency. A lookup failure must cost
+    the disambiguation, never the answer — and {} is also the pre-feature
+    behaviour, so the failure mode is "as it was before" rather than "broken".
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            groups = await entity_store.confusable_entities(db, group_id)
+    except Exception as e:
+        logger.warning(
+            f"Confusable-name lookup failed for {group_id}, "
+            f"continuing without same-name tags: {e}"
+        )
+        return {}
+    return _build_name_tags(groups)
+
+
 def _format_annotated_transcript(
     archive: List[ArchiveSegment],
     units: List[UtteranceUnit],
     shown_keys: Optional[set] = None,
+    name_tags: Optional[Dict[str, List[_NameTag]]] = None,
 ) -> str:
     """The archive as numbered utterance units grouped under their recording.
 
@@ -557,6 +702,7 @@ def _format_annotated_transcript(
     prefer unseen material on a follow-up (see the prompt's ALREADY SHOWN
     section)."""
     shown_keys = shown_keys or set()
+    name_tags = name_tags or {}
     by_segment = _units_by_segment(units)
 
     # Takes of the same interview question, so a repeated question reads as
@@ -588,14 +734,20 @@ def _format_annotated_transcript(
         else:
             suffix = ""
         lines.append(f"RECORDING {ordinal} — interview question: {seg.question_asked}{suffix}")
+        tags = name_tags.get(seg.id) or []
         for unit in seg_units:
             mark = (
                 " [ALREADY SHOWN]"
                 if _unit_key(unit.segment_id, unit.start_sec) in shown_keys
                 else ""
             )
+            # Annotated for the model only. `unit.text` itself is left alone —
+            # it is what the answer's spoken text is built from, and a tag
+            # reaching that would put a bracketed note in the chat beside a
+            # video that never says it.
+            text = _annotate_names(unit.text, tags) if tags else unit.text
             lines.append(
-                f"  {unit.unit_id} [{unit.start_sec:.2f}-{unit.end_sec:.2f}]{mark} {unit.text}"
+                f"  {unit.unit_id} [{unit.start_sec:.2f}-{unit.end_sec:.2f}]{mark} {text}"
             )
         lines.append("")  # blank line between recordings
     return "\n".join(lines).rstrip()
@@ -715,6 +867,11 @@ class _CachedArchive:
     archive: List[ArchiveSegment]
     entity_map: Dict[str, List[str]]
     units: List["UtteranceUnit"]
+    #: segment id -> the same-name tags to write inside it. Cached with the
+    #: rest because it is derived from the same recordings and changes only
+    #: when they do — an entity is renamed by confirming a recording, which
+    #: moves the version.
+    name_tags: Dict[str, List["_NameTag"]]
 
 
 async def _archive_version(group_id: str) -> tuple:
@@ -739,8 +896,13 @@ async def _archive_version(group_id: str) -> tuple:
 
 async def _archive_bundle(
     group_id: str,
-) -> Tuple[List[ArchiveSegment], Dict[str, List[str]], List["UtteranceUnit"]]:
-    """(archive, entity_map, units) for a producer — rebuilt only when their
+) -> Tuple[
+    List[ArchiveSegment],
+    Dict[str, List[str]],
+    List["UtteranceUnit"],
+    Dict[str, List["_NameTag"]],
+]:
+    """(archive, entity_map, units, name_tags) for a producer — rebuilt only when their
     recordings have actually changed."""
     try:
         version = await _archive_version(group_id)
@@ -752,21 +914,25 @@ async def _archive_bundle(
 
     cached = _ARCHIVE_CACHE.get(group_id)
     if cached is not None and version is not None and cached.version == version:
-        return cached.archive, cached.entity_map, cached.units
+        return cached.archive, cached.entity_map, cached.units, cached.name_tags
 
     archive = await _load_archive(group_id)
     if not archive:
         _ARCHIVE_CACHE.pop(group_id, None)
-        return [], {}, []
+        return [], {}, [], {}
     entity_map = await _build_entity_map(archive, group_id)
     units = _build_units(archive)
+    name_tags = await _build_name_tags_for(group_id)
     if version is not None:
-        _ARCHIVE_CACHE[group_id] = _CachedArchive(version, archive, entity_map, units)
+        _ARCHIVE_CACHE[group_id] = _CachedArchive(
+            version, archive, entity_map, units, name_tags
+        )
     logger.info(
         f"Archive cache rebuilt for {group_id}: "
-        f"{len(archive)} recordings, {len(units)} units, {len(entity_map)} entities"
+        f"{len(archive)} recordings, {len(units)} units, {len(entity_map)} entities, "
+        f"{len(name_tags)} recordings with same-name tags"
     )
-    return archive, entity_map, units
+    return archive, entity_map, units, name_tags
 
 
 def invalidate_archive_cache(group_id: Optional[str] = None) -> None:
@@ -796,7 +962,7 @@ async def warm_archive_cache(group_id: str) -> bool:
     things worse than not warming."""
     started = time.perf_counter()
     try:
-        archive, entity_map, units = await asyncio.wait_for(
+        archive, entity_map, units, _tags = await asyncio.wait_for(
             _archive_bundle(group_id), timeout=_WARM_TIMEOUT_SECONDS
         )
     except asyncio.TimeoutError:
@@ -915,6 +1081,37 @@ def _parse_follow_up(text: str) -> Optional[dict]:
     return {"question": question.strip(), "unit_ids": ids}
 
 
+def _parse_clarify(text: str) -> Optional[dict]:
+    """The optional {"question", "options"} from the SAME reply as the answer.
+
+    Returns None when absent or malformed. Two options is the minimum that
+    means anything: "which אמנון?" with one option is not a choice, and the
+    model producing one is a sign it did not actually find two people.
+    """
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("clarify")
+    if not isinstance(raw, dict):
+        return None
+    question = raw.get("question")
+    options = raw.get("options")
+    if not isinstance(question, str) or not question.strip():
+        return None
+    if not isinstance(options, list):
+        return None
+    cleaned = [o.strip() for o in options if isinstance(o, str) and o.strip()]
+    if len(cleaned) < 2:
+        return None
+    return {"question": question.strip(), "options": cleaned}
+
+
 def _parse_unit_selection(text: str) -> List[str]:
     """Extract the selected unit ids, preserving the model's stitch order.
 
@@ -959,7 +1156,8 @@ async def _read_archive_for_ranges(
     entity_map_block: str,
     history_block: str,
     recording_language: str,
-) -> Tuple[List[str], Optional[dict]]:
+    disambiguation: bool = False,
+) -> Tuple[List[str], Optional[dict], Optional[dict]]:
     """The ONE LLM call. Fail-soft to [] (an LLM/parse failure yields the
     no-story fallback, never a guessed clip) — same never-invent contract
     as the other modes' own LLM steps.
@@ -967,8 +1165,18 @@ async def _read_archive_for_ranges(
     See _ARCHIVE_READER_SYSTEM_PROMPT_TEMPLATE's comment for why the static
     transcript/entity-map live in the system prompt and the variable
     conversation/question live in the user message (prompt-cache ordering)."""
+    # The JSON form for "clarify" lives INSIDE the block rather than in the
+    # Rules section, and that placement is load-bearing rather than tidy. As a
+    # trailing rule it landed straight after "If NOTHING answers the question,
+    # output {"unit_ids": []}" — two consecutive rules modelling an empty
+    # answer, immediately before the transcript. Measured: `school` fell from
+    # 8 units to 0 and "what did אמנון do in the army" from 4 to 0, both 3/3,
+    # returning empty selections rather than clarifications. Neither question
+    # was even about an ambiguous name in the first place.
     system_prompt = _ARCHIVE_READER_SYSTEM_PROMPT_TEMPLATE.format(
-        transcript_block=transcript_block, entity_map_block=entity_map_block
+        transcript_block=transcript_block,
+        entity_map_block=entity_map_block,
+        disambiguation_block=_DISAMBIGUATION_BLOCK if disambiguation else "",
     )
 
     user_parts: List[str] = []
@@ -991,8 +1199,13 @@ async def _read_archive_for_ranges(
         )
     except Exception as e:
         logger.warning(f"Archive-read LLM call failed, treating as no-story: {e}")
-        return [], None
-    return _parse_unit_selection(raw), _parse_follow_up(raw)
+        return [], None, None
+    # `clarify` is only ever read when the prompt actually offered it. A model
+    # that invents the key on an archive with no same-named people is
+    # returning something it was never told about, and honouring it would turn
+    # an answerable question into a question back.
+    clarify = _parse_clarify(raw) if disambiguation else None
+    return _parse_unit_selection(raw), _parse_follow_up(raw), clarify
 
 
 # ── Step 4: deterministic validation + word-boundary snapping (no LLM) ──────
@@ -1081,6 +1294,12 @@ class UnitSelection:
     # {"question": str} when the model offered a follow-up that SURVIVED
     # validation, else None. Chat text only — never spoken, never in the video.
     follow_up: Optional[dict] = None
+    # {"question": str, "options": [str, ...]} when the question could have
+    # meant either of two people who share a name. Mutually exclusive with an
+    # answer: when this is set, `clips` is empty by construction (see
+    # select_units) — a guess plus a question is the conflation this feature
+    # exists to remove.
+    clarify: Optional[dict] = None
 
 
 async def select_units(
@@ -1107,20 +1326,38 @@ async def select_units(
             session_id, retrieval_service.COREFERENCE_HISTORY_TURNS
         ),
     )
-    archive, entity_map, units = archive_bundle
+    archive, entity_map, units, name_tags = archive_bundle
     if not archive or not units:
         return UnitSelection([], [], False)
 
     shown_keys, per_turn_units = shown
 
-    transcript_block = _format_annotated_transcript(archive, units, shown_keys)
+    transcript_block = _format_annotated_transcript(archive, units, shown_keys, name_tags)
     # Same ordinals the transcript block just printed — see _recording_ordinals.
     entity_map_block = _format_entity_map(entity_map, _recording_ordinals(archive, units))
     history_block = _format_history_block(turns, per_turn_units) if turns else ""
 
-    unit_ids, raw_follow_up = await _read_archive_for_ranges(
-        question, transcript_block, entity_map_block, history_block, recording_language
+    unit_ids, raw_follow_up, clarify = await _read_archive_for_ranges(
+        question,
+        transcript_block,
+        entity_map_block,
+        history_block,
+        recording_language,
+        disambiguation=bool(name_tags),
     )
+
+    # CLARIFY BLOCKS THE ANSWER. A best guess accompanied by "or did you mean
+    # the other one?" is the conflation this exists to remove, wearing a
+    # question mark — the listener still gets one person's footage presented
+    # as the answer. So a clarification replaces the answer rather than
+    # decorating it, and units are dropped even if the model sent some.
+    if clarify:
+        if unit_ids:
+            logger.info(
+                f"Archive read returned clarify AND {len(unit_ids)} units; "
+                "dropping the units — a clarification replaces the answer"
+            )
+        return UnitSelection(clips=[], selected_units=[], clarify=clarify)
 
     by_id = {u.unit_id: u for u in units}
     selected = [by_id[uid] for uid in dict.fromkeys(unit_ids) if uid in by_id]
@@ -1171,6 +1408,12 @@ async def assemble_video_clip_response_v2(
     the EXACT same code the v1 path uses."""
     selection = await select_units(question, group_id, recording_language, session_id)
     clips = selection.clips
+    # Before the no-story branch, and that ordering is the whole point: a
+    # clarification is an empty selection, so falling through would tell the
+    # listener the archive has nothing about אמנון when it has two people by
+    # that name and simply needs to know which.
+    if selection.clarify:
+        return VideoClipResult(video_url=None, clarify=selection.clarify)
     if not clips:
         return VideoClipResult(video_url=None, no_story=True, fallback_text=NO_STORY_FALLBACK)
 

@@ -33,6 +33,7 @@ export function VideoClipTalkInterface({ avatarId, producerName }: VideoClipTalk
     sendText,
     acceptFollowUp,
     declineFollowUp,
+    chooseClarification,
     micUnavailable,
     micMuted,
     setMicMuted,
@@ -111,6 +112,24 @@ export function VideoClipTalkInterface({ avatarId, producerName }: VideoClipTalk
                   {m.content}
                   {/* Proactive offer — chat text with Yes/No. "Yes" re-asks it
                       as a normal question so it takes the same path. */}
+                  {/* "Which אמנון did you mean?" — one button per person.
+                      Choosing re-asks the original question with that person
+                      named, through the same path as any other question. */}
+                  {m.clarifyOptions && !m.clarifyDismissed && (
+                    <div className="flex flex-wrap items-center gap-2 mt-2.5">
+                      {m.clarifyOptions.map((option) => (
+                        <button
+                          key={option}
+                          onClick={() =>
+                            chooseClarification(m.id, option, m.clarifyFor ?? '')
+                          }
+                          className="calm-btn-secondary !py-1.5 !px-4 text-xs"
+                        >
+                          {option}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {m.followUpQuestion && !m.followUpDismissed && (
                     <div className="flex items-center gap-2 mt-2.5">
                       <button

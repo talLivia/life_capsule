@@ -835,6 +835,125 @@ async def mark_placement_asked(db: AsyncSession, entity_ids: Sequence[str]) -> i
     return stamped
 
 
+@dataclass(frozen=True)
+class ConfusableEntity:
+    """One person in a group of people this archive calls by similar names."""
+
+    entity_id: str
+    name: str
+    #: What the archive most recently said about them — this, not the name, is
+    #: what tells an uncle from an army friend. Both are called אמנון.
+    summary: str
+    #: The recordings that mention THIS one. The whole basis of the
+    #: distinction: each mention points at exactly one entity, so the archive
+    #: already knows which אמנון each recording means.
+    segment_ids: Tuple[str, ...]
+
+
+async def confusable_entities(
+    db: AsyncSession, producer_id: str
+) -> List[List[ConfusableEntity]]:
+    """Groups of 2+ entities this producer's archive calls by similar names.
+
+    The retrieval side of the אמנון problem. `/talk` reads transcripts, and a
+    transcript says "אמנון" whether it means the uncle or the army friend —
+    so an answer about one can be assembled from the other's recordings, and
+    was. The archive is NOT missing the distinction: `entity_mentions` points
+    each mention at exactly one entity, so it knows which אמנון every
+    recording means. Nothing was reading it.
+
+    Returns only the AMBIGUOUS groups, and returning nothing is the normal
+    case. That matters more than it looks: every caller is expected to change
+    its behaviour only when this is non-empty, so an archive with no repeated
+    names produces a byte-identical prompt to the one it produced before this
+    existed. The safest version of a feature that might over-fire is one that
+    cannot fire at all where there is nothing to disambiguate.
+
+    A STRICTER test than the confirmation screen's `names_are_similar`, and
+    the difference is deliberate. That gate includes a character-similarity
+    fallback for spelling variants ("גילה"/"גליה"), which is right when the
+    cost of a false positive is one question a human answers in a second. Here
+    the cost is asking a LISTENER "which one did you mean?" about two people
+    nobody could confuse — measured on the live archive, it grouped אירה
+    (ניר's wife) with יאיר (ניר's child), who share three letters and nothing
+    else. Over-asking is the failure mode this feature is most likely to have,
+    so the rule is the one that actually describes confusability: the same
+    name, or one name a more specific version of the other ("אמנון" /
+    "אמנון נחום"). Someone saying the shorter one could mean either; nobody
+    saying "אירה" could mean יאיר.
+
+    `is_self` is excluded: the producer is never one of two people the
+    listener could mean.
+    """
+
+    def confusable(a: str, b: str) -> bool:
+        # Normalised tokens, so Hebrew final-letter forms compare equal.
+        at = {t for t in normalize_entity_name(a).split() if t}
+        bt = {t for t in normalize_entity_name(b).split() if t}
+        return bool(at and bt and (at <= bt or bt <= at))
+
+    entities = list(
+        (
+            await db.execute(
+                select(Entity)
+                .where(Entity.producer_id == producer_id, ~Entity.is_self)
+                .order_by(Entity.name)
+            )
+        ).scalars().all()
+    )
+    if len(entities) < 2:
+        return []
+
+    # Union-find over the similarity relation. Not pairwise-only: similarity
+    # is not transitive, and "אמנון" ~ "אמנון נחום" ~ "אמנון נחום כהן" must be
+    # ONE group of three rather than two overlapping pairs — a listener asking
+    # about "אמנון" could mean any of them.
+    parent = {e.id: e.id for e in entities}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i, a in enumerate(entities):
+        for b in entities[i + 1 :]:
+            if confusable(a.name, b.name):
+                parent[find(a.id)] = find(b.id)
+
+    grouped: Dict[str, List[Entity]] = {}
+    for e in entities:
+        grouped.setdefault(find(e.id), []).append(e)
+
+    result: List[List[ConfusableEntity]] = []
+    for members in grouped.values():
+        if len(members) < 2:
+            continue
+        group: List[ConfusableEntity] = []
+        for entity in members:
+            rows = (
+                await db.execute(
+                    select(EntityMention.raw_segment_id, EntityMention.summary)
+                    .where(EntityMention.entity_id == entity.id)
+                    .order_by(EntityMention.created_at.desc())
+                )
+            ).all()
+            summary = next((s for _, s in rows if s), "") or ""
+            group.append(
+                ConfusableEntity(
+                    entity_id=entity.id,
+                    name=entity.name,
+                    summary=summary.strip(),
+                    segment_ids=tuple(sid for sid, _ in rows),
+                )
+            )
+        # A group whose members are mentioned nowhere cannot disambiguate
+        # anything — there is no recording to attribute either way.
+        if any(member.segment_ids for member in group):
+            result.append(sorted(group, key=lambda m: m.name))
+    return sorted(result, key=lambda g: g[0].name)
+
+
 async def mark_identity_asked(
     db: AsyncSession, producer_id: str, entity_ids: Sequence[str]
 ) -> int:

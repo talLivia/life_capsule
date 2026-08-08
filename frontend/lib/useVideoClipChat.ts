@@ -17,6 +17,17 @@ export interface TalkMessage {
   // (dismissed) once answered either way, so it can't be actioned twice.
   followUpQuestion?: string
   followUpDismissed?: boolean
+  // Two people in this archive share a name and the question did not say
+  // which. Rendered as chat text with one button per person. Unlike a
+  // follow-up this arrives INSTEAD of an answer, never alongside one — a
+  // best guess plus "or did you mean the other?" is the conflation the
+  // whole feature exists to remove.
+  clarifyOptions?: string[]
+  // The question that was ambiguous, so choosing an option can re-ask the
+  // ORIGINAL intent with the person named, rather than sending a bare name
+  // and hoping it reads as a question.
+  clarifyFor?: string
+  clarifyDismissed?: boolean
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5
@@ -115,6 +126,22 @@ export function useVideoClipChat(avatarId: string) {
         clipGraceTimerRef.current = setTimeout(() => setClipGrace(false), CLIP_GRACE_MS)
         break
       }
+      case 'video_clip_clarify':
+        setIsThinking(false)
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `clarify-${Date.now()}`,
+            role: 'assistant',
+            content: msg.question,
+            clarifyOptions: msg.options,
+            // The last thing the listener asked — the question this is a
+            // clarification OF. Read from state rather than tracked
+            // separately so it cannot disagree with what is on screen.
+            clarifyFor: [...prev].reverse().find((m) => m.role === 'user')?.content ?? '',
+          },
+        ])
+        break
       case 'video_clip_no_story':
         setIsThinking(false)
         setMessages((prev) => [
@@ -229,6 +256,25 @@ export function useVideoClipChat(avatarId: string) {
     wsRef.current.send(JSON.stringify({ type: 'video_clip_question', text: question }))
   }, [])
 
+  /** Answer "which one did you mean?" by re-asking the ORIGINAL question with
+   *  the person named. Goes out as a normal question over the same WS
+   *  contract, so the second turn gets identical validation and assembly —
+   *  the same rule acceptFollowUp follows, and for the same reason. */
+  const chooseClarification = useCallback(
+    (messageId: string, option: string, original: string) => {
+      if (wsRef.current?.readyState !== WebSocket.OPEN) return
+      const question = original ? `${original} — ${option}` : option
+      setMessages((prev) => [
+        ...prev.map((m) => (m.id === messageId ? { ...m, clarifyDismissed: true } : m)),
+        { id: `user-${Date.now()}`, role: 'user', content: question },
+      ])
+      setStatusText('Finding a clip…')
+      setIsThinking(true)
+      wsRef.current.send(JSON.stringify({ type: 'video_clip_question', text: question }))
+    },
+    [],
+  )
+
   const declineFollowUp = useCallback((messageId: string) => {
     setMessages((prev) =>
       prev.map((m) => (m.id === messageId ? { ...m, followUpDismissed: true } : m))
@@ -287,6 +333,7 @@ export function useVideoClipChat(avatarId: string) {
     // actions
     sendText,
     acceptFollowUp,
+    chooseClarification,
     declineFollowUp,
     // mic
     micMuted,

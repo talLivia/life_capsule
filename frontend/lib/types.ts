@@ -47,6 +47,7 @@ export type WsMessageType =
   | 'interrupted'
   | 'video_clip_response'
   | 'video_clip_no_story'
+  | 'video_clip_clarify'
 
 // Discriminated union — each WS event has a well-typed payload so the handler
 // can rely on field presence without optional-chaining everywhere.
@@ -83,6 +84,11 @@ export type WsMessage =
       follow_up?: { question: string } | null
     }
   | { type: 'video_clip_no_story'; message: string }
+  // Two people in this archive share a name and the question could have meant
+  // either. Arrives INSTEAD of a clip, never with one. `options` names the
+  // people; choosing one re-asks the original question through the normal
+  // path so the answer gets the same validation and assembly as any other.
+  | { type: 'video_clip_clarify'; question: string; options: string[] }
 
 export interface VoiceApiResponse {
   id: string

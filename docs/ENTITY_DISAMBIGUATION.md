@@ -1,12 +1,22 @@
 # Two people, one name
 
-**Written 2026-08-07. Nothing built.** Asked for: `/talk` should ask "which
-אמנון?" when a question is ambiguous, and use only one of them when it is
-specific.
+**Written 2026-08-07. All three steps SHIPPED 2026-08-08.** Asked for: `/talk`
+should ask "which אמנון?" when a question is ambiguous, and use only one of
+them when it is specific.
 
-**The retrieval change cannot be built yet, and the reason is not in
-retrieval.** `/talk` is not conflating two people — the archive is. There is
-one entity row, and it already holds both of them.
+**The retrieval change could not be built first, and the reason was not in
+retrieval.** `/talk` was not conflating two people — the archive was. There was
+one entity row, and it held both of them. Everything below was written before
+anything was built; §8 records what actually happened, including the two places
+this document was wrong.
+
+## Status
+
+| step | | |
+| --- | --- | --- |
+| **1** | Let the archive HOLD two people with one name | shipped — two commits, see §8.1 |
+| **2** | Repair the existing `אמנון` | done by the producer, NOT by the script this document proposed (§8.2) |
+| **3** | Teach retrieval to use the distinction | shipped — measured, §8.3 |
 
 ---
 
@@ -194,7 +204,7 @@ data. Inline annotation is a materially different intervention — it sits where
 the model is already reading rather than in a side block — but it should be
 approached expecting it may not work, with the measurement built first.
 
-## 7. Open decisions
+## 7. Open decisions (as written, before building — see §8 for outcomes)
 
 | # | Decision | Recommendation |
 | --- | --- | --- |
@@ -202,3 +212,151 @@ approached expecting it may not work, with the measurement built first.
 | 2 | Should the tree show the two אמנונs distinctly once split? | Yes, automatically — two rows are two nodes, no tree change needed. |
 | 3 | Repair the existing אמנון before or after step 1 ships? | After. The repair uses the same "distinguishing name" path, so build it once. |
 | 4 | v1 `video_clips`? | Untouched, as asked. It consumes entities directly (`find_segments_mentioning`) and would benefit for free from the split in step 1. |
+
+---
+
+# 8. What actually happened
+
+Written 2026-08-08, after all three steps shipped. Kept in the same file as the
+plan so the two can be read against each other — including where the plan was
+wrong.
+
+## 8.1 Step 1 took TWO changes, not one
+
+§2.1 found the confirmation screen accepting an answer it could not honour:
+"someone new" about a colliding name left the name unchanged, and the merge key
+IS the name, so the archive recorded the opposite of what was said. That was
+fixed first — `new_name`, required exactly when the extracted name's merge key
+collides, and rejected if it collides with anything else in the archive.
+
+**It did not close the case that produced the אמנון conflation**, and the plan
+did not see this. `check_entities_node` auto-resolved whenever exactly one
+candidate matched VERBATIM, so for two people both called exactly `אמנון` the
+identity question was never asked at all — the validation above was only
+reachable with 2+ candidates. The producer chose always-ask over a post-hoc
+split tool, so a verbatim match now raises the question, gated by
+`identity_asked_at` (migration 0021) so it fires once per person rather than
+once per mention. Deliberately not backfilled: stamping the 28 existing rows
+would have made the change invisible on exactly the archive it was built for.
+
+Two live defects surfaced on the way, both older than this work:
+
+- Every "someone new" answer crashed with an `UnboundLocalError` —
+  `corrected_name` was called from the identity loop while `name_edits` was
+  defined below it.
+- **Identity questions had been asking nothing in words since 64eef15.**
+  `_confirmation_question` was called from the per-name interrupt; when chunk 4
+  batched them, `names_to_check` began passing straight through, and the modal
+  rendered an empty legend above the options. It survived because the options
+  still read sensibly on their own.
+
+## 8.2 Step 2 was done by deletion, not by the repair script
+
+§5 proposed a script to move two mentions onto a new row. The producer chose
+instead to delete the affected recordings and re-upload them, letting step 1
+raise the question naturally on the second אמנון. It worked: the archive now
+holds `אמנון` (army friend, 2 recordings) and `אמנון נחום` (uncle, 1 recording,
+carrying the `aunt_uncle` and both parent-of edges).
+
+**The blast radius of that deletion was larger than first reported, and the
+under-report is the lesson.** Deleting a recording cascades twice — once from
+`raw_segments` via `source_segment_id`, and once from `entities` via
+`from_entity_id`/`to_entity_id` when the orphan sweep removes a person nobody
+mentions any more. The second path takes MANUAL edges with it, which migration
+0020's docstring calls permanent ("it survives deleting every recording about
+that person"). It survives the segment cascade; it does not survive the
+person's last mention being deleted. Counting only the first path put the
+figure at 7 relations when it was 15, 9 of them hand-placed from the tree.
+
+## 8.3 Step 3 — measured, and the gate was not sufficient
+
+Built as §6.1 proposed except for placement: the tag is written INLINE next to
+each mention rather than on the recording header, at the producer's request.
+
+Three deviations from the plan, each forced by a measurement:
+
+**A stricter confusability rule than the confirmation screen's.**
+`names_are_similar` includes a character-similarity fallback for spelling
+variants, which grouped `אירה` (ניר's wife) with `יאיר` (ניר's child) — three
+shared letters. Right when a false positive costs one question a human answers
+in a second; wrong when it costs asking a LISTENER to choose between two people
+nobody could confuse. The rule is now "same name, or one a more specific
+version of the other".
+
+**The prompt is byte-identical when no two people share a name.** Both the tags
+and the instruction appear only when `confusable_entities` returns something,
+and `clarify` is ignored outright otherwise. §6.3's "no-clarify control" is
+therefore structural rather than measured — an archive without duplicates
+cannot over-ask, because it is handed the same bytes as before the feature
+existed. Asserted by a test, because "empty placeholder leaves an extra
+newline" is invisible in review and would silently invalidate the arm.
+
+**THE GATE PASSED WHILE THE FEATURE WAS BREAKING ANSWERS.** §6.3 proposed the
+zero-clarification gate as the hard precondition. It is necessary and it is not
+sufficient. The first version placed the `clarify` JSON form at the end of the
+Rules section, immediately after "if nothing answers the question, output an
+empty unit_ids" — two consecutive empty-answer examples just before the
+transcript. Measured: `school` fell from 8 units to 0 and one same-name case
+from 4 to 0, both 3/3, returning EMPTY SELECTIONS rather than clarifications.
+Neither question involved an ambiguous name. Clarification rate: 0. Gate: pass.
+
+What caught it was diffing the SELECTED UNITS between arms on the unambiguous
+questions — a check this document did not ask for and should have. It lives in
+`scripts/eval_name_disambiguation.py` and should stay there. Moving the JSON
+form inside the disambiguation block fixed it.
+
+### Final measurement (12 questions x 3 runs x 2 arms, plus 5 same-name cases)
+
+```
+GATE   0 clarifications across 12 questions x 3 runs        PASS
+CASES  ambiguous            clarify 3/3
+       specific-by-name     uncle only,  3/3
+       specific-by-role     uncle only,  3/3
+       resolved-by-context  friend only, 3/3, no clarify
+       resolved-by-history  friend only, 3/3, no clarify     5/5
+```
+
+On "19": §6.3 says 19 existing questions (7 scored + 12 comparison). They are
+not disjoint — the 7 scored are a SUBSET of the 12. The real gate is 12
+distinct questions, and is reported as 12.
+
+`resolved-by-context` was first written as "מה אמנון עשה בצבא?" and that case
+was mis-specified: the archive says the speaker was in the air force, served
+three years, and has a friend אמנון from there. Nothing says what אמנון did. A
+case whose answer is not in the archive measures over-reach, not
+disambiguation — the pre-feature arm "passed" it by returning the SPEAKER's own
+service in answer to a question about someone else.
+
+### The one accepted cost
+
+`army-narrow` ("באיזה תפקיד שירתת בצבא?") broadens from `u11,u12` to `u11-u14`,
+picking up "I had good friends there" and "there's אמנון, still my friend".
+Stable 5/5 in BOTH arms, so this is a real effect and not the run-to-run
+variance CLAUDE.md documents for this question. The tag makes אמנון salient
+enough to pull those units into a role question, and that is the
+narrow-vs-broad discrimination CLAUDE.md calls "the mechanism, not a tuning
+detail".
+
+The §6.1 header placement was measured as the alternative: it fixes
+`army-narrow` (2 units, 5/5) and keeps all five same-name cases, but `school`
+goes 8 -> 0 (5/5). Each placement costs exactly one question. Inline's cost is
+two extra units; the header's is a whole answer. Shipped inline, knowingly.
+
+## 8.4 Unrelated defect found while tracing, NOT fixed
+
+`question_index` restarts per interview CATEGORY, but take-grouping keys on it
+alone (`_group_siblings`). The live archive therefore presents three unrelated
+questions as one answer given in three sittings:
+
+```
+idx=1  "tell me about your father"  (childhood)  take 1 of 3
+idx=1  "your roles in the army"     (military)   take 2 of 3
+idx=1  "post-secondary studies"     (academic)   take 3 of 3
+```
+
+...and the prompt instructs the model to read takes together, with the first
+one's interview question applying to all of them. `question_id` carries the
+real identity. This predates all of the above, affects every question rather
+than only ambiguous ones, and fixing it would move the baseline the numbers in
+§8.3 were measured against — so it was left alone rather than folded into an
+unrelated change.
