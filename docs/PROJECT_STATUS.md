@@ -1,6 +1,6 @@
 # Project status
 
-**Updated:** 2026-07-28 · **Branch:** `main` (all work commits directly to
+**Updated:** 2026-08-08 · **Branch:** `main` (all work commits directly to
 main and pushes; no feature branches unless asked)
 
 Working-state snapshot. Standing rules and architecture invariants live in
@@ -1021,8 +1021,187 @@ investigation:
   sharing an entity, and `relevance_scorer`/`response_assembler` use entity
   names as a ranking signal. Only v2 is insensitive to it.
 
+## Two people with one name — SHIPPED 2026-08-08
+
+Full write-up in [ENTITY_DISAMBIGUATION.md](ENTITY_DISAMBIGUATION.md), including
+§8 on what the plan got wrong. Summary of what changed and what it cost.
+
+**The problem was never in retrieval.** `/talk` was conflating an uncle and an
+army friend both called `אמנון` because the ARCHIVE was: `UNIQUE (producer_id,
+normalized_name)` means the merge key IS the name, so the second `אמנון` merged
+onto the first by construction. One row held both people, and the family tree
+showed the friend's army recordings as the uncle's moments.
+
+**Step 1 — capture (`9e71adb`, `3e14428`).** Two separate defects, not one:
+
+- "Someone new, not listed" about a colliding name was ACCEPTED and then
+  silently did the opposite — no distinguishing name meant the new entity
+  landed on the old row. Now `new_name` is required exactly when the merge key
+  collides, and rejected if it collides with anything else.
+- That validation was unreachable for the actual case. `check_entities_node`
+  auto-resolved whenever exactly one candidate matched VERBATIM, so two people
+  both called exactly `אמנון` never raised a question at all. Now a verbatim
+  match always asks, gated by `identity_asked_at` (migration 0021) so it fires
+  once per person rather than once per mention.
+
+`identity_asked_at` is deliberately NOT backfilled. Stamping the existing rows
+would have made the change invisible on exactly the archive it was built for;
+unstamped, the next mention of each person asks once and never again, and that
+one pass is the only thing that can surface a conflation that already happened.
+
+Two older defects surfaced while tracing, both live at the time:
+
+- Every "someone new" answer crashed with an `UnboundLocalError`.
+- **Identity questions had been rendering an EMPTY legend since 64eef15** —
+  `_confirmation_question` stopped being called when chunk 4 batched the
+  interrupt. The options still read sensibly on their own, which is why it
+  survived for weeks.
+
+**Step 2 — the repair, done by the producer.** Rather than the migration script
+the plan proposed, the affected recordings were deleted and re-uploaded, letting
+step 1 raise the question naturally. It worked; the archive now holds `אמנון`
+(friend, 2 recordings) and `אמנון נחום` (uncle, 1 recording with the tree edges).
+
+⚠️ **Deleting a recording cascades TWICE, and the second path is easy to miss.**
+Once from `raw_segments` via `source_segment_id`, and once from `entities` via
+`from_entity_id`/`to_entity_id` when the orphan sweep removes a person nobody
+mentions any more. **The second path destroys MANUAL tree edges**, which
+migration 0020's docstring calls permanent ("it survives deleting every
+recording about that person"). It survives the segment cascade; it does not
+survive the person's last mention being deleted. Counting only the first path
+under-reported the blast radius as 7 relations when it was 15, 9 of them
+hand-placed. Check both paths before quoting a number.
+
+**Step 3 — retrieval (`fcd5054`).** Inline entity tags in the transcript block
+at query time, plus a `clarify` output. Nothing is written to the archive:
+`TranscriptChunk.text`, `word_timestamps` and `RawSegment.transcript` are
+untouched, and the video is cut from unit ids and word times that never saw a
+tag. A clarification REPLACES the answer rather than accompanying it, and is
+sent before the no-story branch so an archive holding two `אמנון`s never reports
+holding none.
+
+Two design points worth keeping:
+
+- **Stricter confusability than the confirmation screen.** `names_are_similar`
+  has a character-similarity fallback that grouped `אירה` with `יאיר` — fine
+  when a false positive costs one question a human answers in a second, wrong
+  when it costs asking a LISTENER to choose between two people nobody could
+  confuse.
+- **The prompt is byte-identical when no two people share a name**, asserted by
+  a test. An archive without duplicates provably cannot over-ask.
+
+Measured, 12 questions x 3 runs x 2 arms plus 5 same-name cases: clarification
+rate 0 on the unambiguous set (PASS), 5/5 on the same-name cases.
+
+### 🛑 The clarification gate PASSED while the feature was destroying answers
+
+The single most important thing this work produced, and it generalises well
+beyond it.
+
+The agreed precondition was "clarification rate on the existing unambiguous
+questions must be 0". Four prompt edits passed it and each broke something
+unrelated:
+
+| edit | intended target | what actually moved |
+| --- | --- | --- |
+| clarify JSON at end of Rules | output format | `school` 8 -> 0, another case 4 -> 0 |
+| example `"my friend from the army"` | which person is meant | `army-narrow` 2 -> 4 |
+| swap to `"my neighbour"` | fix the above | `school` 8 -> 0 |
+| tag on RECORDING line vs inline | annotation placement | `school` 8 -> 0 |
+
+None of those questions involves a name, a tag or a clarification. What caught
+them was diffing SELECTED UNITS between arms on unrelated questions — now
+generalised into `scripts/prompt_regression.py`, which should gate every future
+prompt edit. A feature's own gate tests whether it misbehaves on its own terms;
+it says nothing about what it does to everything else.
+
+**The `army-narrow` cause, isolated (n=6, tag and instruction varied
+independently):** the tags do nothing on their own; the INSTRUCTION TEXT does
+it, specifically its example `"my friend from the army"` sitting in the prompt
+while the question asks what role you served in. Swapping four words fixes it
+6/6 — and costs `school` entirely (8 -> 0, 4/4). Every configuration measured
+costs exactly one question, always the same two. The shipped one is the only
+one that keeps `school`; losing a whole answer beats gaining two units on a
+narrow question. All five same-name cases are IDENTICAL across both examples,
+so this wording is a pure collateral-damage knob.
+
+**Do not reword `_DISAMBIGUATION_BLOCK` without running the regression check on
+both sides.**
+
+## ⚠️ Leakage between prompt instructions is a GROWING structural risk
+
+Not a quirk of the disambiguation work — a property of the design, worth
+planning around before it bites again.
+
+Every instruction is in context for every question; there is no routing. The
+instruction text is English and the transcript is Hebrew, so concrete domain
+nouns in the instructions act as soft retrieval cues against it. That is why
+EXAMPLES leak harder than rules: examples are where the nouns live. The current
+prompt already carries ~15 occurrences of nouns that name interview topics
+(`army` x2, `family` x2, `wife` x2, `husband` x2, `commander` x2, `mother`,
+`uncle`, `childhood`, `military`, `career`). Position matters independently —
+the same clarify rule primed empty answers purely by sitting last.
+
+Exposure is roughly **(instruction blocks) x (marginal questions)**, and the
+second factor is identifiable in advance: leakage lands on questions whose
+answer was already a close call, which is approximately the set already known
+to vary run to run. `school` asks what he STUDIED while the units say WHERE he
+studied; `army-narrow` is named in CLAUDE.md as one flash varies on. That is
+what makes `prompt_regression.py`'s `MARGINAL` panel worth curating.
+
+**What genuinely isolates today:** conditional inclusion. The disambiguation
+block exists only when the archive actually has confusable names, so archives
+without them are provably unaffected. Gate each new feature on a data
+precondition the same way. Its limit is the case that matters — when the
+precondition IS met, it is one flat prompt again.
+
+### DECISION POINT: reconsider routing / separate calls at 4-5 instruction blocks
+
+Recorded now so it is a planned decision rather than a surprise.
+
+The disambiguation block alone added ~2,000 chars to ~8,300 of instructions —
+a 24% increase in the non-transcript surface, from ONE feature. At roughly
+**four to five independent conditional blocks**, a cheap router (decide which
+blocks apply, then send only those) or per-concern calls stop looking like
+overkill.
+
+The costs are real and already documented here, which is why the threshold is
+not lower:
+
+- **Latency.** CLAUDE.md records that ~1.4s of a ~9s turn was judged not worth
+  a model swap. An extra call spends that again.
+- **Prompt caching.** The system/user split is deliberately ordered so the
+  large static prefix caches across questions. Routing fragments it.
+- **A new silent-failure mode.** A misroute turns a feature off with nothing
+  in the UI to show for it — the exact shape this project keeps finding.
+
+Below that threshold, conditional inclusion plus the regression check is the
+better trade. Revisit when the third or fourth block is proposed, not before.
+
 ## Known gaps / tech debt
 
+- 🚨 **`seed_sweep.py`'s references are DEAD and every accuracy number built
+  on them is unscoreable.** They name segment uuids (`502fb283…`, `1d32a9b5…`,
+  `097b606b…`) that no longer exist — the archive was re-recorded on 2026-08-07.
+  Unit ids are positional across the whole archive, so re-recording renumbers
+  everything after the changed segment. `rebaseline_accuracy.py` and
+  `seed_sweep.py` cannot produce a comparable figure until the references are
+  re-derived against the current archive. This is the same failure the header
+  of `seed_sweep.py` warns about from the Deepgram re-ingest, happening again.
+- 🚨 **`question_index` restarts per interview CATEGORY, but take-grouping keys
+  on it alone** (`_group_siblings`). The live archive therefore presents three
+  unrelated questions as one answer given in three sittings — "tell me about
+  your father" (childhood), "your roles in the army" (military) and
+  "post-secondary studies" (academic) all sit at `idx=1` and are printed as
+  "take 1/2/3 of this question", with the prompt instructing the model to read
+  them together and apply the FIRST one's interview question to all of them.
+  `question_id` carries the real identity. Affects every question, not only
+  ambiguous ones. Not fixed: it would move the baseline the 2026-08-08
+  measurements were taken against, so it wants its own change and its own
+  before/after.
+- **No regression test guards "the name-correction field never touches
+  `TranscriptChunk`"** — dropped over a `MissingGreenlet` fixture problem and
+  stated plainly in `bbda871`. The behaviour is correct; nothing pins it.
 - **The eval's scored set contains no broad question**, which is exactly where
   v2's run-to-run variance lives. `stdev=0.000` therefore says the reference
   cases are solid, not that nothing varies. Closing this needs an agreed
@@ -1071,7 +1250,13 @@ investigation:
 2. **Whether to tighten follow-up suggestion relevance** (see above).
 3. **Whether to add a broad question to the scored eval set**, accepting that
    its reference will be fuzzier than the existing ones.
-4. **Whether `avatar` mode is still a supported product path** or effectively
+4. **When to introduce routing or per-concern LLM calls** for the /talk
+   prompt — see the decision point above. Trigger is 4-5 independent
+   conditional instruction blocks; there is 1 today.
+5. **Whether to re-derive the accuracy references** against the current
+   archive, or retire IoU scoring in favour of the drift-based check. The
+   references have now gone stale twice for the same structural reason.
+6. **Whether `avatar` mode is still a supported product path** or effectively
    superseded by the video-clip modes — it still carries MuseTalk, TTS, and
    voice-cloning surface area that nothing else needs.
 
@@ -1081,8 +1266,11 @@ investigation:
 
 ```bash
 cd backend
-python scripts/rebaseline_accuracy.py      # v2 accuracy as a MEAN over runs — quote this
+python scripts/prompt_regression.py --save # BEFORE any /talk prompt edit
+python scripts/prompt_regression.py        # AFTER — diffs unrelated answers
+python scripts/eval_name_disambiguation.py # same-name clarification, both arms
+python scripts/rebaseline_accuracy.py      # ⚠️ references are STALE — see known gaps
 python scripts/compare_retrieval_modes.py  # v1 vs v2: consistency, latency, calls, tokens
 python scripts/seed_sweep.py               # single-run IoU vs known-correct
-python -m pytest -q -m 'not integration'   # 541 tests
+python -m pytest -q                        # 827 tests
 ```

@@ -1,0 +1,149 @@
+{
+  "archive_version": [
+    14,
+    "2026-08-07 22:50:48.515861+00:00",
+    "2026-08-07 22:41:27.610434+00:00"
+  ],
+  "group_id": "79820a49-b07d-41fe-941b-f5ceba09f7b5",
+  "runs": 3,
+  "questions": {
+    "family": {
+      "variants": [
+        [
+          "u4",
+          "u5",
+          "u6",
+          "u7",
+          "u8",
+          "u9",
+          "u10",
+          "u23",
+          "u24",
+          "u25",
+          "u65",
+          "u66",
+          "u67"
+        ]
+      ],
+      "clarified": 0,
+      "runs": 3
+    },
+    "brothers": {
+      "variants": [
+        [
+          "u65",
+          "u66",
+          "u67"
+        ]
+      ],
+      "clarified": 0,
+      "runs": 3
+    },
+    "ilana": {
+      "variants": [
+        [
+          "u23",
+          "u24",
+          "u25"
+        ]
+      ],
+      "clarified": 0,
+      "runs": 3
+    },
+    "tzvi": {
+      "variants": [
+        [
+          "u4",
+          "u5",
+          "u6",
+          "u7",
+          "u8",
+          "u9",
+          "u10"
+        ]
+      ],
+      "clarified": 0,
+      "runs": 3
+    },
+    "army": {
+      "variants": [
+        [
+          "u11",
+          "u12",
+          "u13",
+          "u14"
+        ]
+      ],
+      "clarified": 0,
+      "runs": 3
+    },
+    "montreal": {
+      "variants": [
+        []
+      ],
+      "clarified": 0,
+      "runs": 3
+    },
+    "army-narrow": {
+      "variants": [
+        [
+          "u11",
+          "u12",
+          "u13",
+          "u14"
+        ]
+      ],
+      "clarified": 0,
+      "runs": 3
+    },
+    "army-broad": {
+      "variants": [
+        [
+          "u11",
+          "u12",
+          "u13",
+          "u14"
+        ]
+      ],
+      "clarified": 0,
+      "runs": 3
+    },
+    "influence-1": {
+      "variants": [
+        []
+      ],
+      "clarified": 0,
+      "runs": 3
+    },
+    "influence-2 (followup)": {
+      "variants": [
+        []
+      ],
+      "clarified": 0,
+      "runs": 3
+    },
+    "school": {
+      "variants": [
+        [
+          "u41",
+          "u42",
+          "u43",
+          "u44",
+          "u45",
+          "u46",
+          "u47",
+          "u48"
+        ]
+      ],
+      "clarified": 0,
+      "runs": 3
+    },
+    "no-answer": {
+      "variants": [
+        []
+      ],
+      "clarified": 0,
+      "runs": 3
+    }
+  }
+}

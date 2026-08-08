@@ -1,0 +1,289 @@
+"""
+Did a prompt edit change an answer it had nothing to do with?
+
+THE CHECK THAT CATCHES WHAT THE FEATURE'S OWN GATE CANNOT. A feature-specific
+gate asks "does this behave correctly on its own terms". Every one of the four
+regressions found while building the same-name disambiguation passed that kind
+of gate and broke something unrelated anyway:
+
+  clarify JSON moved to the end of Rules   -> `school` 8 units -> 0
+  example "my friend from the army"        -> `army-narrow` 2 units -> 4
+  example swapped to "my neighbour"        -> `school` 8 units -> 0
+  tag on RECORDING line instead of inline  -> `school` 8 units -> 0
+
+None of those questions involves a name, a tag, or a clarification. The
+mechanism is that every instruction is in context for every question: the
+instruction text is English, the transcript is Hebrew, and concrete nouns in
+the instructions act as soft retrieval cues against it. Examples leak harder
+than rules, because examples are where the domain nouns live. Position matters
+too — the same clarify rule primed empty answers purely by sitting last.
+
+So: run BEFORE the edit, run AFTER, diff the selected units. That is the whole
+idea, and it is worth more than any amount of reading the prompt carefully.
+
+## Usage
+
+    python scripts/prompt_regression.py --save     # BEFORE you edit the prompt
+    ...edit the prompt...
+    python scripts/prompt_regression.py            # AFTER — diffs against it
+
+Exit code is non-zero when anything drifted, so it can gate a commit.
+
+## Three things this harness does that a naive one would not
+
+**It hard-fails on an exhausted retry.** `_read_archive_for_ranges` is
+fail-soft by design — a live turn should say "I don't have a story about that"
+rather than error. That makes an API outage and "nothing answers this"
+indistinguishable downstream, and BOTH of the broken measurements taken while
+building this feature were outages that read as clean results. PROJECT_STATUS
+has carried this warning about the accuracy eval since 2026-07-29; here it is
+enforced rather than warned about.
+
+**It refuses to compare across a changed archive.** The baseline records the
+archive fingerprint. Unit ids are positional across the whole archive, so
+re-recording one segment renumbers everything after it and every stored id
+becomes a lie. `seed_sweep.py`'s references died exactly this way — they name
+segment uuids that no longer exist, and the questions they score are silently
+unscoreable.
+
+**It marks the questions already known to vary** rather than averaging them
+away. `family`, `army-broad` and `army-narrow` move by a unit or two run to
+run for reasons that predate any edit (CLAUDE.md: the archive-read call is
+non-deterministic on marginal units). Drift on those needs more runs before it
+means anything; drift anywhere else is a finding.
+
+## The panel
+
+Every question from the comparison harness, plus MARGINAL ones added by hand.
+Marginal questions are where leakage lands — not at random. `school` asks what
+he STUDIED while the units say WHERE he studied; that stretch is a close call
+the model can go either way on, so any perturbation flips it. The set of
+leakage-vulnerable questions is approximately the set of already-unstable
+ones, which is what makes this panel worth curating rather than growing at
+random. ADD A QUESTION HERE whenever one is found to flip on an unrelated
+edit.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+import uuid
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+# Before app.* is imported: DEBUG drives SQLAlchemy's echo, and a hundred
+# questions of statement logging buries the report.
+os.environ.setdefault("DEBUG", "false")
+
+sys.stdout.reconfigure(encoding="utf-8")
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import compare_retrieval_modes as crm  # noqa: E402
+from app.services import full_archive_retrieval as ar  # noqa: E402
+from app.services import retrieval_service  # noqa: E402
+from app.services.llm import llm_service  # noqa: E402
+
+BASELINE = Path(__file__).resolve().parent / "prompt_regression_baseline.json"
+
+#: Questions found to flip on an edit that had nothing to do with them. Not a
+#: guess — each one earned its place by actually moving. Keep the reason.
+MARGINAL: Dict[str, str] = {
+    # Asks what he STUDIED; the units say WHERE he studied. Flipped 8 -> 0 on
+    # three separate unrelated edits.
+    "school": "answered by a stretch — 'what did you study' vs units naming schools",
+    # Narrow role question sitting next to units about army friends. Broadened
+    # 2 -> 4 when an unrelated instruction mentioned "my friend from the army".
+    "army-narrow": "narrow question adjacent to broader material in the same recording",
+    # Both documented in CLAUDE.md as varying run to run on peripheral units.
+    "family": "broad — CLAUDE.md documents +/-1-2 peripheral units",
+    "army-broad": "broad — CLAUDE.md documents +/-1-2 peripheral units",
+}
+
+#: Extra questions not in the comparison set, added because they probe a
+#: marginal judgement. (label, question, history)
+EXTRA: List[Tuple[str, str, List[dict]]] = []
+
+
+class ExhaustedAPI(RuntimeError):
+    """Raised rather than letting fail-soft turn an outage into a result."""
+
+
+def _install_hard_failing_llm(retries: int = 6) -> None:
+    real = llm_service.generate_response
+
+    async def wrapper(messages, system_prompt=None, thinking=False, temperature=None, **kw):
+        last: Optional[Exception] = None
+        for attempt in range(retries):
+            try:
+                return await real(
+                    messages=messages, system_prompt=system_prompt,
+                    thinking=thinking, temperature=temperature, **kw
+                )
+            except Exception as e:  # noqa: BLE001 — re-raised below
+                last = e
+                await asyncio.sleep(4 * (attempt + 1))
+        raise ExhaustedAPI(f"{retries} attempts failed; last: {last}")
+
+    llm_service.generate_response = wrapper
+
+
+def panel() -> List[Tuple[str, str, List[dict]]]:
+    return [(label, q, h) for label, q, h in crm.QUESTION_SET] + EXTRA
+
+
+async def _run_once(question: str, group_id: str, history: List[dict]) -> dict:
+    session_id = str(uuid.uuid4())
+
+    async def fake_turns(_session_id, _n):
+        return history
+
+    original = retrieval_service._recent_turns
+    retrieval_service._recent_turns = fake_turns
+    try:
+        selection = await ar.select_units(question, group_id, "he", session_id)
+    finally:
+        retrieval_service._recent_turns = original
+
+    return {
+        "units": [u.unit_id for u in selection.selected_units],
+        # Recorded too: a prompt edit can switch clarification on or off for a
+        # question, and that is a behaviour change even when the units match.
+        "clarify": bool(selection.clarify),
+    }
+
+
+async def measure(group_id: str, runs: int) -> dict:
+    ar.invalidate_archive_cache(group_id)
+    results: Dict[str, dict] = {}
+    for label, question, history in panel():
+        rows = [await _run_once(question, group_id, history) for _ in range(runs)]
+        variants = sorted({tuple(r["units"]) for r in rows})
+        results[label] = {
+            "variants": [list(v) for v in variants],
+            "clarified": sum(1 for r in rows if r["clarify"]),
+            "runs": runs,
+        }
+        stable = "stable" if len(variants) == 1 else f"{len(variants)} variants"
+        print(
+            f"  {label:24} units {[len(r['units']) for r in rows]}  "
+            f"clarify {results[label]['clarified']}/{runs}  {stable}"
+        )
+    return {
+        # Unit ids are positional across the WHOLE archive, so this is what
+        # makes a stored baseline meaningful at all.
+        "archive_version": list(await ar._archive_version(group_id)),
+        "group_id": group_id,
+        "runs": runs,
+        "questions": results,
+    }
+
+
+def compare(before: dict, after: dict) -> int:
+    if before["archive_version"] != after["archive_version"]:
+        print("\nBASELINE IS VOID — the archive changed since it was saved.")
+        print(f"  saved: {before['archive_version']}")
+        print(f"  now  : {after['archive_version']}")
+        print(
+            "\nUnit ids are positional across the whole archive, so every id in\n"
+            "the baseline refers to something else now. Re-save it (--save) from\n"
+            "a checkout WITHOUT your prompt edit, then re-run."
+        )
+        return 2
+
+    print("\n" + "=" * 74)
+    print("DRIFT")
+    print("=" * 74)
+    drifted: List[str] = []
+    for label in before["questions"]:
+        b, a = before["questions"][label], after["questions"].get(label)
+        if a is None:
+            print(f"  {label:24} MISSING from this run")
+            drifted.append(label)
+            continue
+        b_units = {tuple(v) for v in b["variants"]}
+        a_units = {tuple(v) for v in a["variants"]}
+        note = f"   ({MARGINAL[label]})" if label in MARGINAL else ""
+        if b_units == a_units and b["clarified"] == a["clarified"]:
+            print(f"  {label:24} same")
+            continue
+        drifted.append(label)
+        flag = "DRIFT (known-marginal — re-run with more N before acting)" if label in MARGINAL else "DRIFT"
+        print(f"  {label:24} {flag}{note}")
+        only_before = sorted(set().union(*b_units) - set().union(*a_units)) if b_units else []
+        only_after = sorted(set().union(*a_units) - set().union(*b_units)) if a_units else []
+        if only_before:
+            print(f"      only BEFORE: {only_before}")
+        if only_after:
+            print(f"      only AFTER : {only_after}")
+        if b["clarified"] != a["clarified"]:
+            print(f"      clarify {b['clarified']}/{b['runs']} -> {a['clarified']}/{a['runs']}")
+
+    print("\n" + "=" * 74)
+    if not drifted:
+        print("NO DRIFT — the edit changed nothing on this panel.")
+        return 0
+    unexpected = [d for d in drifted if d not in MARGINAL]
+    print(f"{len(drifted)} question(s) drifted: {drifted}")
+    if unexpected:
+        print(
+            f"\n{len(unexpected)} of them are NOT known-marginal: {unexpected}\n"
+            "That is a finding, not noise. An edit reaching a question it has\n"
+            "nothing to do with is the failure this harness exists for."
+        )
+    print(
+        "\nIf a question drifted that is not in MARGINAL, add it there with the\n"
+        "reason once you understand it — the panel is only useful if it grows\n"
+        "from real findings."
+    )
+    return 1
+
+
+async def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--save", action="store_true",
+                        help="record the CURRENT behaviour as the baseline")
+    parser.add_argument("--runs", type=int, default=int(os.environ.get("PROMPT_REGRESSION_RUNS", "3")))
+    parser.add_argument("--group-id", default=crm.DEFAULT_GROUP_ID)
+    args = parser.parse_args()
+
+    _install_hard_failing_llm()
+
+    print(f"{len(panel())} questions x {args.runs} runs   (archive {args.group_id})")
+    print("=" * 74)
+    try:
+        current = await measure(args.group_id, args.runs)
+    except ExhaustedAPI as e:
+        print(f"\nABORTED — {e}")
+        print(
+            "Deliberately not reported as a result. The archive read is\n"
+            "fail-soft, so an outage would otherwise look like 'this question\n"
+            "now returns nothing' — which is how two measurements were misread\n"
+            "while building the same-name feature."
+        )
+        return 3
+
+    if args.save:
+        BASELINE.write_text(json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"\nBaseline saved to {BASELINE.name} "
+              f"(archive version {current['archive_version']}).")
+        print("Now make the prompt edit and re-run without --save.")
+        return 0
+
+    if not BASELINE.exists():
+        print(f"\nNo baseline at {BASELINE.name}. Run with --save BEFORE editing "
+              "the prompt, from a checkout without the edit.")
+        return 2
+
+    return compare(json.loads(BASELINE.read_text(encoding="utf-8")), current)
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
