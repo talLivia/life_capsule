@@ -43,6 +43,7 @@ import json
 import logging
 import re
 import time
+import zlib
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -51,7 +52,12 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import InterviewSession, Message, RawSegment, TranscriptChunk
-from app.services import entity_store, retrieval_service, video_clip_assembler
+from app.services import (
+    entity_store,
+    response_assembler,
+    retrieval_service,
+    video_clip_assembler,
+)
 from app.services.cache import cache_service
 from app.services.llm import llm_service
 from app.services.response_assembler import NO_STORY_FALLBACK
@@ -235,7 +241,14 @@ archive is first-person, but the question may be second- or third-person \
 about the storyteller.
 - If NOTHING in the archive answers the question, output \
 {{"unit_ids": []}}. Never invent, force, or approximate a selection to \
-avoid an empty answer.
+avoid an empty answer. With that empty selection ONLY, you may add \
+"about": the name of the one person or place the question was asking about, \
+copied EXACTLY as it is spelled in the archive - resolving it from the recent \
+conversation when the question itself does not name them. Use "about": null \
+whenever the question was not about a single named person or place, when you \
+are not certain which one it was, or when the name is not one the archive \
+already uses. It is only ever a name, never a description, and it changes \
+nothing about which units you choose.
 
 FULL ARCHIVE TRANSCRIPT:
 {transcript_block}
@@ -1130,6 +1143,53 @@ def _parse_clarify(text: str) -> Optional[dict]:
     return {"question": question.strip(), "options": cleaned}
 
 
+def _parse_about(text: str) -> Optional[str]:
+    """The optional subject NAME accompanying an empty selection.
+
+    A bare name and nothing else. It is not validated here — `_resolve_about`
+    checks it against the archive's real entities, because a name the model
+    produced is a claim about the archive and has to be checked against the
+    archive, not against itself.
+    """
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    about = data.get("about")
+    if not isinstance(about, str) or not about.strip():
+        return None
+    return about.strip()
+
+
+def _resolve_about(
+    raw: Optional[str], entity_map: Dict[str, List[str]]
+) -> Optional[Tuple[str, List[str]]]:
+    """(the archive's own spelling, the recordings that mention it), or None.
+
+    THE NAME MUST ALREADY EXIST. "I don't have another story about X" is a
+    statement about the archive, so X has to be something the archive actually
+    holds — otherwise a model that answered "what pets did you have?" by
+    naming a plausible-sounding pet would have us assert it. Matched on the
+    normalised key so a final-letter form or a stray space still resolves, and
+    the STORED spelling is what gets shown, never the model's.
+    """
+    if not raw:
+        return None
+    key = entity_store.normalize_entity_name(raw)
+    if not key:
+        return None
+    for name, segment_ids in entity_map.items():
+        if entity_store.normalize_entity_name(name) == key:
+            return name, segment_ids
+    logger.info(f"Archive read named {raw!r} as the subject; no such entity — using the generic line")
+    return None
+
+
 def _parse_unit_selection(text: str) -> List[str]:
     """Extract the selected unit ids, preserving the model's stitch order.
 
@@ -1175,7 +1235,7 @@ async def _read_archive_for_ranges(
     history_block: str,
     recording_language: str,
     disambiguation: bool = False,
-) -> Tuple[List[str], Optional[dict], Optional[dict]]:
+) -> Tuple[List[str], Optional[dict], Optional[dict], Optional[str]]:
     """The ONE LLM call. Fail-soft to [] (an LLM/parse failure yields the
     no-story fallback, never a guessed clip) — same never-invent contract
     as the other modes' own LLM steps.
@@ -1217,13 +1277,13 @@ async def _read_archive_for_ranges(
         )
     except Exception as e:
         logger.warning(f"Archive-read LLM call failed, treating as no-story: {e}")
-        return [], None, None
+        return [], None, None, None
     # `clarify` is only ever read when the prompt actually offered it. A model
     # that invents the key on an archive with no same-named people is
     # returning something it was never told about, and honouring it would turn
     # an answerable question into a question back.
     clarify = _parse_clarify(raw) if disambiguation else None
-    return _parse_unit_selection(raw), _parse_follow_up(raw), clarify
+    return _parse_unit_selection(raw), _parse_follow_up(raw), clarify, _parse_about(raw)
 
 
 # ── Step 4: deterministic validation + word-boundary snapping (no LLM) ──────
@@ -1318,6 +1378,11 @@ class UnitSelection:
     # select_units) — a guess plus a question is the conflation this feature
     # exists to remove.
     clarify: Optional[dict] = None
+    # The no-story line, already naming who the question was about, when that
+    # could be established and checked against the archive. None means the
+    # generic NO_STORY_FALLBACK — which is still the right answer for a
+    # question about nobody in particular.
+    no_story_text: Optional[str] = None
 
 
 async def select_units(
@@ -1355,7 +1420,7 @@ async def select_units(
     entity_map_block = _format_entity_map(entity_map, _recording_ordinals(archive, units))
     history_block = _format_history_block(turns, per_turn_units) if turns else ""
 
-    unit_ids, raw_follow_up, clarify = await _read_archive_for_ranges(
+    unit_ids, raw_follow_up, clarify, raw_about = await _read_archive_for_ranges(
         question,
         transcript_block,
         entity_map_block,
@@ -1381,7 +1446,53 @@ async def select_units(
     selected = [by_id[uid] for uid in dict.fromkeys(unit_ids) if uid in by_id]
     clips = resolve_units_to_clips(unit_ids, units)
     follow_up = _validate_follow_up(raw_follow_up, by_id, selected, shown_keys)
-    return UnitSelection(clips=clips, selected_units=selected, follow_up=follow_up)
+    # Only meaningful when there is nothing to play. A subject named alongside
+    # a real answer is ignored rather than stored: it would have no reader, and
+    # an unread field drifts.
+    no_story_text = (
+        _no_story_line(raw_about, entity_map, units, shown_keys, question)
+        if not clips
+        else None
+    )
+    return UnitSelection(
+        clips=clips,
+        selected_units=selected,
+        follow_up=follow_up,
+        no_story_text=no_story_text,
+    )
+
+
+def _no_story_line(
+    raw_about: Optional[str],
+    entity_map: Dict[str, List[str]],
+    units: List[UtteranceUnit],
+    shown_keys: set,
+    question: str,
+) -> Optional[str]:
+    """"I don't have another story about אמנון", or None for the generic line.
+
+    WHETHER IT IS "ANOTHER" IS DECIDED HERE, not by the model, because the
+    archive already knows: if any unit from this person's recordings has been
+    played in this session then the honest sentence is "nothing MORE". Asking
+    the model would be asking it to remember something the session record
+    holds exactly.
+
+    The wording is a stable function of the question, so the same question
+    always produces the same sentence — a random pick would make the retrieval
+    eval flaky for a reason that has nothing to do with retrieval.
+    """
+    resolved = _resolve_about(raw_about, entity_map)
+    if resolved is None:
+        return None
+    name, segment_ids = resolved
+    shown_segments = {
+        u.segment_id for u in units if _unit_key(u.segment_id, u.start_sec) in shown_keys
+    }
+    return response_assembler.no_story_about(
+        name,
+        already_shown=bool(shown_segments & set(segment_ids)),
+        variant=zlib.crc32(question.encode("utf-8")),
+    )
 
 
 def _validate_follow_up(
@@ -1433,7 +1544,14 @@ async def assemble_video_clip_response_v2(
     if selection.clarify:
         return VideoClipResult(video_url=None, clarify=selection.clarify)
     if not clips:
-        return VideoClipResult(video_url=None, no_story=True, fallback_text=NO_STORY_FALLBACK)
+        return VideoClipResult(
+            video_url=None,
+            no_story=True,
+            # Names the subject when the archive could confirm one; otherwise
+            # the generic line, unchanged. The WS handler already forwards
+            # fallback_text, so nothing downstream needed touching.
+            fallback_text=selection.no_story_text or NO_STORY_FALLBACK,
+        )
 
     cache_key = video_clip_assembler._clip_cache_key(group_id, clips)
     cached_url = await cache_service.get(cache_key)

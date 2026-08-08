@@ -57,6 +57,45 @@ def _pick_bridge_phrase(index: int) -> str:
     return BRIDGE_PHRASE_TEMPLATES[index % len(BRIDGE_PHRASE_TEMPLATES)]
 
 
+# "I don't have a story about that" is true but sounds like the system failed
+# to understand the question. Asked "what else did you do together?" about a
+# specific person, it reads as a shrug — when the honest and much warmer answer
+# is "I don't have another story about אמנון".
+#
+# SAME RULE AS THE BRIDGE PHRASES ABOVE, and for the same reason: {entity} is
+# the only thing ever injected, and it is a name the archive really holds,
+# validated before it gets here. The sentence itself never varies with what
+# happened in any recording, so nothing is generated on the storyteller's
+# behalf — the constraint NO_STORY_FALLBACK exists to enforce.
+#
+# TWO BANKS, because "I have nothing about X" and "I have nothing MORE about
+# X" are different statements and only one of them is true at a time. Saying
+# the first after already playing three clips about someone reads as the
+# system forgetting the conversation it is in.
+NO_STORY_ABOUT_TEMPLATES = [
+    "אין לי סיפור על {entity}",
+    "אין לי מה לספר על {entity}",
+]
+
+NO_MORE_STORY_ABOUT_TEMPLATES = [
+    "אין לי עוד סיפור על {entity}",
+    "זה כל מה שיש לי על {entity}",
+    "לא נשאר לי עוד מה לספר על {entity}",
+]
+
+
+def no_story_about(entity: str, *, already_shown: bool, variant: int = 0) -> str:
+    """The no-story line, naming who the question was about.
+
+    `variant` picks from the bank and is expected to be a STABLE function of
+    the question — the same question should always produce the same wording.
+    Random selection would make the retrieval eval flaky for a reason that has
+    nothing to do with retrieval.
+    """
+    bank = NO_MORE_STORY_ABOUT_TEMPLATES if already_shown else NO_STORY_ABOUT_TEMPLATES
+    return bank[variant % len(bank)].format(entity=entity)
+
+
 async def _fetch_transcripts(segment_ids: List[str]) -> Dict[str, str]:
     if not segment_ids:
         return {}

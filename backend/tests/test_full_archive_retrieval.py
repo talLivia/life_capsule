@@ -20,6 +20,7 @@ from app.models import InterviewSession, RawSegment, TranscriptChunk
 from app.services import entity_store
 from app.services import full_archive_retrieval as ar
 from app.services import retrieval_service
+from app.services import response_assembler as ra
 from app.services.response_assembler import NO_STORY_FALLBACK
 
 pytestmark = pytest.mark.asyncio
@@ -461,7 +462,7 @@ async def test_read_and_validate_ranges_no_answer_returns_empty(monkeypatch):
     monkeypatch.setattr(ar, "_load_archive", AsyncMock(return_value=archive))
     monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={}))
     monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
-    monkeypatch.setattr(ar, "_read_archive_for_ranges", AsyncMock(return_value=([], None, None)))
+    monkeypatch.setattr(ar, "_read_archive_for_ranges", AsyncMock(return_value=([], None, None, None)))
 
     result = await ar.read_and_validate_ranges("q", "group", "he", "sess")
     assert result == []
@@ -475,7 +476,7 @@ async def test_read_and_validate_ranges_happy_path_returns_validated_clips(monke
     monkeypatch.setattr(
         ar,
         "_read_archive_for_ranges",
-        AsyncMock(return_value=(["u1"], None, None)),
+        AsyncMock(return_value=(["u1"], None, None, None)),
     )
 
     result = await ar.read_and_validate_ranges("q", "group", "he", "sess")
@@ -613,7 +614,7 @@ async def test_read_archive_for_ranges_fails_soft_on_llm_error(monkeypatch):
         ar.llm_service, "generate_response", AsyncMock(side_effect=RuntimeError("down"))
     )
     result = await ar._read_archive_for_ranges("q", "T", "E", "", "he")
-    assert result == ([], None, None)  # (unit_ids, follow_up, clarify) — fail-soft on all three
+    assert result == ([], None, None, None)  # (unit_ids, follow_up, clarify, about) — fail-soft on all four
 
 
 # ── already-shown handling (visited-set wired into v2) ───────────────────────
@@ -1244,7 +1245,7 @@ async def test_clarify_replaces_the_answer_rather_than_decorating_it(monkeypatch
         ar,
         "_read_archive_for_ranges",
         AsyncMock(
-            return_value=(["u1"], None, {"question": "q?", "options": ["a", "b"]})
+            return_value=(["u1"], None, {"question": "q?", "options": ["a", "b"]}, None)
         ),
     )
     ar.invalidate_archive_cache("group")
@@ -1254,3 +1255,127 @@ async def test_clarify_replaces_the_answer_rather_than_decorating_it(monkeypatch
     assert selection.clarify == {"question": "q?", "options": ["a", "b"]}
     assert selection.clips == []
     assert selection.selected_units == []
+
+
+# ── "I don't have another story about אמנון" ─────────────────────────────────
+
+
+def test_about_must_name_an_entity_the_archive_actually_holds():
+    """A name the model produced is a CLAIM about the archive.
+
+    "I don't have another story about X" asserts that X is someone this
+    archive knows. A model answering "what pets did you have?" by naming a
+    plausible-sounding pet would have us assert it — which is worse than the
+    generic line, not better. So the name is checked against the real entity
+    list, and the archive's OWN spelling is what gets shown.
+    """
+    entity_map = {"אמנון": ["seg-a", "seg-b"], "תל אביב": ["seg-c"]}
+
+    assert ar._resolve_about("אמנון", entity_map) == ("אמנון", ["seg-a", "seg-b"])
+    # Normalised match: a final-letter form or stray whitespace still resolves,
+    # and the STORED spelling comes back, not the model's.
+    assert ar._resolve_about("  אמנון ", entity_map)[0] == "אמנון"
+    # Not in the archive -> generic line.
+    assert ar._resolve_about("כלב", entity_map) is None
+    assert ar._resolve_about(None, entity_map) is None
+    assert ar._resolve_about("", entity_map) is None
+
+
+def test_about_is_parsed_only_as_a_bare_name():
+    assert ar._parse_about('{"unit_ids": [], "about": "אמנון"}') == "אמנון"
+    assert ar._parse_about('{"unit_ids": [], "about": null}') is None
+    assert ar._parse_about('{"unit_ids": []}') is None
+    assert ar._parse_about("not json") is None
+
+
+def test_already_shown_decides_another_versus_any_not_the_model():
+    """The archive knows whether it has said this before; the model does not.
+
+    Saying "I don't have a story about אמנון" after playing three clips about
+    him reads as the system forgetting the conversation it is in. Whether any
+    of that person's recordings were already played is in the session record,
+    so it is read there rather than asked for.
+    """
+    archive = [
+        ar.ArchiveSegment(
+            segment=_segment("seg-a", "ספר על הצבא"),
+            chunks=[_chunk("seg-a", 0, 0.0, 4.0, "הייתי עם אמנון בצבא")],
+        )
+    ]
+    units = ar._build_units(archive)
+    entity_map = {"אמנון": ["seg-a"]}
+
+    fresh = ar._no_story_line("אמנון", entity_map, units, set(), "q")
+    assert fresh in [t.format(entity="אמנון") for t in ra.NO_STORY_ABOUT_TEMPLATES]
+
+    shown = {ar._unit_key(u.segment_id, u.start_sec) for u in units}
+    again = ar._no_story_line("אמנון", entity_map, units, shown, "q")
+    assert again in [t.format(entity="אמנון") for t in ra.NO_MORE_STORY_ABOUT_TEMPLATES]
+
+
+def test_no_story_wording_is_stable_for_a_given_question():
+    """Same question, same sentence — always.
+
+    The bank exists so repeats do not read robotically, but a RANDOM pick
+    would make the retrieval eval flaky for a reason that has nothing to do
+    with retrieval. `prompt_regression.py` compares runs of the same question.
+    """
+    archive = [
+        ar.ArchiveSegment(
+            segment=_segment("seg-a", "ספר על הצבא"),
+            chunks=[_chunk("seg-a", 0, 0.0, 4.0, "הייתי עם אמנון בצבא")],
+        )
+    ]
+    units = ar._build_units(archive)
+    entity_map = {"אמנון": ["seg-a"]}
+    lines = {
+        ar._no_story_line("אמנון", entity_map, units, set(), "מה עוד עשיתם ביחד?")
+        for _ in range(5)
+    }
+    assert len(lines) == 1
+
+
+async def test_a_subject_named_alongside_a_real_answer_is_ignored(monkeypatch):
+    """`about` accompanies an EMPTY selection and nothing else.
+
+    Stored next to a real answer it would have no reader, and an unread field
+    drifts until something starts trusting it.
+    """
+    archive = _resolvable_archive()
+    monkeypatch.setattr(ar, "_load_archive", AsyncMock(return_value=archive))
+    monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={"Nir": ["seg-a"]}))
+    monkeypatch.setattr(ar, "_build_name_tags_for", AsyncMock(return_value={}))
+    monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        ar, "_read_archive_for_ranges",
+        AsyncMock(return_value=(["u1"], None, None, "Nir")),
+    )
+    ar.invalidate_archive_cache("group")
+
+    selection = await ar.select_units("q", "group", "he", "sess")
+
+    assert selection.clips, "this run has a real answer"
+    assert selection.no_story_text is None
+
+
+async def test_no_story_falls_back_to_the_generic_line_when_nobody_is_named(monkeypatch):
+    """Questions about nobody in particular keep exactly today's behaviour.
+
+    "What pets did you have?" has no subject. The generic line is the right
+    answer for it, and this is the case a tailored one would make WORSE.
+    """
+    archive = _resolvable_archive()
+    monkeypatch.setattr(ar, "_load_archive", AsyncMock(return_value=archive))
+    monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={"Nir": ["seg-a"]}))
+    monkeypatch.setattr(ar, "_build_name_tags_for", AsyncMock(return_value={}))
+    monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        ar, "_read_archive_for_ranges",
+        AsyncMock(return_value=([], None, None, None)),
+    )
+    ar.invalidate_archive_cache("group")
+
+    result = await ar.assemble_video_clip_response_v2("q", "group", "he", "sess")
+
+    assert result.no_story is True
+    assert result.fallback_text == NO_STORY_FALLBACK

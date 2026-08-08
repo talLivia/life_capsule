@@ -329,6 +329,25 @@ service in answer to a question about someone else.
 
 ### The one accepted cost — and what actually causes it
 
+> **RESOLVED 2026-08-09, by an unrelated change.** Adding the `about` field to
+> the empty-selection rule (the tailored no-story line) restored `army-narrow`
+> to `u11,u12` — 6/6 stable, measured against the same prompt with only that
+> sentence removed. `family` moved 13 -> 15 units in the same change, gaining
+> two units that are genuinely about the family ("the atmosphere at home was
+> always happy", "my parents raised us to be together all the time").
+>
+> Both were caught by `prompt_regression.py`, flagged as known-marginal, and
+> confirmed real at n=6 per arm rather than waved through. Everything below is
+> kept because the ANALYSIS still holds and the trade it describes was real
+> when it was made — but the cost is no longer being paid, and nobody should
+> re-derive it from this section.
+>
+> The likely reason, and it is a HYPOTHESIS: asking the model to name the one
+> person or place a question is about makes it consider the question's subject
+> explicitly, which sharpens both narrow discrimination and topical recall.
+> Untested. Do not build on it without measuring.
+
+
 `army-narrow` ("באיזה תפקיד שירתת בצבא?") broadens from `u11,u12` to `u11-u14`,
 picking up "I had good friends there" and "there's אמנון, still my friend".
 

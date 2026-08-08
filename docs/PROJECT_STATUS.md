@@ -1128,6 +1128,57 @@ so this wording is a pure collateral-damage knob.
 **Do not reword `_DISAMBIGUATION_BLOCK` without running the regression check on
 both sides.**
 
+**UPDATE 2026-08-09 — the `army-narrow` cost is gone, paid off by an unrelated
+change.** The tailored no-story line (below) added an `about` field to the
+empty-selection rule, and that restored `army-narrow` to `u11,u12` at 6/6.
+`family` gained two units in the same change that are genuinely about the
+family. Both were flagged by `prompt_regression.py` as known-marginal and
+confirmed real at n=6 per arm. Leakage is not always damage — but it is always
+worth measuring, and it was found by the harness rather than by noticing.
+
+## The no-story line names who the question was about — SHIPPED 2026-08-09
+
+`"אין לי סיפור על זה"` is true but reads as the system failing to understand.
+Asked "what else did you do together?" about a specific person, the honest and
+much warmer answer is `"זה כל מה שיש לי על אמנון"`.
+
+**v2 only.** The subject-resolution machinery exists only in
+`full_archive_retrieval`; v1 and avatar keep the generic string.
+
+Three constraints shaped it:
+
+- **No generated prose.** `response_assembler.py:42` records that the no-story
+  answer is "never an LLM-generated apology/filler, exactly per the project
+  plan". So this follows the BRIDGE_PHRASE_TEMPLATES pattern twelve lines
+  below it: fixed Hebrew templates, `{entity}` the only thing injected. The
+  model returns a NAME and nothing else.
+- **The name must already exist in the archive.** "I don't have another story
+  about X" is a claim about the archive, so X is checked against the real
+  entity list and the archive's own spelling is what gets shown. A model
+  answering "what pets did you have?" by naming a plausible-sounding pet would
+  otherwise have us assert it — worse than the generic line, not better.
+- **"another" vs "any" is decided from the session record, not by the model.**
+  Whether that person's recordings were already played is in `shown_units`.
+  Two template banks; saying "I have nothing about אמנון" after playing three
+  clips about him reads as forgetting the conversation.
+
+Why a lexical match on the question could not do this: the question that
+prompted it — "מה עוד עשיתם ביחד?" — contains no name at all. The subject comes
+from the previous turn, which the model already resolves.
+
+Measured (`scripts/eval_no_story_subject.py`, 6 cases x 4 runs): 6/6 PASS. All
+four existing no-story questions return the untouched generic line; the
+control still plays a clip; the follow-up case returns
+`"זה כל מה שיש לי על אמנון"`.
+
+⚠️ **The first version of that eval could not reproduce the bug.** Injecting
+history by patching `_recent_turns` leaves the shown-unit record empty, so the
+archive still had unplayed אמנון material and correctly played it — the case
+reported `<played a clip>` and looked like a failure of the feature. "Already
+shown" lives in the assistant Message's metadata, keyed by session, so the
+eval now seeds a real session. A follow-up case that does not seed one is
+testing nothing.
+
 ## ⚠️ Leakage between prompt instructions is a GROWING structural risk
 
 Not a quirk of the disambiguation work — a property of the design, worth
@@ -1269,8 +1320,9 @@ cd backend
 python scripts/prompt_regression.py --save # BEFORE any /talk prompt edit
 python scripts/prompt_regression.py        # AFTER — diffs unrelated answers
 python scripts/eval_name_disambiguation.py # same-name clarification, both arms
+python scripts/eval_no_story_subject.py   # tailored no-story line, v2 only
 python scripts/rebaseline_accuracy.py      # ⚠️ references are STALE — see known gaps
 python scripts/compare_retrieval_modes.py  # v1 vs v2: consistency, latency, calls, tokens
 python scripts/seed_sweep.py               # single-run IoU vs known-correct
-python -m pytest -q                        # 827 tests
+python -m pytest -q                        # 833 tests
 ```
