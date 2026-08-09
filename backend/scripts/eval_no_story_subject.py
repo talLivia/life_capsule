@@ -105,8 +105,16 @@ CASES: List[Tuple[str, str, List[dict], str]] = [
     # lexical match on the question text could not do this.
     (
         "followup-about-amnon", "מה עוד עשיתם ביחד?",
+        # The assistant turn carries the CLIP'S SPOKEN TEXT, because that is
+        # what _persist_message stores for v2 ("spoken_text or video_url").
+        # It used to be a bare URL here, which is what v1 stores — and with a
+        # URL as the only antecedent the subject cannot be resolved, so this
+        # case failed for a reason that exists nowhere in production. Second
+        # time this fixture has misrepresented a real session; the first was
+        # not seeding shown_units at all.
         [{"role": "user", "content": "ספר לי על אמנון החבר שלך מהצבא"},
-         {"role": "assistant", "content": "http://localhost:8000/uploads/x.mp4"}],
+         {"role": "assistant",
+          "content": "הייתי הולך למכללת עמק הירדן ביחד עם חבר שלי אמנון"}],
         "אמנון",
     ),  # runs against a session where BOTH of אמנון's recordings are spent
     # The three existing no-story questions. None has a subject; all three
@@ -148,8 +156,18 @@ def _install_hard_failing_llm(retries: int = 6) -> None:
 
 
 async def run(question: str, group_id: str, history: List[dict], session_id: Optional[str] = None):
+    # PRODUCTION'S WINDOW, not an approximation of it. `_recent_turns` runs
+    # AFTER the user's question is persisted and takes the last
+    # COREFERENCE_HISTORY_TURNS *message rows* — so the real window is the
+    # previous assistant reply plus the question being asked, never the
+    # previous exchange. Fixtures that got this wrong have now produced one
+    # false negative and one false positive in this file alone.
+    window = (history + [{"role": "user", "content": question}])[
+        -retrieval_service.COREFERENCE_HISTORY_TURNS:
+    ]
+
     async def turns(_s, _n):
-        return history
+        return window
 
     original = retrieval_service._recent_turns
     retrieval_service._recent_turns = turns

@@ -111,11 +111,25 @@ MARGINAL: Dict[str, str] = {
     # Both documented in CLAUDE.md as varying run to run on peripheral units.
     "family": "broad — CLAUDE.md documents +/-1-2 peripheral units",
     "army-broad": "broad — CLAUDE.md documents +/-1-2 peripheral units",
+    # Broad question about a person; how much context travels with the
+    # name-bearing units is exactly the judgement under test here.
+    "about-a-person": "broad question about a person named in only one unit per recording",
 }
 
 #: Extra questions not in the comparison set, added because they probe a
 #: marginal judgement. (label, question, history)
-EXTRA: List[Tuple[str, str, List[dict]]] = []
+EXTRA: List[Tuple[str, str, List[dict]]] = [
+    # "Tell me about a PERSON", where that person is named in only one unit of
+    # each recording that covers them. Selecting just those two units and
+    # dropping the story around them is the failure this watches for; the
+    # question is here because it was reported live and reproduced 4/4.
+    (
+        "about-a-person",
+        "ספר לי  על אמנון — אמנון, חבר שלי מהצבא ומהלימודים",
+        [{"role": "assistant", "content": "לאיזה אמנון אתה מתכוון?"},
+         {"role": "user", "content": "ספר לי  על אמנון — אמנון, חבר שלי מהצבא ומהלימודים"}],
+    ),
+]
 
 
 class ExhaustedAPI(RuntimeError):

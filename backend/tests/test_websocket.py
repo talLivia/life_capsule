@@ -564,3 +564,84 @@ async def test_load_session_data_defaults_language_to_producer_recording_languag
 
     assert manager.session_data["sess-lang"]["producer_recording_language"] == "he"
     assert manager.session_data["sess-lang"]["language"] == "he"
+
+
+@pytest.mark.asyncio
+async def test_a_no_story_reply_is_persisted_like_any_other_turn(monkeypatch):
+    """It was not, and the gap silently broke follow-up resolution.
+
+    `_recent_turns` takes the last 2 MESSAGE ROWS and runs AFTER the question
+    is stored, so one missing assistant reply leaves the window holding two
+    user questions and no antecedent at all. Two vague follow-ups in a row
+    ("and what else?") and there is no name anywhere in view — which is the
+    exact conversation shape the subject-naming feature exists for.
+    """
+    from app.services import full_archive_retrieval
+    from app.services.video_clip_assembler import VideoClipResult
+
+    async def fake_v2(question, group_id, recording_language, session_id):
+        return VideoClipResult(
+            video_url=None, no_story=True, fallback_text="אין לי סיפור על זה"
+        )
+
+    monkeypatch.setattr(
+        full_archive_retrieval, "assemble_video_clip_response_v2", fake_v2
+    )
+
+    m = ConnectionManager()
+    ws = _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+    m.session_data["s1"]["producer_chat_mode"] = "video_clips_v2"
+
+    persisted: list = []
+
+    async def record(session_id, role, content, **kw):
+        persisted.append((role, content))
+
+    m._persist_message = record  # type: ignore[assignment]
+
+    await m._handle_video_clip_question_inner("s1", "מה עוד?")
+
+    assert ("assistant", "אין לי סיפור על זה") in persisted
+    assert [msg["type"] for msg in ws.sent if msg["type"].startswith("video_clip")] == [
+        "video_clip_no_story"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_is_sent_as_its_own_message_type(monkeypatch):
+    """Never `video_clip_no_story`, which asserts the archive has nothing.
+
+    An outage cannot support that claim, and sending it under the same type
+    would let the client render the two identically — which is how a 503 came
+    to tell a listener their relative had no story about someone.
+    """
+    from app.services import full_archive_retrieval
+    from app.services.response_assembler import TRANSIENT_FAILURE_FALLBACK
+    from app.services.video_clip_assembler import VideoClipResult
+
+    async def fake_v2(question, group_id, recording_language, session_id):
+        return VideoClipResult(
+            video_url=None,
+            no_story=True,
+            read_failed=True,
+            fallback_text=TRANSIENT_FAILURE_FALLBACK,
+        )
+
+    monkeypatch.setattr(
+        full_archive_retrieval, "assemble_video_clip_response_v2", fake_v2
+    )
+
+    m = ConnectionManager()
+    ws = _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+    m.session_data["s1"]["producer_chat_mode"] = "video_clips_v2"
+
+    await m._handle_video_clip_question_inner("s1", "מה עוד?")
+
+    failed = [msg for msg in ws.sent if msg["type"] == "video_clip_failed"]
+    assert len(failed) == 1
+    assert failed[0]["message"] == TRANSIENT_FAILURE_FALLBACK
+    # Carries the question so the client can retry it verbatim.
+    assert failed[0]["question"] == "מה עוד?"
+    assert not [msg for msg in ws.sent if msg["type"] == "video_clip_no_story"]

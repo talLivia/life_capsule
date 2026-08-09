@@ -823,6 +823,13 @@ class ConnectionManager:
             # that is how a failed API call came to tell a family member their
             # relative had no story about someone.
             if result.read_failed:
+                # Persisted as well: from the conversation's point of view the
+                # listener asked something and got a reply, and the next turn's
+                # coreference window has to see that exchange to resolve "and
+                # what else?" against it.
+                await self._persist_message(
+                    session_id, "assistant", result.fallback_text
+                )
                 await self.send_message(
                     session_id,
                     {
@@ -834,6 +841,20 @@ class ConnectionManager:
                 return
 
             if result.no_story or not result.video_url:
+                # PERSISTED, like every other assistant turn. It was not, and
+                # the gap is not cosmetic: _recent_turns takes the last 2
+                # MESSAGE ROWS and runs AFTER the question is stored, so one
+                # missing reply leaves the window holding two user questions
+                # and no antecedent at all. Two vague follow-ups in a row and
+                # nothing in view names anybody — which is exactly the
+                # conversation shape this whole feature is for.
+                #
+                # No shown_units metadata, deliberately: nothing was played,
+                # and recording an empty list would be indistinguishable from
+                # a turn whose units were filtered out.
+                await self._persist_message(
+                    session_id, "assistant", result.fallback_text
+                )
                 await self.send_message(
                     session_id,
                     {
