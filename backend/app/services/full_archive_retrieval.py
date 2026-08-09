@@ -244,7 +244,7 @@ archive is first-person, but the question may be second- or third-person \
 about the storyteller.
 - If NOTHING in the archive answers the question, output \
 {{"unit_ids": []}}. Never invent, force, or approximate a selection to \
-avoid an empty answer. With that empty selection ONLY, you may add \
+avoid an empty answer. With or without units selected, you may add \
 "about": the name of the one person or place the question was asking about, \
 copied EXACTLY as it is spelled in the archive - resolving it from the recent \
 conversation when the question itself does not name them. Use "about": null \
@@ -1325,6 +1325,105 @@ async def _read_archive_for_ranges(
 # ── Step 4: deterministic validation + word-boundary snapping (no LLM) ──────
 
 
+#: A pause long enough to separate two PASSAGES inside one recording, in
+#: seconds. A deliberate constant, unlike the per-recording word-gap
+#: percentile that cuts units: passage breaks per recording are far too few
+#: to characterise a distribution from, so a derived threshold here would be
+#: noise wearing a percentile's clothes. Measured on the live archive
+#: (2026-08-10): unit gaps INSIDE every real passage are <= 1.6s, and the one
+#: real passage boundary — family enumeration -> the uncle story in
+#: RECORDING 14 — is a 3.3s pause. Too small only under-fills (today's
+#: behaviour); too large lets an unrelated sub-topic of the SAME recording
+#: about the SAME person ride along — a bounded miss, never a wrong person.
+_PASSAGE_GAP_SECONDS = 2.0
+
+
+def _expand_about_passages(
+    unit_ids: List[str],
+    raw_about: Optional[str],
+    entity_map: Dict[str, List[str]],
+    units: List[UtteranceUnit],
+) -> List[str]:
+    """Complete the passages of an answer ABOUT someone — code, not prompt.
+
+    THE GAP THIS CLOSES: "breadth falls out of the question" works through
+    the interview-question anchor, and a person who appears INCIDENTALLY in
+    recordings has no recording whose interview question is about them. So a
+    generic "tell me about X" anchors only on the units that literally say
+    X's name and comes back as fragments — "יש את אמנון שאני חבר שלו עד היום"
+    with no air force, no three years, no antecedent for anything — while a
+    SPECIFIC question matches passage content and gets the whole story. The
+    323f88d prompt bullet attacked exactly this and was reverted for flipping
+    an unrelated state-dependent turn onto the wrong person; this is the same
+    intent as a deterministic post-step, where wording cannot leak.
+
+    WHY IT CANNOT CROSS A PERSON BOUNDARY, which is the bar the bullet
+    failed: units are only ever ADDED from a recording that (a) the model
+    already selected from, and (b) the archive itself attributes to the named
+    entity (`entity_map`, the same mention data the name tags are built
+    from). Expansion never reaches into a recording the model did not pick,
+    so it can amplify an answer but never redirect one — the live confusion
+    was the model SELECTING the other אמנון's recordings, and nothing here
+    selects. A bare "אמנון" naming the friend while the selection sits in the
+    uncle's recording intersects to nothing and is a no-op.
+
+    Within a qualifying recording, the selection grows to the whole PASSAGE
+    around each selected unit — contiguous units up to the nearest pause
+    longer than _PASSAGE_GAP_SECONDS — so the uncle's story grows to the
+    uncle's story, not to the family enumeration sharing his recording.
+
+    Everything downstream inherits the expansion for free: clips, the spoken
+    text, shown-unit metadata and follow-up validation all read the expanded
+    list, so they cannot drift from what actually plays.
+    """
+    if not unit_ids:
+        return unit_ids
+    resolved = _resolve_about(raw_about, entity_map)
+    if resolved is None:
+        return unit_ids
+    name, segment_ids = resolved
+
+    by_id = {u.unit_id: u for u in units}
+    selected_segments = {by_id[uid].segment_id for uid in unit_ids if uid in by_id}
+    expandable = set(segment_ids) & selected_segments
+
+    passage_of: Dict[str, List[UtteranceUnit]] = {}
+    for seg_id in expandable:
+        seg_units = [u for u in units if u.segment_id == seg_id]
+        start = 0
+        for i in range(1, len(seg_units)):
+            if seg_units[i].start_sec - seg_units[i - 1].end_sec > _PASSAGE_GAP_SECONDS:
+                for u in seg_units[start:i]:
+                    passage_of[u.unit_id] = seg_units[start:i]
+                start = i
+        for u in seg_units[start:]:
+            passage_of[u.unit_id] = seg_units[start:]
+
+    out: List[str] = []
+    emitted: set = set()
+    for uid in unit_ids:
+        passage = passage_of.get(uid)
+        if passage is None:
+            # Outside the named person's recordings (or an unknown id, which
+            # resolve_units_to_clips drops with its own warning) — kept as the
+            # model ordered it, untouched.
+            if uid not in emitted:
+                emitted.add(uid)
+                out.append(uid)
+            continue
+        for u in passage:
+            if u.unit_id not in emitted:
+                emitted.add(u.unit_id)
+                out.append(u.unit_id)
+
+    added = [uid for uid in out if uid not in set(unit_ids)]
+    if added:
+        logger.info(
+            f"Completed passages about {name!r}: {unit_ids} + {added}"
+        )
+    return out
+
+
 def resolve_units_to_clips(
     unit_ids: List[str], units: List[UtteranceUnit]
 ) -> List[ExpandedClip]:
@@ -1489,13 +1588,19 @@ async def select_units(
             )
         return UnitSelection(clips=[], selected_units=[], clarify=clarify)
 
+    # A non-empty selection about a named person is completed to whole
+    # passages HERE, deterministically — see _expand_about_passages for why
+    # this is code rather than prompt wording, and why it cannot reach
+    # another person's recordings.
+    unit_ids = _expand_about_passages(unit_ids, raw_about, entity_map, units)
+
     by_id = {u.unit_id: u for u in units}
     selected = [by_id[uid] for uid in dict.fromkeys(unit_ids) if uid in by_id]
     clips = resolve_units_to_clips(unit_ids, units)
     follow_up = _validate_follow_up(raw_follow_up, by_id, selected, shown_keys)
-    # Only meaningful when there is nothing to play. A subject named alongside
-    # a real answer is ignored rather than stored: it would have no reader, and
-    # an unread field drifts.
+    # `about` has TWO readers, split by whether anything plays: with units it
+    # drove the passage expansion above; with none it feeds the named no-story
+    # line below. Never both.
     no_story_text = (
         _no_story_line(raw_about, entity_map, units, shown_keys, question)
         if not clips

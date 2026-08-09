@@ -1263,6 +1263,39 @@ post-step (expand a selection to passage boundaries in code) rather than
 prompt wording — the same "structurally impossible beats prompt-guaranteed"
 argument that produced unit selection in the first place.
 
+### Passage completeness rebuilt as CODE — 2026-08-10, ⚠️ prompt gates NOT yet run
+
+`_expand_about_passages` replaces what the reverted bullet tried to do with
+wording. The gap it closes: "breadth falls out of the question" works through
+the interview-question anchor, and a person who appears INCIDENTALLY in
+recordings has no recording whose interview question is about them — so a
+generic "ספר לי על אמנון" anchors only on name-bearing units and returns
+fragments, while a specific question ("היה איתך בצבא?") matches passage
+content and gets the full story. Backwards from what a listener expects.
+
+How it works: the prompt's `about` field may now accompany a NON-empty
+selection ("With that empty selection ONLY" → "With or without units
+selected" — a five-word diff, position unchanged). When it resolves against
+the real entity map, the selection is completed deterministically to whole
+passages — contiguous units up to the nearest pause longer than
+`_PASSAGE_GAP_SECONDS` (2.0s; measured on this archive: within-passage gaps
+≤1.6s, the family-enumeration→uncle-story boundary 3.3s) — but ONLY inside
+recordings the model already selected from AND that the archive attributes
+to the named entity. Expansion can amplify an answer, never redirect one;
+a bare "אמנון" naming the friend while the selection sits in the uncle's
+recording intersects to nothing. 9 unit tests pin all of this, including the
+person-boundary guarantee and follow-up revalidation against the expanded
+answer.
+
+**⚠️ Verification state: 847 tests pass; `prompt_regression.py`,
+`eval_name_disambiguation.py` and `eval_no_story_subject.py` have NOT been
+run on the `about` wording change (Gemini credits). The producer is
+live-testing manually first. Before the next prompt edit, run the panel
+against the baseline saved at 13bb9c6 — `uncle-then-more` and `about-a-person`
+are the two cases most likely to move, and an `about` now arriving alongside
+units on unrelated questions is harmless by construction (it only ever
+completes passages of the person it names).**
+
 **The panel now has a state-bearing case.** `uncle-then-more` in
 `prompt_regression.py` reconstructs the live session's shown-unit state and
 history window (verbatim, with runtime guards that refuse to run against a

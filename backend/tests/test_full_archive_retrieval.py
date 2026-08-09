@@ -560,6 +560,136 @@ async def test_assemble_v2_assembly_failure_returns_no_story(monkeypatch):
     assert result.fallback_text == NO_STORY_FALLBACK
 
 
+# ── _expand_about_passages (deterministic passage completion) ────────────────
+#
+# The shapes mirror the live archive this was built against: one recording
+# that is a single passage end to end (the friend's army recording), and one
+# recording holding TWO passages separated by a >2s pause (family enumeration,
+# then the uncle's story). The person boundary bar is the whole point: the
+# 323f88d prompt bullet was reverted for redirecting an answer onto the wrong
+# same-named person, and expansion must be structurally unable to do that.
+
+
+def _passage_units():
+    """seg-army: u1-u4, one passage (gaps <= 1.0s).
+    seg-uncle: u5,u6 | 3.5s pause | u7,u8 — two passages.
+    seg-other: u9, someone else's recording."""
+    return [
+        ar.UtteranceUnit("u1", "seg-army", 1, 0.0, 2.0, "בשירות הצבאי"),
+        ar.UtteranceUnit("u2", "seg-army", 2, 2.5, 4.0, "שלוש שנים"),
+        ar.UtteranceUnit("u3", "seg-army", 3, 5.0, 7.0, "חברים טובים"),
+        ar.UtteranceUnit("u4", "seg-army", 4, 7.5, 9.0, "יש את אמנון"),
+        ar.UtteranceUnit("u5", "seg-uncle", 5, 0.0, 2.0, "אנחנו חמישה"),
+        ar.UtteranceUnit("u6", "seg-uncle", 6, 2.3, 4.0, "עדי ורז"),
+        ar.UtteranceUnit("u7", "seg-uncle", 7, 7.5, 9.0, "יש לי דוד אמנון"),
+        ar.UtteranceUnit("u8", "seg-uncle", 8, 9.2, 10.0, "בר ודור"),
+        ar.UtteranceUnit("u9", "seg-other", 9, 0.0, 3.0, "טבריה"),
+    ]
+
+
+def test_expand_about_completes_a_single_passage_recording():
+    out = ar._expand_about_passages(
+        ["u4"], "אמנון", {"אמנון": ["seg-army"]}, _passage_units()
+    )
+    assert out == ["u1", "u2", "u3", "u4"]
+
+
+def test_expand_about_stops_at_a_passage_boundary():
+    # The naming unit sits in the SECOND passage of the uncle's recording;
+    # the family enumeration before the 3.5s pause must not ride along.
+    out = ar._expand_about_passages(
+        ["u7"], "אמנון נחום", {"אמנון נחום": ["seg-uncle"]}, _passage_units()
+    )
+    assert out == ["u7", "u8"]
+
+
+def test_expand_about_cannot_reach_another_persons_recording():
+    # `about` names the friend, but every selected unit is in the uncle's
+    # recording — the intersection is empty and expansion is a no-op. This is
+    # the structural person-boundary guarantee.
+    out = ar._expand_about_passages(
+        ["u7"], "אמנון", {"אמנון": ["seg-army"], "אמנון נחום": ["seg-uncle"]},
+        _passage_units(),
+    )
+    assert out == ["u7"]
+
+
+def test_expand_about_never_adds_a_recording_the_model_did_not_pick():
+    # The friend's entity spans two recordings; only one was selected from.
+    # The other must not appear, however related it is.
+    out = ar._expand_about_passages(
+        ["u4"], "אמנון", {"אמנון": ["seg-army", "seg-uncle"]}, _passage_units()
+    )
+    assert out == ["u1", "u2", "u3", "u4"]
+
+
+def test_expand_about_leaves_other_selected_recordings_untouched():
+    # A unit selected OUTSIDE the named person's recordings stays exactly
+    # where the model ordered it, unexpanded.
+    out = ar._expand_about_passages(
+        ["u9", "u4"], "אמנון", {"אמנון": ["seg-army"]}, _passage_units()
+    )
+    assert out == ["u9", "u1", "u2", "u3", "u4"]
+
+
+def test_expand_about_noop_without_about_or_resolution():
+    units = _passage_units()
+    assert ar._expand_about_passages(["u4"], None, {"אמנון": ["seg-army"]}, units) == ["u4"]
+    # A name the archive does not hold resolves to nothing — same contract as
+    # the no-story line: never act on a name the archive cannot confirm.
+    assert ar._expand_about_passages(["u4"], "משה", {"אמנון": ["seg-army"]}, units) == ["u4"]
+    assert ar._expand_about_passages([], "אמנון", {"אמנון": ["seg-army"]}, units) == []
+
+
+def test_expand_about_dedupes_units_sharing_a_passage():
+    out = ar._expand_about_passages(
+        ["u3", "u4"], "אמנון", {"אמנון": ["seg-army"]}, _passage_units()
+    )
+    assert out == ["u1", "u2", "u3", "u4"]
+
+
+def test_expand_about_keeps_unknown_ids_for_downstream_validation():
+    # Unknown ids are resolve_units_to_clips' job to drop (with its warning);
+    # expansion passes them through rather than silently swallowing them.
+    out = ar._expand_about_passages(
+        ["nope", "u4"], "אמנון", {"אמנון": ["seg-army"]}, _passage_units()
+    )
+    assert out == ["nope", "u1", "u2", "u3", "u4"]
+
+
+async def test_select_units_expands_about_passages_end_to_end(monkeypatch):
+    """The expansion reaches clips, selected_units AND follow-up validation:
+    a follow-up offering a unit the expansion just added is no longer 'more'
+    and must be dropped."""
+    units = _passage_units()
+    archive = [
+        ar.ArchiveSegment(segment=_segment("seg-army", "Q1"), chunks=[]),
+        ar.ArchiveSegment(segment=_segment("seg-uncle", "Q2"), chunks=[]),
+        ar.ArchiveSegment(segment=_segment("seg-other", "Q3"), chunks=[]),
+    ]
+    monkeypatch.setattr(
+        ar, "_archive_bundle",
+        AsyncMock(return_value=(archive, {"אמנון": ["seg-army"]}, units, {})),
+    )
+    monkeypatch.setattr(ar, "_load_shown_units", AsyncMock(return_value=(set(), [])))
+    monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        ar, "_read_archive_for_ranges",
+        AsyncMock(return_value=ar.ArchiveRead(
+            unit_ids=["u4"],
+            about="אמנון",
+            follow_up={"question": "עוד?", "unit_ids": ["u2"]},
+        )),
+    )
+
+    selection = await ar.select_units("ספר לי על אמנון", "group", "he", "sess")
+
+    assert [u.unit_id for u in selection.selected_units] == ["u1", "u2", "u3", "u4"]
+    assert len(selection.clips) == 1  # one continuous passage -> one clip
+    assert selection.follow_up is None  # u2 is now part of the answer
+    assert selection.no_story_text is None  # about with units never names a no-story
+
+
 # ── _read_archive_for_ranges (LLM call structure + fail-soft) ─────────────────
 
 
