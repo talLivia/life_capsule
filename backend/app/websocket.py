@@ -820,7 +820,15 @@ class ConnectionManager:
             if result.no_story or not result.video_url:
                 await self.send_message(
                     session_id,
-                    {"type": "video_clip_no_story", "message": result.fallback_text},
+                    {
+                        "type": "video_clip_no_story",
+                        "message": result.fallback_text,
+                        # Carried on a no-story turn too: "I have nothing for
+                        # that, but do you want to hear about X?" is a real
+                        # answer, and dropping it is how the system came to
+                        # say there was nothing more when there was.
+                        "follow_up": result.follow_up,
+                    },
                 )
                 return
 

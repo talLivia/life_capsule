@@ -60,7 +60,7 @@ def _pick_bridge_phrase(index: int) -> str:
 # "I don't have a story about that" is true but sounds like the system failed
 # to understand the question. Asked "what else did you do together?" about a
 # specific person, it reads as a shrug — when the honest and much warmer answer
-# is "I don't have another story about אמנון".
+# is "זה כל מה שיש לי על אמנון".
 #
 # SAME RULE AS THE BRIDGE PHRASES ABOVE, and for the same reason: {entity} is
 # the only thing ever injected, and it is a name the archive really holds,
@@ -68,15 +68,19 @@ def _pick_bridge_phrase(index: int) -> str:
 # happened in any recording, so nothing is generated on the storyteller's
 # behalf — the constraint NO_STORY_FALLBACK exists to enforce.
 #
-# TWO BANKS, because "I have nothing about X" and "I have nothing MORE about
-# X" are different statements and only one of them is true at a time. Saying
-# the first after already playing three clips about someone reads as the
-# system forgetting the conversation it is in.
-NO_STORY_ABOUT_TEMPLATES = [
-    "אין לי סיפור על {entity}",
-    "אין לי מה לספר על {entity}",
-]
-
+# ONE BANK, AND ONLY THE "NOTHING MORE" ONE. There was briefly a second bank
+# for "I have nothing about X at all", and it was unreachable and dangerous in
+# the same breath: the caller now refuses to name a subject while ANY of that
+# person's units are still unplayed (see _no_story_line), because an empty
+# selection means "nothing answers THAT question", never "the archive is out
+# of stories about this person". Every entity in the map has units, so
+# "nothing at all about X" can only be said when everything about X has
+# already been played — which is precisely what this bank says.
+#
+# That happened live: with five of אמנון's twelve units played, the archive
+# told the listener there was nothing more while the entire army story sat
+# unplayed. A specific falsehood is worse than a vague truth — it tells
+# someone to stop asking about a person the archive still has stories about.
 NO_MORE_STORY_ABOUT_TEMPLATES = [
     "אין לי עוד סיפור על {entity}",
     "זה כל מה שיש לי על {entity}",
@@ -84,16 +88,17 @@ NO_MORE_STORY_ABOUT_TEMPLATES = [
 ]
 
 
-def no_story_about(entity: str, *, already_shown: bool, variant: int = 0) -> str:
-    """The no-story line, naming who the question was about.
+def no_story_about(entity: str, *, variant: int = 0) -> str:
+    """"That's all I have about אמנון" — said only when it is true.
 
     `variant` picks from the bank and is expected to be a STABLE function of
-    the question — the same question should always produce the same wording.
+    the question, so the same question always produces the same wording.
     Random selection would make the retrieval eval flaky for a reason that has
     nothing to do with retrieval.
     """
-    bank = NO_MORE_STORY_ABOUT_TEMPLATES if already_shown else NO_STORY_ABOUT_TEMPLATES
-    return bank[variant % len(bank)].format(entity=entity)
+    return NO_MORE_STORY_ABOUT_TEMPLATES[
+        variant % len(NO_MORE_STORY_ABOUT_TEMPLATES)
+    ].format(entity=entity)
 
 
 async def _fetch_transcripts(segment_ids: List[str]) -> Dict[str, str]:

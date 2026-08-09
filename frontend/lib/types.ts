@@ -83,7 +83,10 @@ export type WsMessage =
       uncovered_clauses: string[]
       follow_up?: { question: string } | null
     }
-  | { type: 'video_clip_no_story'; message: string }
+  // `follow_up` rides along here too: "nothing for that, but want to hear
+  // about X?" is a real answer, and a no-story turn is exactly when an offer
+  // is most useful.
+  | { type: 'video_clip_no_story'; message: string; follow_up?: { question: string } | null }
   // Two people in this archive share a name and the question could have meant
   // either. Arrives INSTEAD of a clip, never with one. `options` names the
   // people; choosing one re-asks the original question through the normal

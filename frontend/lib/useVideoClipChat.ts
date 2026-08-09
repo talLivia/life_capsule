@@ -142,13 +142,25 @@ export function useVideoClipChat(avatarId: string) {
           },
         ])
         break
-      case 'video_clip_no_story':
+      case 'video_clip_no_story': {
         setIsThinking(false)
+        const noStoryFollowUp = msg.follow_up?.question
         setMessages((prev) => [
           ...prev,
           { id: `no-story-${Date.now()}`, role: 'assistant', content: msg.message, noStory: true },
+          // A separate message, same as after a clip — the offer is not part
+          // of the "I don't have that" sentence, it is the next thing said.
+          ...(noStoryFollowUp
+            ? [{
+                id: `no-story-followup-${Date.now()}`,
+                role: 'assistant' as const,
+                content: noStoryFollowUp,
+                followUpQuestion: noStoryFollowUp,
+              }]
+            : []),
         ])
         break
+      }
       case 'status':
         setIsThinking(true)
         // Reflect the actual stage ("Transcribing audio…" / "Finding a clip…").

@@ -1485,13 +1485,38 @@ def _no_story_line(
     if resolved is None:
         return None
     name, segment_ids = resolved
-    shown_segments = {
-        u.segment_id for u in units if _unit_key(u.segment_id, u.start_sec) in shown_keys
-    }
+
+    # NEVER ASSERT SOMETHING THE ARCHIVE CONTRADICTS.
+    #
+    # The model returning no units means "nothing here answers THAT question".
+    # It does not mean the archive is out of material about this person, and
+    # the difference is not the model's to judge — it is a fact we hold. Said
+    # live: with five of אמנון's twelve units played, "אין לי עוד סיפור על
+    # אמנון" went out while u11-u13, the whole army story, sat unplayed.
+    #
+    # The generic line is vague. This one was FALSE, and a specific falsehood
+    # is worse than a vague truth: it tells the listener to stop asking about
+    # someone the archive still has stories about. So when anything about this
+    # person remains unseen, we say the vague thing.
+    #
+    # Deliberately NOT solved by playing the leftover units. "Never invent,
+    # force, or approximate a selection to avoid an empty answer" (the Rules
+    # section, and CLAUDE.md) applies exactly as much when the motive is a
+    # nicer sentence.
+    entity_units = [u for u in units if u.segment_id in set(segment_ids)]
+    unseen = [
+        u for u in entity_units if _unit_key(u.segment_id, u.start_sec) not in shown_keys
+    ]
+    if unseen:
+        logger.info(
+            f"Archive read found nothing for this question about {name!r}, but "
+            f"{len(unseen)}/{len(entity_units)} of their units are unplayed — "
+            "using the generic line rather than claiming there is nothing more"
+        )
+        return None
+
     return response_assembler.no_story_about(
-        name,
-        already_shown=bool(shown_segments & set(segment_ids)),
-        variant=zlib.crc32(question.encode("utf-8")),
+        name, variant=zlib.crc32(question.encode("utf-8"))
     )
 
 
@@ -1547,10 +1572,16 @@ async def assemble_video_clip_response_v2(
         return VideoClipResult(
             video_url=None,
             no_story=True,
-            # Names the subject when the archive could confirm one; otherwise
-            # the generic line, unchanged. The WS handler already forwards
-            # fallback_text, so nothing downstream needed touching.
+            # Names the subject when the archive could confirm one AND has
+            # nothing left about them; otherwise the generic line, unchanged.
             fallback_text=selection.no_story_text or NO_STORY_FALLBACK,
+            # THE OFFER SURVIVES AN EMPTY ANSWER. It never used to: this
+            # branch dropped `follow_up` on the floor, so a turn that found no
+            # direct answer but DID know about related material still said
+            # only "I don't have a story about that". "No answer, but there is
+            # this" is a different outcome from "no answer", and it is the one
+            # the listener can act on.
+            follow_up=selection.follow_up,
         )
 
     cache_key = video_clip_assembler._clip_cache_key(group_id, clips)

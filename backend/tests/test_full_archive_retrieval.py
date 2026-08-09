@@ -1288,31 +1288,6 @@ def test_about_is_parsed_only_as_a_bare_name():
     assert ar._parse_about("not json") is None
 
 
-def test_already_shown_decides_another_versus_any_not_the_model():
-    """The archive knows whether it has said this before; the model does not.
-
-    Saying "I don't have a story about אמנון" after playing three clips about
-    him reads as the system forgetting the conversation it is in. Whether any
-    of that person's recordings were already played is in the session record,
-    so it is read there rather than asked for.
-    """
-    archive = [
-        ar.ArchiveSegment(
-            segment=_segment("seg-a", "ספר על הצבא"),
-            chunks=[_chunk("seg-a", 0, 0.0, 4.0, "הייתי עם אמנון בצבא")],
-        )
-    ]
-    units = ar._build_units(archive)
-    entity_map = {"אמנון": ["seg-a"]}
-
-    fresh = ar._no_story_line("אמנון", entity_map, units, set(), "q")
-    assert fresh in [t.format(entity="אמנון") for t in ra.NO_STORY_ABOUT_TEMPLATES]
-
-    shown = {ar._unit_key(u.segment_id, u.start_sec) for u in units}
-    again = ar._no_story_line("אמנון", entity_map, units, shown, "q")
-    assert again in [t.format(entity="אמנון") for t in ra.NO_MORE_STORY_ABOUT_TEMPLATES]
-
-
 def test_no_story_wording_is_stable_for_a_given_question():
     """Same question, same sentence — always.
 
@@ -1379,3 +1354,63 @@ async def test_no_story_falls_back_to_the_generic_line_when_nobody_is_named(monk
 
     assert result.no_story is True
     assert result.fallback_text == NO_STORY_FALLBACK
+
+
+async def test_never_claims_nothing_more_while_units_are_unplayed():
+    """THE REGRESSION THIS GUARDS. Said live, and it was false.
+
+    Five of אמנון's twelve units had played; the model found nothing for
+    "what else did you do together?" and the answer went out as
+    "אין לי עוד סיפור על אמנון" — while u11-u13, the entire army story, sat
+    unplayed. An empty selection means "nothing here answers THAT question",
+    never "the archive is out of material about this person", and the
+    difference is a fact we hold rather than a judgement the model makes.
+
+    A specific falsehood is worse than a vague truth: it tells the listener to
+    stop asking about someone the archive still has stories about.
+    """
+    archive = [
+        ar.ArchiveSegment(
+            segment=_segment("seg-a", "ספר על הצבא"),
+            chunks=[_chunk_with("seg-a", 0, _paced_words(8, break_after=[3]), "text")],
+        )
+    ]
+    units = ar._build_units(archive)
+    assert len(units) > 1, "fixture must produce more than one unit"
+    entity_map = {"אמנון": ["seg-a"]}
+
+    # Some played, some not -> must NOT claim there is nothing more.
+    partial = {ar._unit_key(units[0].segment_id, units[0].start_sec)}
+    assert ar._no_story_line("אמנון", entity_map, units, partial, "q") is None
+
+    # Everything played -> the tailored line is honest and is used.
+    everything = {ar._unit_key(u.segment_id, u.start_sec) for u in units}
+    line = ar._no_story_line("אמנון", entity_map, units, everything, "q")
+    assert line and "אמנון" in line
+    assert line in [t.format(entity="אמנון") for t in ra.NO_MORE_STORY_ABOUT_TEMPLATES]
+
+
+async def test_a_follow_up_offer_survives_an_empty_answer(monkeypatch):
+    """"Nothing for that, but want to hear about X?" is a different answer.
+
+    This branch used to drop `follow_up` on the floor, so a turn that found no
+    direct answer while KNOWING about related material still said only "I
+    don't have a story about that" — which is how the system came to insist
+    there was nothing more when there was.
+    """
+    monkeypatch.setattr(
+        ar,
+        "select_units",
+        AsyncMock(
+            return_value=ar.UnitSelection(
+                clips=[],
+                selected_units=[],
+                follow_up={"question": "רוצה לשמוע על השירות הצבאי שלי?"},
+            )
+        ),
+    )
+
+    result = await ar.assemble_video_clip_response_v2("q", "group", "he", "sess")
+
+    assert result.no_story is True
+    assert result.follow_up == {"question": "רוצה לשמוע על השירות הצבאי שלי?"}

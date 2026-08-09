@@ -1171,6 +1171,56 @@ four existing no-story questions return the untouched generic line; the
 control still plays a clip; the follow-up case returns
 `"זה כל מה שיש לי על אמנון"`.
 
+### 🚨 It told the listener there was nothing more when there was — 2026-08-09
+
+Reported live, and the most serious defect this feature produced. Five of
+אמנון's twelve units had played; the archive-read found nothing for
+"מה עוד עשיתם יחד?" and the reply went out as `"אין לי עוד סיפור על אמנון"`
+while `u11-u13` — the entire army story — sat unplayed.
+
+**The `about` change was NOT the cause, and measuring said so before anything
+was written.** Replayed with the exact live history window, n=5 per arm:
+
+```
+WITHOUT the `about` sentence   empty selection   5/5
+WITH it (shipped)              u11, u12, u13     5/5
+```
+
+The empty selection predates the change; the change actually answers this turn
+correctly in replay. What it changed was the WORDING of the miss — from a
+vague `"אין לי סיפור על זה"` to a specific false claim. That is a real
+regression in its own right: a specific falsehood tells the listener to stop
+asking about someone the archive still has stories about.
+
+Two fixes, neither of which depends on how the model happens to judge a
+marginal question:
+
+- **The archive refuses to assert what it can disprove.** `_no_story_line`
+  will not name a subject while ANY of that person's units are unplayed. An
+  empty selection means "nothing answers THAT question", never "there is
+  nothing more about this person", and which of those is true is a fact we
+  hold rather than a judgement to delegate. Deliberately NOT fixed by playing
+  the leftover units: "never invent, force, or approximate a selection to
+  avoid an empty answer" applies just as much when the motive is a nicer
+  sentence.
+- **A follow-up offer now survives an empty answer.** The no-story branch
+  dropped `follow_up` on the floor — so a turn that found no direct answer
+  while KNOWING about related material still said only "I don't have a story
+  about that". Pre-existing, and exactly the shape of the complaint.
+
+Consequence worth noting: the "I have nothing about X at all" template bank is
+now unreachable and was deleted rather than left as decoration. Every entity in
+the map has units, so a subject can only be named once everything about them
+has been played — which is what the surviving bank says.
+
+⚠️ **Two replays were needed, and the first one lied.** Injecting an
+approximate history window (an extra user turn, omitting the question being
+asked) made the turn return units in BOTH arms — no reproduction, and it would
+have supported "the change is innocent" for the wrong reason. `_recent_turns`
+runs AFTER the user's question is persisted and takes the last 2 MESSAGE ROWS,
+so the real window is *the previous assistant reply plus the question itself*.
+A replay that does not reconstruct that exactly is not a replay.
+
 ⚠️ **The first version of that eval could not reproduce the bug.** Injecting
 history by patching `_recent_turns` leaves the shown-unit record empty, so the
 archive still had unplayed אמנון material and correctly played it — the case
@@ -1324,5 +1374,5 @@ python scripts/eval_no_story_subject.py   # tailored no-story line, v2 only
 python scripts/rebaseline_accuracy.py      # ⚠️ references are STALE — see known gaps
 python scripts/compare_retrieval_modes.py  # v1 vs v2: consistency, latency, calls, tokens
 python scripts/seed_sweep.py               # single-run IoU vs known-correct
-python -m pytest -q                        # 833 tests
+python -m pytest -q                        # 834 tests
 ```
