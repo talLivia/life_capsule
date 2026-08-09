@@ -60,7 +60,10 @@ from app.services import (
 )
 from app.services.cache import cache_service
 from app.services.llm import llm_service
-from app.services.response_assembler import NO_STORY_FALLBACK
+from app.services.response_assembler import (
+    NO_STORY_FALLBACK,
+    TRANSIENT_FAILURE_FALLBACK,
+)
 from app.services.video_clip_assembler import (
     CACHE_TTL_SECONDS,
     ExpandedClip,
@@ -1228,6 +1231,30 @@ def _parse_unit_selection(text: str) -> List[str]:
     return out
 
 
+@dataclass
+class ArchiveRead:
+    """One archive-read call's outcome.
+
+    A dataclass rather than a tuple because the tuple had grown to four
+    elements and was about to grow a fifth — and the fifth is the one that
+    matters most, so it must not be the easiest to drop on the floor at a call
+    site.
+
+    `failed` IS THE POINT. It separates "the model read the archive and chose
+    nothing" from "the read never happened". Those produced an identical value
+    until now, so an outage was reported to a family member as "your relative
+    has no story about that" — a false statement about somebody's life. It
+    also destroyed three measurements in one day before anyone noticed the two
+    were the same value.
+    """
+
+    unit_ids: List[str]
+    follow_up: Optional[dict] = None
+    clarify: Optional[dict] = None
+    about: Optional[str] = None
+    failed: bool = False
+
+
 async def _read_archive_for_ranges(
     question: str,
     transcript_block: str,
@@ -1235,10 +1262,11 @@ async def _read_archive_for_ranges(
     history_block: str,
     recording_language: str,
     disambiguation: bool = False,
-) -> Tuple[List[str], Optional[dict], Optional[dict], Optional[str]]:
-    """The ONE LLM call. Fail-soft to [] (an LLM/parse failure yields the
-    no-story fallback, never a guessed clip) — same never-invent contract
-    as the other modes' own LLM steps.
+) -> ArchiveRead:
+    """The ONE LLM call. Still fail-soft — a live turn must produce a sentence
+    rather than a stack trace — but the failure is now REPORTED rather than
+    disguised as an empty selection. Never a guessed clip either way, which is
+    the never-invent contract the other modes' LLM steps also keep.
 
     See _ARCHIVE_READER_SYSTEM_PROMPT_TEMPLATE's comment for why the static
     transcript/entity-map live in the system prompt and the variable
@@ -1276,14 +1304,22 @@ async def _read_archive_for_ranges(
             thinking_budget=settings.ARCHIVE_READ_THINKING_BUDGET or None,
         )
     except Exception as e:
-        logger.warning(f"Archive-read LLM call failed, treating as no-story: {e}")
-        return [], None, None, None
+        # error, not warning: this is now a reportable failure rather than a
+        # quiet degradation, and it is the line to look for when a listener
+        # says the archive claimed to have nothing.
+        logger.error(f"Archive-read LLM call FAILED (reported as transient): {e}")
+        return ArchiveRead(unit_ids=[], failed=True)
     # `clarify` is only ever read when the prompt actually offered it. A model
     # that invents the key on an archive with no same-named people is
     # returning something it was never told about, and honouring it would turn
     # an answerable question into a question back.
     clarify = _parse_clarify(raw) if disambiguation else None
-    return _parse_unit_selection(raw), _parse_follow_up(raw), clarify, _parse_about(raw)
+    return ArchiveRead(
+        unit_ids=_parse_unit_selection(raw),
+        follow_up=_parse_follow_up(raw),
+        clarify=clarify,
+        about=_parse_about(raw),
+    )
 
 
 # ── Step 4: deterministic validation + word-boundary snapping (no LLM) ──────
@@ -1383,6 +1419,9 @@ class UnitSelection:
     # generic NO_STORY_FALLBACK — which is still the right answer for a
     # question about nobody in particular.
     no_story_text: Optional[str] = None
+    # The archive read did not happen — an API failure, not an answer. Callers
+    # MUST NOT present this as "nothing in the archive answers that".
+    read_failed: bool = False
 
 
 async def select_units(
@@ -1420,13 +1459,21 @@ async def select_units(
     entity_map_block = _format_entity_map(entity_map, _recording_ordinals(archive, units))
     history_block = _format_history_block(turns, per_turn_units) if turns else ""
 
-    unit_ids, raw_follow_up, clarify, raw_about = await _read_archive_for_ranges(
+    read = await _read_archive_for_ranges(
         question,
         transcript_block,
         entity_map_block,
         history_block,
         recording_language,
         disambiguation=bool(name_tags),
+    )
+    if read.failed:
+        # Straight out. Nothing below this line can say anything true about
+        # the archive, because the archive was never consulted.
+        return UnitSelection(clips=[], selected_units=[], read_failed=True)
+
+    unit_ids, raw_follow_up, clarify, raw_about = (
+        read.unit_ids, read.follow_up, read.clarify, read.about
     )
 
     # CLARIFY BLOCKS THE ANSWER. A best guess accompanied by "or did you mean
@@ -1566,6 +1613,16 @@ async def assemble_video_clip_response_v2(
     # clarification is an empty selection, so falling through would tell the
     # listener the archive has nothing about אמנון when it has two people by
     # that name and simply needs to know which.
+    # Before every other branch: an outage is not an answer, and each branch
+    # below asserts something about the archive that a failed read cannot
+    # support.
+    if selection.read_failed:
+        return VideoClipResult(
+            video_url=None,
+            no_story=True,
+            fallback_text=TRANSIENT_FAILURE_FALLBACK,
+            read_failed=True,
+        )
     if selection.clarify:
         return VideoClipResult(video_url=None, clarify=selection.clarify)
     if not clips:

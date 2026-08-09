@@ -28,6 +28,10 @@ export interface TalkMessage {
   // and hoping it reads as a question.
   clarifyFor?: string
   clarifyDismissed?: boolean
+  // The lookup failed — shown differently from "no story", and offering to
+  // retry the SAME question rather than leaving the listener to retype it.
+  retryQuestion?: string
+  retryDismissed?: boolean
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5
@@ -139,6 +143,18 @@ export function useVideoClipChat(avatarId: string) {
             // clarification OF. Read from state rather than tracked
             // separately so it cannot disagree with what is on screen.
             clarifyFor: [...prev].reverse().find((m) => m.role === 'user')?.content ?? '',
+          },
+        ])
+        break
+      case 'video_clip_failed':
+        setIsThinking(false)
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `failed-${Date.now()}`,
+            role: 'assistant',
+            content: msg.message,
+            retryQuestion: msg.question,
           },
         ])
         break
@@ -287,6 +303,18 @@ export function useVideoClipChat(avatarId: string) {
     [],
   )
 
+  /** Re-ask the SAME question after a failed lookup. Same WS contract as any
+   *  question, so the retry gets identical validation and assembly. */
+  const retryQuestion = useCallback((messageId: string, question: string) => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return
+    setMessages((prev) =>
+      prev.map((m) => (m.id === messageId ? { ...m, retryDismissed: true } : m))
+    )
+    setStatusText('Finding a clip…')
+    setIsThinking(true)
+    wsRef.current.send(JSON.stringify({ type: 'video_clip_question', text: question }))
+  }, [])
+
   const declineFollowUp = useCallback((messageId: string) => {
     setMessages((prev) =>
       prev.map((m) => (m.id === messageId ? { ...m, followUpDismissed: true } : m))
@@ -346,6 +374,7 @@ export function useVideoClipChat(avatarId: string) {
     sendText,
     acceptFollowUp,
     chooseClarification,
+    retryQuestion,
     declineFollowUp,
     // mic
     micMuted,

@@ -192,6 +192,11 @@ class VideoClipResult:
     # never alongside one — a best guess plus "or did you mean the other?" is
     # the conflation this exists to remove, wearing a question mark.
     clarify: Optional[dict] = None
+    # v2 only: the archive read never completed (API failure), so this result
+    # says NOTHING about what the archive contains. Presenting it as a
+    # no-story tells a family member their relative has no story about
+    # something the archive may cover in full.
+    read_failed: bool = False
 
 
 def _parse_json_object(text: str) -> Optional[dict]:

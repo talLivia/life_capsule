@@ -43,6 +43,22 @@ logger = logging.getLogger(__name__)
 # all — never an LLM-generated apology/filler, exactly per the project plan.
 NO_STORY_FALLBACK = "אין לי סיפור על זה"
 
+# WHAT TO SAY WHEN THE LOOKUP ITSELF FAILED, which is NOT the same thing and
+# must never again be said with the same words.
+#
+# The archive read is fail-soft by design: a family member should get a
+# sentence, not a stack trace. But it returned the SAME empty result for "the
+# model found nothing" and "the API was down", so both came out as
+# NO_STORY_FALLBACK — telling someone their relative has no story about a
+# person the archive has twelve units about. That is a false statement about
+# somebody's life, produced by an outage.
+#
+# It also cost three misdiagnoses in one day: two measurements read as clean
+# results, and one live report that could not be explained until every other
+# cause had been eliminated. PROJECT_STATUS has carried this warning about the
+# eval since 2026-07-29; this is the production half of it.
+TRANSIENT_FAILURE_FALLBACK = "לא הצלחתי להביא את הסיפור כרגע. אפשר לנסות שוב?"
+
 # Fixed bridge-phrase bank (Hebrew) — {entity} is the only thing ever
 # injected; the phrase itself never varies with what actually happened in
 # the related segment.

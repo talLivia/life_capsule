@@ -34,6 +34,7 @@ export function VideoClipTalkInterface({ avatarId, producerName }: VideoClipTalk
     acceptFollowUp,
     declineFollowUp,
     chooseClarification,
+    retryQuestion,
     micUnavailable,
     micMuted,
     setMicMuted,
@@ -115,6 +116,18 @@ export function VideoClipTalkInterface({ avatarId, producerName }: VideoClipTalk
                   {/* "Which אמנון did you mean?" — one button per person.
                       Choosing re-asks the original question with that person
                       named, through the same path as any other question. */}
+                  {/* The lookup failed — offer the same question again rather
+                      than making the listener retype it. */}
+                  {m.retryQuestion && !m.retryDismissed && (
+                    <div className="flex items-center gap-2 mt-2.5">
+                      <button
+                        onClick={() => retryQuestion(m.id, m.retryQuestion!)}
+                        className="calm-btn-secondary !py-1.5 !px-4 text-xs"
+                      >
+                        נסה שוב
+                      </button>
+                    </div>
+                  )}
                   {m.clarifyOptions && !m.clarifyDismissed && (
                     <div className="flex flex-wrap items-center gap-2 mt-2.5">
                       {m.clarifyOptions.map((option) => (

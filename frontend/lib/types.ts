@@ -48,6 +48,7 @@ export type WsMessageType =
   | 'video_clip_response'
   | 'video_clip_no_story'
   | 'video_clip_clarify'
+  | 'video_clip_failed'
 
 // Discriminated union — each WS event has a well-typed payload so the handler
 // can rely on field presence without optional-chaining everywhere.
@@ -92,6 +93,10 @@ export type WsMessage =
   // people; choosing one re-asks the original question through the normal
   // path so the answer gets the same validation and assembly as any other.
   | { type: 'video_clip_clarify'; question: string; options: string[] }
+  // The lookup itself failed. Deliberately NOT 'video_clip_no_story': that
+  // one asserts the archive has nothing, and an outage cannot support that
+  // claim. Carries the question so it can be retried verbatim.
+  | { type: 'video_clip_failed'; message: string; question: string }
 
 export interface VoiceApiResponse {
   id: string

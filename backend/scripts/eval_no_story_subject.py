@@ -159,6 +159,12 @@ async def run(question: str, group_id: str, history: List[dict], session_id: Opt
         )
     finally:
         retrieval_service._recent_turns = original
+    if result.read_failed:
+        # NOT a result. Checked on the flag rather than on an exception,
+        # because _read_archive_for_ranges catches everything — the retry
+        # wrapper's raise never reached this harness, so the "hard fail" was
+        # decorative until ArchiveRead.failed existed.
+        raise ExhaustedAPI("the archive read failed; not recording it as an answer")
     return result
 
 

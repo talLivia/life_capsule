@@ -31,11 +31,17 @@ Exit code is non-zero when anything drifted, so it can gate a commit.
 
 ## Three things this harness does that a naive one would not
 
-**It hard-fails on an exhausted retry.** `_read_archive_for_ranges` is
-fail-soft by design — a live turn should say "I don't have a story about that"
-rather than error. That makes an API outage and "nothing answers this"
-indistinguishable downstream, and BOTH of the broken measurements taken while
-building this feature were outages that read as clean results. PROJECT_STATUS
+**It hard-fails on a failed archive read.** This checks
+`UnitSelection.read_failed`, NOT just an exception — and the difference is the
+whole lesson. The earlier version only raised from a retry wrapper, which
+`_read_archive_for_ranges` swallowed, so the safety net was decorative: an
+outage still arrived here as "this question now returns nothing".
+
+`_read_archive_for_ranges` stays fail-soft — a live turn should get a sentence,
+not a stack trace — but it now REPORTS the failure instead of returning an
+empty selection that looks identical to a real one. Both of the broken
+measurements taken while building the same-name feature were outages that read
+as clean results, and so, most likely, was one live bug report. PROJECT_STATUS
 has carried this warning about the accuracy eval since 2026-07-29; here it is
 enforced rather than warned about.
 
@@ -152,6 +158,10 @@ async def _run_once(question: str, group_id: str, history: List[dict]) -> dict:
     finally:
         retrieval_service._recent_turns = original
 
+    if selection.read_failed:
+        raise ExhaustedAPI(
+            "the archive read failed; refusing to record it as a selection"
+        )
     return {
         "units": [u.unit_id for u in selection.selected_units],
         # Recorded too: a prompt edit can switch clarification on or off for a

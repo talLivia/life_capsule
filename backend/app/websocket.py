@@ -817,6 +817,22 @@ class ConnectionManager:
                 )
                 return
 
+            # An outage, not an answer. A SEPARATE message type so the client
+            # can never render it the way it renders "the archive has nothing
+            # about that" — the two were the same value until 2026-08-09, and
+            # that is how a failed API call came to tell a family member their
+            # relative had no story about someone.
+            if result.read_failed:
+                await self.send_message(
+                    session_id,
+                    {
+                        "type": "video_clip_failed",
+                        "message": result.fallback_text,
+                        "question": text,
+                    },
+                )
+                return
+
             if result.no_story or not result.video_url:
                 await self.send_message(
                     session_id,

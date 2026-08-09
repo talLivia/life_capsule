@@ -21,7 +21,10 @@ from app.services import entity_store
 from app.services import full_archive_retrieval as ar
 from app.services import retrieval_service
 from app.services import response_assembler as ra
-from app.services.response_assembler import NO_STORY_FALLBACK
+from app.services.response_assembler import (
+    NO_STORY_FALLBACK,
+    TRANSIENT_FAILURE_FALLBACK,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -462,7 +465,7 @@ async def test_read_and_validate_ranges_no_answer_returns_empty(monkeypatch):
     monkeypatch.setattr(ar, "_load_archive", AsyncMock(return_value=archive))
     monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={}))
     monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
-    monkeypatch.setattr(ar, "_read_archive_for_ranges", AsyncMock(return_value=([], None, None, None)))
+    monkeypatch.setattr(ar, "_read_archive_for_ranges", AsyncMock(return_value=ar.ArchiveRead(unit_ids=[])))
 
     result = await ar.read_and_validate_ranges("q", "group", "he", "sess")
     assert result == []
@@ -476,7 +479,7 @@ async def test_read_and_validate_ranges_happy_path_returns_validated_clips(monke
     monkeypatch.setattr(
         ar,
         "_read_archive_for_ranges",
-        AsyncMock(return_value=(["u1"], None, None, None)),
+        AsyncMock(return_value=ar.ArchiveRead(unit_ids=["u1"])),
     )
 
     result = await ar.read_and_validate_ranges("q", "group", "he", "sess")
@@ -614,7 +617,10 @@ async def test_read_archive_for_ranges_fails_soft_on_llm_error(monkeypatch):
         ar.llm_service, "generate_response", AsyncMock(side_effect=RuntimeError("down"))
     )
     result = await ar._read_archive_for_ranges("q", "T", "E", "", "he")
-    assert result == ([], None, None, None)  # (unit_ids, follow_up, clarify, about) — fail-soft on all four
+    # Fail-soft still, but the failure is REPORTED rather than disguised as
+    # an empty selection — the whole point of ArchiveRead.failed.
+    assert result.unit_ids == []
+    assert result.failed is True
 
 
 # ── already-shown handling (visited-set wired into v2) ───────────────────────
@@ -1245,7 +1251,9 @@ async def test_clarify_replaces_the_answer_rather_than_decorating_it(monkeypatch
         ar,
         "_read_archive_for_ranges",
         AsyncMock(
-            return_value=(["u1"], None, {"question": "q?", "options": ["a", "b"]}, None)
+            return_value=ar.ArchiveRead(
+                unit_ids=["u1"], clarify={"question": "q?", "options": ["a", "b"]}
+            )
         ),
     )
     ar.invalidate_archive_cache("group")
@@ -1323,7 +1331,7 @@ async def test_a_subject_named_alongside_a_real_answer_is_ignored(monkeypatch):
     monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
     monkeypatch.setattr(
         ar, "_read_archive_for_ranges",
-        AsyncMock(return_value=(["u1"], None, None, "Nir")),
+        AsyncMock(return_value=ar.ArchiveRead(unit_ids=["u1"], about="Nir")),
     )
     ar.invalidate_archive_cache("group")
 
@@ -1346,7 +1354,7 @@ async def test_no_story_falls_back_to_the_generic_line_when_nobody_is_named(monk
     monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
     monkeypatch.setattr(
         ar, "_read_archive_for_ranges",
-        AsyncMock(return_value=([], None, None, None)),
+        AsyncMock(return_value=ar.ArchiveRead(unit_ids=[])),
     )
     ar.invalidate_archive_cache("group")
 
@@ -1414,3 +1422,63 @@ async def test_a_follow_up_offer_survives_an_empty_answer(monkeypatch):
 
     assert result.no_story is True
     assert result.follow_up == {"question": "רוצה לשמוע על השירות הצבאי שלי?"}
+
+
+# ── An outage is not an answer ───────────────────────────────────────────────
+
+
+async def test_a_failed_read_is_never_reported_as_an_empty_archive(monkeypatch):
+    """THE DEFECT THIS CLOSES, and it produced a false statement about a life.
+
+    The archive read is fail-soft on purpose — a family member should get a
+    sentence, not a stack trace. But it returned the SAME empty result for
+    "the model chose nothing" and "the API was down", so an outage came out as
+    "אין לי סיפור על זה" about a person the archive has twelve units on.
+
+    It also destroyed three measurements in one day, twice in evals and once
+    in a live report that could only be explained by eliminating everything
+    else. PROJECT_STATUS has warned about this shape since 2026-07-29.
+    """
+    archive = _resolvable_archive()
+    monkeypatch.setattr(ar, "_load_archive", AsyncMock(return_value=archive))
+    monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={}))
+    monkeypatch.setattr(ar, "_build_name_tags_for", AsyncMock(return_value={}))
+    monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        ar.llm_service, "generate_response", AsyncMock(side_effect=RuntimeError("503"))
+    )
+    ar.invalidate_archive_cache("group")
+
+    result = await ar.assemble_video_clip_response_v2("q", "group", "he", "sess")
+
+    assert result.read_failed is True
+    assert result.fallback_text == TRANSIENT_FAILURE_FALLBACK
+    assert result.fallback_text != NO_STORY_FALLBACK
+    assert result.video_url is None
+
+
+async def test_a_failed_read_never_names_a_subject_or_offers_anything(monkeypatch):
+    """Nothing below the read can say anything true once it did not happen.
+
+    A failed read must not reach the subject-naming line, the follow-up
+    carry-through, or the clarification branch — every one of them asserts
+    something about an archive that was never consulted.
+    """
+    monkeypatch.setattr(
+        ar,
+        "_read_archive_for_ranges",
+        AsyncMock(return_value=ar.ArchiveRead(unit_ids=[], failed=True)),
+    )
+    archive = _resolvable_archive()
+    monkeypatch.setattr(ar, "_load_archive", AsyncMock(return_value=archive))
+    monkeypatch.setattr(ar, "_build_entity_map", AsyncMock(return_value={"Nir": ["seg-a"]}))
+    monkeypatch.setattr(ar, "_build_name_tags_for", AsyncMock(return_value={}))
+    monkeypatch.setattr(retrieval_service, "_recent_turns", AsyncMock(return_value=[]))
+    ar.invalidate_archive_cache("group")
+
+    selection = await ar.select_units("q", "group", "he", "sess")
+
+    assert selection.read_failed is True
+    assert selection.no_story_text is None
+    assert selection.follow_up is None
+    assert selection.clarify is None

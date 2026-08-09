@@ -40,6 +40,7 @@ export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) 
     acceptFollowUp,
     declineFollowUp,
     chooseClarification,
+    retryQuestion,
     micUnavailable,
     micMuted,
     setMicMuted,
@@ -197,7 +198,19 @@ export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) 
                       {/* "Which אמנון did you mean?" — one button per person.
                           Choosing re-asks the original question with that
                           person named, through the same path as any other. */}
-                      {m.clarifyOptions && !m.clarifyDismissed && (
+                      {/* The lookup failed — offer the same question again rather
+                      than making the listener retype it. */}
+                  {m.retryQuestion && !m.retryDismissed && (
+                    <div className="flex items-center gap-2 mt-2.5">
+                      <button
+                        onClick={() => retryQuestion(m.id, m.retryQuestion!)}
+                        className="px-3 py-1 rounded-lg text-xs font-medium text-gray-200 bg-surface-700 border border-white/10 hover:bg-surface-600 transition-all active:scale-95"
+                      >
+                        נסה שוב
+                      </button>
+                    </div>
+                  )}
+                  {m.clarifyOptions && !m.clarifyDismissed && (
                         <div className="flex flex-wrap items-center gap-2 mt-2.5">
                           {m.clarifyOptions.map((option) => (
                             <button
