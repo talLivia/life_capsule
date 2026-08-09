@@ -116,9 +116,83 @@ MARGINAL: Dict[str, str] = {
     "about-a-person": "broad question about a person named in only one unit per recording",
 }
 
+#: The archive fingerprint the `uncle-then-more` fixture was derived from.
+#: Unit ids are positional across the whole archive, so these lists are void
+#: the moment anything is re-recorded — the builder REFUSES to run rather
+#: than silently testing different words (how seed_sweep.py's references
+#: died, twice).
+_UNCLE_STATE_ARCHIVE_VERSION = (
+    14,
+    "2026-08-07 22:50:48.515861+00:00",
+    "2026-08-07 22:41:27.610434+00:00",
+)
+
+#: The live session's per-assistant-turn unit lists (2026-08-09, session
+#: 90992fb3), oldest first, up to and including the answer to
+#: "מי הדודים שלך?". VERBATIM, not abstracted: the reproduction is
+#: state-sensitive enough that plausible simplifications of this list — the
+#: uncle's whole segment as one turn, or "everything except the friend's
+#: recordings" — measured 0/2 where this exact state measured 5/5 and 2/2.
+_UNCLE_STATE_TURNS: List[List[str]] = [
+    [f"u{i}" for i in range(4, 11)] + ["u23", "u24", "u25", "u65", "u66", "u67"],
+    [f"u{i}" for i in range(26, 41)]
+    + [f"u{i}" for i in range(49, 60)]
+    + [f"u{i}" for i in range(68, 79)],
+    [f"u{i}" for i in range(54, 60)] + ["u63", "u64"],
+    ["u2", "u3"],
+    [],  # a persisted no-story reply: an assistant row with no units
+    ["u74", "u75", "u76", "u77", "u78"],
+]
+
+
+async def _uncle_conversation_state(group_id: str) -> List[List[str]]:
+    """Shown-state for `uncle-then-more`, guarded against silently going
+    stale. Checks the archive fingerprint, that the last turn's units all
+    belong to the uncle's recording, and that everything about him is shown —
+    the three facts the reproduction actually rests on."""
+    from app.database import AsyncSessionLocal
+    from app.services import entity_store
+
+    version = await ar._archive_version(group_id)
+    if version != _UNCLE_STATE_ARCHIVE_VERSION:
+        raise RuntimeError(
+            "the uncle-then-more fixture was derived from archive "
+            f"{_UNCLE_STATE_ARCHIVE_VERSION} but the archive is now {version}. "
+            "Unit ids are positional, so its lists now point at different "
+            "words. Re-derive them from a real session (see the fixture "
+            "comment) rather than deleting the case."
+        )
+
+    async with AsyncSessionLocal() as db:
+        groups = await entity_store.confusable_entities(db, group_id)
+    uncle_segments = {
+        seg
+        for group in groups
+        for member in group
+        if len(member.name.split()) > 1
+        for seg in member.segment_ids
+    }
+    _archive, _em, units, _tags = await ar._archive_bundle(group_id)
+    by_id = {u.unit_id: u for u in units}
+    last_turn = _UNCLE_STATE_TURNS[-1]
+    uncle_unit_ids = {u.unit_id for u in units if u.segment_id in uncle_segments}
+    shown = {uid for turn in _UNCLE_STATE_TURNS for uid in turn}
+    if not all(by_id[uid].segment_id in uncle_segments for uid in last_turn):
+        raise RuntimeError("uncle-then-more: the last turn no longer plays the uncle's recording")
+    if not uncle_unit_ids <= shown:
+        raise RuntimeError("uncle-then-more: not every unit about the uncle is marked shown")
+    return _UNCLE_STATE_TURNS
+
+
 #: Extra questions not in the comparison set, added because they probe a
-#: marginal judgement. (label, question, history)
-EXTRA: List[Tuple[str, str, List[dict]]] = [
+#: marginal judgement. (label, question, history, shown_turns)
+#:
+#: `shown_turns` is None, or an async builder (group_id) -> per-turn unit-id
+#: lists, oldest first — the last list is what the previous assistant turn
+#: played. It exists because the comparison set runs every question against an
+#: EMPTY session, and one live regression was invisible in exactly that state:
+#: the answer only went wrong once the subject's units were ALREADY SHOWN.
+EXTRA: List[Tuple[str, str, List[dict], Optional[object]]] = [
     # "Tell me about a PERSON", where that person is named in only one unit of
     # each recording that covers them. Selecting just those two units and
     # dropping the story around them is the failure this watches for; the
@@ -128,6 +202,25 @@ EXTRA: List[Tuple[str, str, List[dict]]] = [
         "ספר לי  על אמנון — אמנון, חבר שלי מהצבא ומהלימודים",
         [{"role": "assistant", "content": "לאיזה אמנון אתה מתכוון?"},
          {"role": "user", "content": "ספר לי  על אמנון — אמנון, חבר שלי מהצבא ומהלימודים"}],
+        None,
+    ),
+    # THE STATE-BEARING CASE. Live 2026-08-09: with the uncle just discussed
+    # and all of his units already shown, "יש עוד סיפור על אמנון?" answered
+    # with the OTHER אמנון — the army friend's passages — 5/5 in faithful
+    # replay. Correct behaviour is an empty selection (everything about the
+    # uncle has played; the friend is a different person), which the no-story
+    # path then names. The edit that caused it (the backward-passage bullet,
+    # 323f88d) passed this panel clean, because every other case runs with an
+    # empty session: the bug needs ALREADY SHOWN marks on the subject's units
+    # to exist at all. NOT in MARGINAL — it reproduced 5/5 and its correct
+    # form held 3/3, so any drift here is a finding, not noise.
+    (
+        "uncle-then-more",
+        "יש עוד סיפור על אמנון?",
+        [{"role": "assistant",
+          "content": "יש לי גם דוד מצד אבא שקוראים לו אמנון ויש לו שתי ילדים בר ודור"},
+         {"role": "user", "content": "יש עוד סיפור על אמנון?"}],
+        _uncle_conversation_state,
     ),
 ]
 
@@ -155,11 +248,16 @@ def _install_hard_failing_llm(retries: int = 6) -> None:
     llm_service.generate_response = wrapper
 
 
-def panel() -> List[Tuple[str, str, List[dict]]]:
-    return [(label, q, h) for label, q, h in crm.QUESTION_SET] + EXTRA
+def panel() -> List[Tuple[str, str, List[dict], Optional[object]]]:
+    return [(label, q, h, None) for label, q, h in crm.QUESTION_SET] + EXTRA
 
 
-async def _run_once(question: str, group_id: str, history: List[dict]) -> dict:
+async def _run_once(
+    question: str,
+    group_id: str,
+    history: List[dict],
+    shown_turns: Optional[List[List[str]]] = None,
+) -> dict:
     session_id = str(uuid.uuid4())
 
     async def fake_turns(_session_id, _n):
@@ -167,10 +265,31 @@ async def _run_once(question: str, group_id: str, history: List[dict]) -> dict:
 
     original = retrieval_service._recent_turns
     retrieval_service._recent_turns = fake_turns
+    original_shown = ar._load_shown_units
+    if shown_turns is not None:
+        # A faithful shown-state, the way production stores it: per-turn unit
+        # records carrying REAL texts. An approximate window reproduces
+        # nothing — that lesson is paid for three times over in
+        # PROJECT_STATUS; empty texts here made the live bug vanish.
+        _archive, _em, units, _tags = await ar._archive_bundle(group_id)
+        by_id = {u.unit_id: u for u in units}
+        per_turn = [
+            [{"key": ar._unit_key(by_id[uid].segment_id, by_id[uid].start_sec),
+              "unit_id": uid, "text": by_id[uid].text}
+             for uid in turn if uid in by_id]
+            for turn in shown_turns
+        ]
+        keys = {u["key"] for t in per_turn for u in t}
+
+        async def fake_shown(_session_id):
+            return keys, per_turn
+
+        ar._load_shown_units = fake_shown
     try:
         selection = await ar.select_units(question, group_id, "he", session_id)
     finally:
         retrieval_service._recent_turns = original
+        ar._load_shown_units = original_shown
 
     if selection.read_failed:
         raise ExhaustedAPI(
@@ -187,8 +306,12 @@ async def _run_once(question: str, group_id: str, history: List[dict]) -> dict:
 async def measure(group_id: str, runs: int) -> dict:
     ar.invalidate_archive_cache(group_id)
     results: Dict[str, dict] = {}
-    for label, question, history in panel():
-        rows = [await _run_once(question, group_id, history) for _ in range(runs)]
+    for label, question, history, shown_builder in panel():
+        shown_turns = await shown_builder(group_id) if shown_builder else None
+        rows = [
+            await _run_once(question, group_id, history, shown_turns)
+            for _ in range(runs)
+        ]
         variants = sorted({tuple(r["units"]) for r in rows})
         results[label] = {
             "variants": [list(v) for v in variants],

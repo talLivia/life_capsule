@@ -166,12 +166,6 @@ units that follow it - a consequence, an outcome, a "and then...", a \
 continuation units are PART OF THE ANSWER and must be included too. \
 Stopping while the thought is still unfinished produces an answer that \
 cuts off mid-story, which is always wrong.
-- WHEN YOU INCLUDE A UNIT THAT NAMES THE SUBJECT, TAKE THE PASSAGE IT SITS \
-IN. A unit that says someone's name is usually the middle of a story about \
-them, not the whole of it: the units around it say how the speaker came to \
-know them, when and where, and what came of it. Include those too. This runs \
-BACKWARDS as well as forwards - the units immediately BEFORE a naming unit \
-are part of the same passage, not preamble to be trimmed.
 - Skip a unit only when it genuinely moves on to a DIFFERENT subject that \
 the question did not ask about. A unit does not qualify merely by sitting \
 next to a relevant one, but a unit that finishes the relevant thought does \

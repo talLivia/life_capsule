@@ -1229,6 +1229,51 @@ shown" lives in the assistant Message's metadata, keyed by session, so the
 eval now seeds a real session. A follow-up case that does not seed one is
 testing nothing.
 
+## REVERTED 2026-08-10: 323f88d's backward-passage bullet
+
+The "TAKE THE PASSAGE IT SITS IN" bullet is gone from the archive-read
+prompt. It passed the regression panel clean and still caused the worst
+defect this project has seen live: with the uncle just discussed and all of
+his units already shown, "יש עוד סיפור על אמנון?" answered with the OTHER
+אמנון — the army friend's two passages, presented as one person's story.
+Faithful replay (exact `_recent_turns` window, real unit texts, the session's
+real shown-unit keys): friend's units 5/5 WITH the bullet, the correct
+empty-selection + "זה כל מה שיש לי על אמנון נחום" 3/3 WITHOUT it.
+
+Mechanism: everything about the uncle is [ALREADY SHOWN], the question asks
+for MORE, the ALREADY SHOWN rule says to look for the same subject in a
+DIFFERENT recording — and the bullet then tells the model a unit naming
+"אמנון" is "the middle of a story about them; take the passage". The friend's
+naming units match the bare name literally, and both passages around them are
+exactly what the live turn returned. The disambiguation tags were in view and
+lost.
+
+Costs of the revert, measured and accepted:
+
+- `about-a-person` returns to u14+u19 (2 units) on the FIXTURE phrasing — the
+  mid-sentence-mention problem the bullet was written for. On the LIVE
+  phrasing the bullet was actually WORSE than nothing (u13,u14,u19 vs
+  u11-u14,u18,u19, both 3/3), so what is lost is one phrasing's improvement,
+  not the fix as a whole.
+- `school` regains u41 ("I grew up in Tiberias"), `family` returns to its
+  pre-bullet 15-unit shape. Exact inverses of 323f88d's own measurements.
+
+If passage completeness is worth pursuing again, do it as a DETERMINISTIC
+post-step (expand a selection to passage boundaries in code) rather than
+prompt wording — the same "structurally impossible beats prompt-guaranteed"
+argument that produced unit selection in the first place.
+
+**The panel now has a state-bearing case.** `uncle-then-more` in
+`prompt_regression.py` reconstructs the live session's shown-unit state and
+history window (verbatim, with runtime guards that refuse to run against a
+changed archive rather than silently testing different words). Verified: with
+the bullet re-added it reports the friend's units 3/3 against a baseline of
+[] — a hard DRIFT. Every other case runs against an empty session, which is
+exactly why four gates stayed green while this bug shipped. Plausible
+simplifications of the state (whole segment as one turn, "everything but the
+friend shown") do NOT reproduce it — 0/2 each where the verbatim state was
+5/5 — so do not "clean up" that fixture.
+
 ## ⚠️ Leakage between prompt instructions is a GROWING structural risk
 
 Not a quirk of the disambiguation work — a property of the design, worth
