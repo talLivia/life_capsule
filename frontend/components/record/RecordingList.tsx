@@ -65,6 +65,13 @@ function takeLabel(index: number, total: number): string {
   return total === 1 ? 'Your answer' : `Take ${index + 1} of ${total}`
 }
 
+/** The generated content title is a take's name everywhere (§1.10); the
+ *  take label survives only as the fallback while a title doesn't exist —
+ *  mid-processing, or a save whose title generation failed. */
+function segmentTitle(segment: RawSegment, index: number, total: number): string {
+  return segment.moment_title || takeLabel(index, total)
+}
+
 export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
   // Which take is mid-delete. Per-id rather than a single boolean so one
   // slow delete doesn't disable the others or spin the wrong row.
@@ -109,8 +116,8 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
       <div className="glass-card">
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-white/10">
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-white">
-              {takeLabel(openIndex, total)}
+            <p dir="auto" className="text-sm font-semibold text-white">
+              {segmentTitle(open, openIndex, total)}
             </p>
             <p
               className={`text-xs flex items-center gap-1.5 mt-0.5 ${
@@ -204,7 +211,9 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
                 >
                   <ChevronDown size={15} className="text-gray-500 shrink-0 -rotate-90" aria-hidden />
                   <span className="min-w-0 flex-1">
-                    <span className="block text-sm text-white">{takeLabel(i, total)}</span>
+                    <span dir="auto" className="block text-sm text-white">
+                      {segmentTitle(segment, i, total)}
+                    </span>
                     <span className={`text-xs flex items-center gap-1.5 mt-0.5 ${tone}`}>
                       {icon}
                       {text}
@@ -221,7 +230,8 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
       {inspectingId && (
         <ExtractionModal
           segmentId={inspectingId}
-          title={takeLabel(
+          title={segmentTitle(
+            recordings.find(r => r.id === inspectingId) ?? open,
             recordings.findIndex(r => r.id === inspectingId),
             total,
           )}

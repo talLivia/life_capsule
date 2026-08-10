@@ -16,24 +16,21 @@ sentence exists, the STALE sentence is served — yesterday's true sentence
 beats a blank card — and the watermark is left unchanged so the next read
 tries again.
 
-## The moment title
+## Where the moment title went
 
-One content title per recording — its only rendered name, since raw question
-text never renders. Same watermark pattern, one level down: the stored
-sha256 of the transcript the title was generated from (migration 0024), so a
-title regenerates exactly when ITS OWN words change (an in-place re-analysis)
-or the language does. A new or re-recorded segment is a new row and titles
-itself on the next read; nothing regenerates on unrelated saves.
+Not here any more. Titles are generated ONCE, at save time, by
+`analysis_graph.extract_topics_node` — the same pipeline run that writes
+`topic_tags` — and read as-is everywhere (§1.10). Migration 0025 removed the
+watermark columns this module used to check at read; the summary above is
+the only read-time refresh left.
 
-There is no classification pass any more: grouping comes straight from the
-`topic_tags` ingestion already writes (§1.8), so the only labels here are the
-ones the archive's own content produced.
+There is no classification pass any more either: grouping comes straight
+from the `topic_tags` ingestion already writes (§1.8), so the only labels
+here are the ones the archive's own content produced.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -51,104 +48,6 @@ logger = logging.getLogger(__name__)
 _TRANSCRIPT_CHARS = 2000
 
 _LANGUAGE_NAMES = {"he": "Hebrew", "en": "English"}
-
-
-# ── moment titles ─────────────────────────────────────────────────────────
-
-# Segments per titling call. A first load of a full real archive has a
-# hundred untitled recordings; one giant prompt risks a truncated reply that
-# loses every title in it, where a lost chunk loses twenty and retries.
-_TITLE_BATCH = 20
-
-
-def _transcript_hash(transcript: str) -> str:
-    # Duplicated verbatim in migration 0024's backfill — changing one without
-    # the other silently regenerates every title once.
-    return hashlib.sha256(transcript.encode("utf-8")).hexdigest()
-
-
-async def ensure_moment_titles(
-    db: AsyncSession, language: str, segments: Sequence[RawSegment]
-) -> None:
-    """Give every transcribed segment a content title, refreshed with its words.
-
-    The interview question never renders by default, so a moment's only name
-    is this. Stale when no title exists, the language changed, or the
-    transcript no longer matches the stored hash it was generated from — an
-    in-place re-analysis must not leave a title naming words that are gone.
-    Untranscribed segments are skipped (nothing to title yet) and picked up
-    once the transcript lands; an unparseable reply leaves NULL and the next
-    read retries. The question text IS given to the model — it names
-    referents the words never do ("my commander") — it just never renders.
-    """
-    untitled = [
-        s
-        for s in segments
-        if (s.transcript or "").strip()
-        and (
-            s.moment_title is None
-            or s.moment_title_language != language
-            or s.moment_title_source != _transcript_hash(s.transcript)
-        )
-    ]
-    if not untitled:
-        return
-
-    language_name = _LANGUAGE_NAMES.get(language, language)
-    wrote = False
-    for start in range(0, len(untitled), _TITLE_BATCH):
-        batch = untitled[start : start + _TITLE_BATCH]
-        lines = [
-            f"{s.id}:\nQ: {s.question_asked}\nA: {(s.transcript or '')[:_TRANSCRIPT_CHARS]}"
-            for s in batch
-        ]
-        try:
-            raw = await llm_service.generate_response(
-                messages=[{"role": "user", "content": "\n\n".join(lines)}],
-                system_prompt=(
-                    "Each block is one recorded moment from a life-story "
-                    "archive: an id, the interview question asked, and what "
-                    "the storyteller answered.\n"
-                    f"Give each moment a short, concrete title in {language_name} "
-                    "(3-6 words) naming what the ANSWER is about — never a "
-                    "rephrasing of the question.\n"
-                    'Reply with ONLY a JSON object mapping id to title, e.g. '
-                    '{"<id>": "..."}.'
-                ),
-            )
-        except Exception as e:
-            logger.warning(f"moment titling failed, leaving NULLs: {e}")
-            continue
-        titles = _parse_title_reply(raw, {s.id for s in batch})
-        for segment in batch:
-            title = titles.get(segment.id)
-            if title:
-                segment.moment_title = title
-                segment.moment_title_language = language
-                segment.moment_title_source = _transcript_hash(segment.transcript)
-                wrote = True
-    if wrote:
-        await db.commit()
-
-
-def _parse_title_reply(raw: str, expected_ids: set) -> Dict[str, str]:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.startswith("json"):
-            text = text[4:]
-    try:
-        parsed = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        logger.warning("moment-title reply was not JSON; leaving NULLs")
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    return {
-        segment_id: title.strip()
-        for segment_id, title in parsed.items()
-        if segment_id in expected_ids and isinstance(title, str) and title.strip()
-    }
 
 
 # ── period summaries ──────────────────────────────────────────────────────

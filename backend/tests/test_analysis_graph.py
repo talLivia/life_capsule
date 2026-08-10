@@ -470,6 +470,55 @@ async def test_extract_topics_node_tolerates_llm_failure(segment, monkeypatch):
     assert result["topic_tags"] == []
 
 
+async def test_extract_topics_node_titles_the_moment_at_save(
+    db_session, segment, monkeypatch
+):
+    """§1.10 — the ONE title generation point. Written in the same run that
+    writes topic_tags; the recording screen and the timeline read the stored
+    value as-is, and nothing regenerates it afterwards."""
+
+    def dispatch(messages, system_prompt=None, **kwargs):
+        if "title" in (system_prompt or ""):
+            return "הבית הקטן של סבתא גילה"
+        return '["childhood"]'
+
+    monkeypatch.setattr(
+        ag.llm_service, "generate_response", AsyncMock(side_effect=dispatch)
+    )
+
+    await ag.extract_topics_node(
+        {"segment_id": segment.id, "transcript": segment.transcript}
+    )
+
+    await db_session.refresh(segment)
+    assert segment.topic_tags == ["childhood"]
+    assert segment.moment_title == "הבית הקטן של סבתא גילה"
+
+
+async def test_a_failed_title_costs_the_title_never_the_tags(
+    db_session, segment, monkeypatch
+):
+    """One attempt per save, accepted in §1.10 — an untitled moment falls
+    back to its take label on screen, and the tags must land regardless."""
+
+    def dispatch(messages, system_prompt=None, **kwargs):
+        if "title" in (system_prompt or ""):
+            raise RuntimeError("down")
+        return '["childhood"]'
+
+    monkeypatch.setattr(
+        ag.llm_service, "generate_response", AsyncMock(side_effect=dispatch)
+    )
+
+    await ag.extract_topics_node(
+        {"segment_id": segment.id, "transcript": segment.transcript}
+    )
+
+    await db_session.refresh(segment)
+    assert segment.topic_tags == ["childhood"]
+    assert segment.moment_title is None
+
+
 async def test_check_entities_node_auto_resolves_settled_exact_match(segment, monkeypatch):
     """A verbatim match the producer has ALREADY confirmed merges silently.
 

@@ -163,11 +163,6 @@ async def build_timeline(
             # outside the guided set. Counted, never silently dropped.
             undated.append(segment)
 
-    # Content titles before anything renders: the interview question never
-    # names a moment on this page, so a moment's only name is generated.
-    placed = [s for takes in by_question.values() for s in takes]
-    await period_insights.ensure_moment_titles(db, language, placed)
-
     periods: List[Dict[str, Any]] = []
     period_segments: List[List[RawSegment]] = []
     hidden = 0

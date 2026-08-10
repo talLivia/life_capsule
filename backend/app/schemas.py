@@ -245,6 +245,10 @@ class RawSegmentResponse(BaseModel):
     video_key: Optional[str] = None
     transcript: Optional[str] = None
     topic_tags: Optional[List[str]] = None
+    # The generated content title (§1.10) — what the recording screen shows
+    # instead of "Take N". Null when generation failed at save; the client
+    # falls back to the take label.
+    moment_title: Optional[str] = None
     importance_score: Optional[float] = None
     pending_confirmation: Optional[Dict[str, Any]] = None
     status: str

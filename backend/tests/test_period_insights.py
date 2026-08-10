@@ -1,12 +1,12 @@
-"""Derived timeline display data — docs/MEDIA_GALLERY.md §1.6–§1.8.
+"""Derived timeline display data — docs/MEDIA_GALLERY.md §1.6–§1.10.
 
 What matters here is the COST CONTRACT, not the sentences: a summary is
 generated when the recordings behind a category change and never otherwise;
-a title is generated when ITS OWN transcript (or the language) changes and
-never otherwise; a failure serves the stale text rather than a blank.
+a failure serves the stale text rather than a blank. Moment titles are no
+longer generated here at all — they are written once at save time by
+extract_topics_node (§1.10), tested in test_analysis_graph.py.
 """
 
-import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -47,10 +47,6 @@ def _first_question_id():
 def _summary_calls(mock):
     """The generate_response calls that were summaries, not classifications."""
     return [c for c in mock.call_args_list if "summarize" in c.kwargs["system_prompt"]]
-
-
-def _title_calls(mock):
-    return [c for c in mock.call_args_list if "title" in c.kwargs["system_prompt"]]
 
 
 # ── summaries: the cost contract ──────────────────────────────────────────
@@ -156,88 +152,16 @@ async def test_a_failure_with_nothing_stored_shows_no_summary(
     )).all() == []
 
 
-# ── moment titles: written once, retried on garbage ───────────────────────
-
-
-async def test_a_moment_is_titled_once_and_the_payload_carries_it(
-    db_session, archive, monkeypatch
-):
-    user, session = archive
-    segment = await _record(db_session, session, _first_question_id())
-
-    def dispatch(messages, system_prompt=None, **kwargs):
-        if "title" in (system_prompt or ""):
-            return json.dumps({segment.id: "הבית הראשון בטבריה"})
-        return "משפט."
-
-    mock = AsyncMock(side_effect=dispatch)
-    monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
-
-    first = await timeline.build_timeline(db_session, user.id, "he")
-    assert first["periods"][0]["recordings"][0]["title"] == "הבית הראשון בטבריה"
-    await timeline.build_timeline(db_session, user.id, "he")
-    # Written once, ever — the transcript never changes after ingest.
-    assert len(_title_calls(mock)) == 1
-
-
-async def test_an_unparseable_title_reply_leaves_null_and_retries(
-    db_session, archive, monkeypatch
-):
+async def test_the_timeline_never_generates_titles(db_session, archive, monkeypatch):
+    """§1.10: one generation point, at save. The timeline reads the stored
+    title as-is — a read must never trigger a title call, even for a
+    recording that has none (generation failed at save; the screen falls
+    back to the take label)."""
     user, session = archive
     await _record(db_session, session, _first_question_id())
-
-    def dispatch(messages, system_prompt=None, **kwargs):
-        if "title" in (system_prompt or ""):
-            return "not json at all"
-        return "משפט."
-
-    mock = AsyncMock(side_effect=dispatch)
+    mock = AsyncMock(return_value="משפט.")
     monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
 
     period = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]
     assert period["recordings"][0]["title"] is None
-    await timeline.build_timeline(db_session, user.id, "he")
-    assert len(_title_calls(mock)) == 2
-
-
-async def test_an_untranscribed_moment_is_not_sent_for_titling(
-    db_session, archive, monkeypatch
-):
-    """Nothing to title yet — it is picked up once the transcript lands."""
-    user, session = archive
-    await _record(db_session, session, _first_question_id(), transcript=None)
-    mock = AsyncMock(return_value="משפט.")
-    monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
-
-    await timeline.build_timeline(db_session, user.id, "he")
-    assert _title_calls(mock) == []
-
-
-async def test_a_changed_transcript_regenerates_the_title(
-    db_session, archive, monkeypatch
-):
-    """The watermark is the transcript itself (migration 0024): a title must
-    not outlive the words it named. An in-place re-analysis is the only way
-    a recording's content changes — new and re-recorded takes are new rows —
-    and nothing regenerates when nothing changed."""
-    user, session = archive
-    segment = await _record(db_session, session, _first_question_id())
-
-    def dispatch(messages, system_prompt=None, **kwargs):
-        if "title" in (system_prompt or ""):
-            return json.dumps({segment.id: "כותרת"})
-        return "משפט."
-
-    mock = AsyncMock(side_effect=dispatch)
-    monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
-
-    await timeline.build_timeline(db_session, user.id, "he")
-    await timeline.build_timeline(db_session, user.id, "he")
-    assert len(_title_calls(mock)) == 1
-
-    segment.transcript = "תמלול חדש לגמרי אחרי ניתוח מחדש."
-    await db_session.flush()
-    await timeline.build_timeline(db_session, user.id, "he")
-    assert len(_title_calls(mock)) == 2
-    await timeline.build_timeline(db_session, user.id, "he")
-    assert len(_title_calls(mock)) == 2
+    assert all("title" not in c.kwargs["system_prompt"] for c in mock.call_args_list)

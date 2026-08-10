@@ -369,6 +369,19 @@ async def test_highlight_captions_quote_what_the_recording_said(db_session, arch
     assert groups[0]["highlights"][0]["caption"] == "אח של הדובר, הקטן מבין הארבעה"
 
 
+async def test_recordings_carry_their_stored_title_as_is(db_session, archive):
+    """§1.10 — the timeline is a pure READER of moment_title; generation
+    lives at save time in extract_topics_node."""
+    user, session = archive
+    _, question_id = _live_ids(1)[0]
+    segment = await _record(db_session, session, question_id)
+    segment.moment_title = "כותרת שנכתבה בשמירה"
+    await db_session.flush()
+
+    period = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]
+    assert period["recordings"][0]["title"] == "כותרת שנכתבה בשמירה"
+
+
 async def test_every_period_carries_its_summary_sentence(db_session, archive):
     """Wiring only — the store/staleness rules live in test_period_insights."""
     user, session = archive

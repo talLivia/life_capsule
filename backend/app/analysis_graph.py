@@ -492,6 +492,46 @@ async def embed_transcript_node(state: AnalysisState) -> dict:
     return {"embedding": vector} if vector is not None else {}
 
 
+_MOMENT_TITLE_LANGUAGES = {"he": "Hebrew", "en": "English"}
+
+
+async def _generate_moment_title(
+    question_asked: str, transcript: str, language: str
+) -> Optional[str]:
+    """One content title for one recording — the SINGLE generation point.
+
+    docs/MEDIA_GALLERY.md §1.10: the title is written here at save time,
+    read as-is by the extraction screen and the timeline, and never
+    regenerated elsewhere — a re-record is a new segment and passes through
+    here itself. The question text is model INPUT (it names referents the
+    words never do — "my commander") but never renders anywhere.
+    """
+    language_name = _MOMENT_TITLE_LANGUAGES.get(language, language)
+    try:
+        raw = await llm_service.generate_response(
+            messages=[
+                {"role": "user", "content": f"Q: {question_asked}\nA: {transcript[:2000]}"}
+            ],
+            system_prompt=(
+                "You title one recorded moment from a life-story archive, "
+                "given the interview question asked and what the storyteller "
+                "answered.\n"
+                f"Reply with ONLY a short, concrete title in {language_name} "
+                "(3-6 words) naming what the ANSWER is about — never a "
+                "rephrasing of the question. No quotes, no preamble."
+            ),
+        )
+    except Exception as e:
+        # Non-fatal, like the tags: an untitled moment falls back to its
+        # take label on screen. There is no retry path — one generation
+        # point means one attempt per save, accepted in §1.10.
+        logger.warning(f"moment title generation failed: {e}")
+        return None
+    title = raw.strip().strip('"').strip()
+    title = title.splitlines()[0][:200] if title else ""
+    return title or None
+
+
 async def extract_topics_node(state: AnalysisState) -> dict:
     segment_id = state["segment_id"]
     transcript = state.get("transcript") or ""
@@ -510,10 +550,31 @@ async def extract_topics_node(state: AnalysisState) -> dict:
             # rather than failing the whole segment.
             logger.warning(f"extract_topics_node failed for segment {segment_id}: {e}")
 
+    # The moment title rides in this node rather than a node of its own:
+    # same input (the transcript), same non-fatal contract, and adding a
+    # node would change the graph topology under any segment paused at
+    # human_confirm — the §7 mid-flight hazard — for no producer-visible
+    # stage. "Finding the themes" honestly covers both calls.
+    question_asked = ""
+    language = "he"
+    async with AsyncSessionLocal() as db:
+        segment, user = await _load_segment_and_user(db, segment_id)
+        if segment is not None:
+            question_asked = segment.question_asked
+            language = getattr(user, "recording_language", None) or "he"
+
+    title = (
+        await _generate_moment_title(question_asked, transcript, language)
+        if transcript
+        else None
+    )
+
     async with AsyncSessionLocal() as db:
         segment, _user = await _load_segment_and_user(db, segment_id)
         if segment is not None:
             segment.topic_tags = tags
+            if title:
+                segment.moment_title = title
             await db.commit()
     return {"topic_tags": tags}
 

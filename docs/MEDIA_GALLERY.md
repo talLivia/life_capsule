@@ -259,6 +259,36 @@ Directed follow-up to §1.8's partition, closing the reachability model:
   entity-centric browsing lives on the family tree page, which has its own
   endpoint.
 
+### ✅ 1.10 One title generation point — built 2026-08-11
+
+Directed consolidation: §1.7/§1.8's read-time title mechanism (generate
+lazily at timeline read, watermarked by transcript hash and language) was a
+second source of truth beside the pipeline, and the recording screen still
+said "Take 1 / Take 2". Now there is ONE generation point and two readers:
+
+- **Generated at save**, inside `extract_topics_node` — the same pipeline
+  run that writes `topic_tags`, same non-fatal contract, one plain-text
+  call (no batching, no JSON mapping — there is exactly one segment at
+  save). Deliberately NOT a new graph node: adding one changes the graph
+  topology under any segment paused at `human_confirm` (the §7 mid-flight
+  hazard), and "Finding the themes" honestly covers both calls. A
+  re-record is a new segment and titles itself on its own way through; an
+  in-place re-analysis re-runs this node and re-titles naturally — better
+  than the watermark, which only detected the change at the next read.
+- **The recording screen shows the title** instead of "Take N of M",
+  falling back to the take label only while no title exists
+  (mid-processing, or a failed generation). The extraction modal header
+  uses it too. The timeline reads the same stored value as-is — zero
+  generation logic in the read path, pinned by
+  `test_the_timeline_never_generates_titles`.
+- **Migration `0025` drops the watermark columns** (`moment_title_source`,
+  `moment_title_language`); `moment_title` and its values stay.
+
+Two accepted costs, named rather than buried: a title call that fails at
+save is not retried — that recording keeps its take-label fallback until
+re-saved; and a language switch no longer re-titles old recordings
+(summaries still regenerate; titles keep their save-time language).
+
 **Titles regenerate with their words** (migration `0024`,
 `raw_segments.moment_title_source` = sha256 of the transcript the title was
 generated from). §1.7's freshness rule was "a title exists", which could

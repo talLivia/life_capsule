@@ -135,6 +135,9 @@ export interface RawSegment {
   video_url?: string | null
   video_key?: string | null
   transcript?: string | null
+  /** Generated content title (§1.10) — shown instead of "Take N". Null when
+   *  generation failed at save; fall back to the take label. */
+  moment_title?: string | null
   status: string
   created_at: string
 }
