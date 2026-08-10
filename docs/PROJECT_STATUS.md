@@ -1359,6 +1359,41 @@ better trade. Revisit when the third or fourth block is proposed, not before.
 
 ## Known gaps / tech debt
 
+- 🚨 **KNOWN GAP, deliberately unfixed (2026-08-10): a "עוד" question can
+  switch to the other same-named person once both are exhausted.** Live
+  (session `70305082`, turn 8): friend fully played, then the uncle resolved
+  via clarify and fully played, then "יש עוד סיפור על אמנון?" — and the
+  answer replayed the FRIEND in full. Traced without model calls; the
+  mechanism, precisely:
+  - The history window was CORRECT (last 2 rows: the uncle answer + the
+    question). The friend entered through the transcript, not history.
+  - The model's selection is the defect. Three instructions converge on the
+    wrong answer in this state: ALREADY SHOWN's "look for OTHER units on
+    that same subject — very often in a DIFFERENT recording" (for same-named
+    people "same subject" degrades to same NAME); "if the units that best
+    answer it are already shown, select them anyway"; and the disambiguation
+    block's closing "NEVER return an empty selection because of any of
+    this". The correct output is `unit_ids: []` + `about: "אמנון נחום"` →
+    "זה כל מה שיש לי על אמנון נחום".
+  - Passage expansion then AMPLIFIED the wrong fragments into the complete
+    12-unit replay: bare "אמנון" exact-matches the friend's entity row (the
+    uncle, "אמנון נחום", is unreachable from the bare name), so `about`
+    targeted the friend. Expansion held its can-amplify-never-redirect
+    contract; this state shows amplifying a wrong selection is itself a
+    cost. The bare-name hazard now has TWO consumers (no-story line +
+    expansion), so its blast radius grew with `bd6597d`.
+  - This is a NEIGHBOURING state to the guarded `uncle-then-more` panel case
+    (there the friend is unshown, and post-revert behaviour is correct 3/3).
+    Now expressible as `uncle-then-more-exhausted` in the panel — ⚠️ with NO
+    baseline entry yet (credits): the first `--save` pins the BUG as the
+    drift reference. Read that variant as "the gap, pinned", and when a fix
+    lands, this case flipping to `[]` is the intended drift.
+  - Decided not to fix now: any fix lives either in prompt wording (ALREADY
+    SHOWN / disambiguation block — both carry measured leakage history and
+    cannot be verified until credits return) or as an expansion guard (only
+    shrinks the replay; cannot fix the person error). Revisit with the
+    regression panel available.
+
 - 🚨 **`seed_sweep.py`'s references are DEAD and every accuracy number built
   on them is unscoreable.** They name segment uuids (`502fb283…`, `1d32a9b5…`,
   `097b606b…`) that no longer exist — the archive was re-recorded on 2026-08-07.

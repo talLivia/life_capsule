@@ -144,19 +144,39 @@ _UNCLE_STATE_TURNS: List[List[str]] = [
     ["u74", "u75", "u76", "u77", "u78"],
 ]
 
+#: Session 70305082 (2026-08-09 23:26-23:28 UTC), oldest first: friend fully
+#: played (turns 1-2), three unrelated family turns, a clarify (persisted
+#: assistant row, no units), then the uncle resolved and fully played. The
+#: distinguishing feature vs _UNCLE_STATE_TURNS: BOTH same-named people are
+#: exhausted when the "עוד" question lands.
+_UNCLE_EXHAUSTED_TURNS: List[List[str]] = [
+    [f"u{i}" for i in range(11, 15)],
+    [f"u{i}" for i in range(15, 23)],
+    [f"u{i}" for i in range(4, 11)],
+    ["u23", "u24", "u25"],
+    [f"u{i}" for i in range(26, 31)],
+    [],  # the clarify reply "לאיזה אמנון התכוונת?"
+    ["u74", "u75", "u76", "u77", "u78"],
+]
 
-async def _uncle_conversation_state(group_id: str) -> List[List[str]]:
-    """Shown-state for `uncle-then-more`, guarded against silently going
-    stale. Checks the archive fingerprint, that the last turn's units all
-    belong to the uncle's recording, and that everything about him is shown —
-    the three facts the reproduction actually rests on."""
+
+async def _verified_uncle_state(
+    case: str, turns: List[List[str]], group_id: str, friend_exhausted: bool
+) -> List[List[str]]:
+    """Shared guards for the state-bearing fixtures, so they go stale LOUDLY.
+
+    Checks the archive fingerprint, that the last turn's units all belong to
+    the uncle's recording, and that everything about him is shown — the facts
+    the reproductions actually rest on. `friend_exhausted` additionally
+    asserts every unit of the friend's recordings is shown, which is what
+    separates the two cases."""
     from app.database import AsyncSessionLocal
     from app.services import entity_store
 
     version = await ar._archive_version(group_id)
     if version != _UNCLE_STATE_ARCHIVE_VERSION:
         raise RuntimeError(
-            "the uncle-then-more fixture was derived from archive "
+            f"the {case} fixture was derived from archive "
             f"{_UNCLE_STATE_ARCHIVE_VERSION} but the archive is now {version}. "
             "Unit ids are positional, so its lists now point at different "
             "words. Re-derive them from a real session (see the fixture "
@@ -172,16 +192,42 @@ async def _uncle_conversation_state(group_id: str) -> List[List[str]]:
         if len(member.name.split()) > 1
         for seg in member.segment_ids
     }
+    friend_segments = {
+        seg
+        for group in groups
+        for member in group
+        if len(member.name.split()) == 1
+        for seg in member.segment_ids
+    }
     _archive, _em, units, _tags = await ar._archive_bundle(group_id)
     by_id = {u.unit_id: u for u in units}
-    last_turn = _UNCLE_STATE_TURNS[-1]
+    last_turn = turns[-1]
     uncle_unit_ids = {u.unit_id for u in units if u.segment_id in uncle_segments}
-    shown = {uid for turn in _UNCLE_STATE_TURNS for uid in turn}
+    shown = {uid for turn in turns for uid in turn}
     if not all(by_id[uid].segment_id in uncle_segments for uid in last_turn):
-        raise RuntimeError("uncle-then-more: the last turn no longer plays the uncle's recording")
+        raise RuntimeError(f"{case}: the last turn no longer plays the uncle's recording")
     if not uncle_unit_ids <= shown:
-        raise RuntimeError("uncle-then-more: not every unit about the uncle is marked shown")
-    return _UNCLE_STATE_TURNS
+        raise RuntimeError(f"{case}: not every unit about the uncle is marked shown")
+    if friend_exhausted:
+        friend_unit_ids = {u.unit_id for u in units if u.segment_id in friend_segments}
+        if not friend_unit_ids or not friend_unit_ids <= shown:
+            raise RuntimeError(
+                f"{case}: the friend's units are not all marked shown, but the "
+                "case exists to probe exactly the both-people-exhausted state"
+            )
+    return turns
+
+
+async def _uncle_conversation_state(group_id: str) -> List[List[str]]:
+    return await _verified_uncle_state(
+        "uncle-then-more", _UNCLE_STATE_TURNS, group_id, friend_exhausted=False
+    )
+
+
+async def _uncle_exhausted_state(group_id: str) -> List[List[str]]:
+    return await _verified_uncle_state(
+        "uncle-then-more-exhausted", _UNCLE_EXHAUSTED_TURNS, group_id, friend_exhausted=True
+    )
 
 
 #: Extra questions not in the comparison set, added because they probe a
@@ -221,6 +267,27 @@ EXTRA: List[Tuple[str, str, List[dict], Optional[object]]] = [
           "content": "יש לי גם דוד מצד אבא שקוראים לו אמנון ויש לו שתי ילדים בר ודור"},
          {"role": "user", "content": "יש עוד סיפור על אמנון?"}],
         _uncle_conversation_state,
+    ),
+    # THE NEIGHBOURING STATE, failed live 2026-08-09 23:28 UTC (session
+    # 70305082, turn 8) and DELIBERATELY LEFT UNFIXED — a documented known
+    # gap, see PROJECT_STATUS. Same question, same uncle-just-discussed
+    # history, but BOTH same-named people are exhausted. The model switched
+    # to the friend and replayed him in full; the correct output is an empty
+    # selection with about naming the uncle ("זה כל מה שיש לי על אמנון נחום").
+    #
+    # ⚠️ NO BASELINE ENTRY EXISTS YET (added while Gemini credits were
+    # exhausted), and the LIVE behaviour on this state is the bug. The first
+    # --save will therefore pin CURRENT behaviour, whatever it is: read the
+    # recorded variant as "the gap, pinned for drift-detection", never as
+    # "correct". When a fix lands, drift on this case flipping to [] is the
+    # intended outcome. NOT in MARGINAL for the same reason as its sibling.
+    (
+        "uncle-then-more-exhausted",
+        "יש עוד סיפור על אמנון?",
+        [{"role": "assistant",
+          "content": "יש לי גם דוד מצד אבא שקוראים לו אמנון ויש לו שתי ילדים בר ודור"},
+         {"role": "user", "content": "יש עוד סיפור על אמנון?"}],
+        _uncle_exhausted_state,
     ),
 ]
 
