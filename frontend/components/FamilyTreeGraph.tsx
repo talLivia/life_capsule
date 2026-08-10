@@ -8,7 +8,6 @@ import {
   type ReactZoomPanPinchRef,
 } from 'react-zoom-pan-pinch'
 import {
-  BAND_GAP,
   NODE_H,
   NODE_W,
   PAD,
@@ -205,9 +204,9 @@ export function FamilyTreeGraph({
               {bandHeadings.map((heading) => (
                 <g key={heading.band}>
                   <line
-                    x1={heading.left - BAND_GAP / 2}
+                    x1={heading.dividerX}
                     y1={PAD + arcSpacePx}
-                    x2={heading.left - BAND_GAP / 2}
+                    x2={heading.dividerX}
                     y2={height - PAD}
                     stroke="rgb(148 163 184 / 0.15)"
                     strokeWidth={1}

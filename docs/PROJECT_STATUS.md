@@ -1442,6 +1442,12 @@ extra line between X and Y" is now answered by a list, not a screenshot.
   their drop, the shared trunk/bar/bus, parent stems, marriage and sibling
   links — while their siblings' drops stay dim, which is the distinction a
   shared fork erases. Hovering a parent lights the whole family's fork.
+- **Band order encodes closeness, not discovery** (follow-up, same day): a
+  direct sibling's own family (generation-0 head) seats to the LEFT of the
+  producer's line, beside the sibling fork; aunt/uncle branches seat to the
+  right. First-appearance ordering had put ניר & אירה past every extended
+  band purely because row 0 is scanned after row -1. Dividers moved to each
+  band's MAIN-facing side so a left-seated band still reads as separate.
 
 ## Known gaps / tech debt
 

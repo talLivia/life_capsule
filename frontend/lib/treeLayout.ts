@@ -109,7 +109,14 @@ export interface TreeLayout {
   siblingLinks: RowLink[]
   spouseLinks: RowLink[]
   siblingArcs: Arc[]
-  bandHeadings: { band: string; text: string; x: number; y: number; left: number }[]
+  bandHeadings: {
+    band: string
+    text: string
+    x: number
+    y: number
+    left: number
+    dividerX: number
+  }[]
   arcSpacePx: number
   width: number
   height: number
@@ -228,7 +235,15 @@ export function assignBands(
   tree: FamilyTree,
   generationOf: Map<string, number>,
   couples: [string, string][]
-): { bandOf: Map<string, string>; headName: Map<string, string> } {
+): {
+  bandOf: Map<string, string>
+  headName: Map<string, string>
+  /** The generation the band's heads sit in — 0 for a direct sibling's own
+   *  family, negative for an aunt/uncle branch. Drives band ORDER: a
+   *  sibling's household belongs beside the producer's line, an extended
+   *  branch further out. */
+  bandGen: Map<string, number>
+} {
   const family = new Map<string, { id: string; type: string }[]>()
   for (const edge of tree.edges) {
     family.set(edge.from_id, [
@@ -265,6 +280,7 @@ export function assignBands(
 
   const bandOf = new Map<string, string>()
   const headName = new Map<string, string>()
+  const bandGen = new Map<string, number>()
   const nameOf = new Map<string, string>()
   for (const row of tree.generations) {
     for (const person of row.people) nameOf.set(person.id, person.name)
@@ -344,6 +360,7 @@ export function assignBands(
       .filter(Boolean)
       .sort((a, b) => a.localeCompare(b))
     headName.set(band, names.join(' & '))
+    bandGen.set(band, Math.min(...groupHeads.map((id) => generationOf.get(id) ?? 0)))
     // A generation-0 branch is LED by a spine member (the producer's
     // sibling), so its walk may enter the spine — but only ever DOWNWARD,
     // into that sibling's own children. Ancestor branches never absorb the
@@ -369,7 +386,7 @@ export function assignBands(
       }
     }
   })
-  return { bandOf, headName }
+  return { bandOf, headName, bandGen }
 }
 
 export function computeTreeLayout(tree: FamilyTree): TreeLayout {
@@ -379,18 +396,28 @@ export function computeTreeLayout(tree: FamilyTree): TreeLayout {
   tree.generations.forEach((row) =>
     row.people.forEach((p) => generationOf.set(p.id, row.generation))
   )
-  const { bandOf, headName } = assignBands(tree, generationOf, couples)
+  const { bandOf, headName, bandGen } = assignBands(tree, generationOf, couples)
 
-  // One band for the producer's own line, then one per side branch. Order is
-  // fixed by first appearance so the chart does not reshuffle between loads.
+  // Band order encodes CLOSENESS, not discovery: a direct sibling's own
+  // family (a generation-0 head) sits BESIDE the producer's line, in the
+  // otherwise-empty space to its left; aunt/uncle branches sit further out
+  // to the right. "First appearance" alone put ניר & אירה past every
+  // extended-family band, purely because row 0 is scanned after row -1.
+  // Within each side, first appearance still fixes the order so the chart
+  // does not reshuffle between loads.
   const MAIN = '__main__'
-  const bandOrder: string[] = [MAIN]
+  const discovered: string[] = []
   rows.forEach((row) =>
     row.forEach((p) => {
       const band = bandOf.get(p.id) ?? MAIN
-      if (!bandOrder.includes(band)) bandOrder.push(band)
+      if (band !== MAIN && !discovered.includes(band)) discovered.push(band)
     })
   )
+  const bandOrder: string[] = [
+    ...discovered.filter((band) => (bandGen.get(band) ?? -1) === 0),
+    MAIN,
+    ...discovered.filter((band) => (bandGen.get(band) ?? -1) < 0),
+  ]
 
   const membersByRowBand = rows.map((row) => {
     const grouped = new Map<string, TreePerson[]>()
@@ -450,15 +477,26 @@ export function computeTreeLayout(tree: FamilyTree): TreeLayout {
     })
   })
 
+  const mainStart = bandStart.get(MAIN) ?? 0
   const bandHeadings = bandOrder
     .filter((band) => band !== MAIN)
-    .map((band) => ({
-      band,
-      text: `${headName.get(band) ?? ''}'s family`,
-      x: (bandStart.get(band) ?? 0) + (bandWidth.get(band) ?? 0) / 2,
-      y: PAD + arcSpace + 4,
-      left: bandStart.get(band) ?? 0,
-    }))
+    .map((band) => {
+      const left = bandStart.get(band) ?? 0
+      return {
+        band,
+        text: `${headName.get(band) ?? ''}'s family`,
+        x: left + (bandWidth.get(band) ?? 0) / 2,
+        y: PAD + arcSpace + 4,
+        left,
+        // The divider goes on the band's MAIN-facing side — a band seated to
+        // the LEFT of the producer's line needs it on its right, or the two
+        // read as one group and the gutter gets a pointless line instead.
+        dividerX:
+          left < mainStart
+            ? left + (bandWidth.get(band) ?? 0) + BAND_GAP / 2
+            : left - BAND_GAP / 2,
+      }
+    })
 
   // ── descents: group children by the exact set of parents they hang from ──
   const parentsOf = new Map<string, Placed[]>()
