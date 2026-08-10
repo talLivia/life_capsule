@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { CalendarRange, ChevronDown, ChevronUp, Clock, Film, Loader2, Play } from 'lucide-react'
+import { CalendarRange, ChevronLeft, ChevronRight, Clock, Film, Loader2, Play } from 'lucide-react'
 import { api } from '@/lib/api'
 import type {
   ApiError,
@@ -16,30 +16,30 @@ import type {
  * The producer's life, one bubble per period — read-only.
  *
  * ORDER COMES FROM THE SERVER and is the question file's own order. This file
- * never sorts, never reorders by year, and knows no category name. Reordering
- * the interview reorders this page with no change here.
+ * never sorts, never reorders by year, and knows no category name.
  *
- * THE DEFAULT CARD IS A SUMMARY (docs/MEDIA_GALLERY.md §1.6): title, one
- * generated sentence, and a handful of grouped bubbles — never a chip per
- * name or a row per recording. On a real archive the full lists are a wall.
- * Clicking the card (or a group bubble) expands to the Phase 1 view: every
- * recording, playable, and per-entity chips that filter them.
+ * THE SHAPE IS CONSTANT AT ANY ARCHIVE SIZE (docs/MEDIA_GALLERY.md §1.7).
+ * The collapsed card is title, one sentence, and grouped bubbles — never a
+ * chip per name or a row per recording, whatever exists underneath. The card
+ * is static; bubbles are the only way in, and every period leads with a
+ * moments bubble. Opening a bubble shows a CAPPED highlight selection; the
+ * complete list (and the per-entity chips from Phase 1) live one click
+ * deeper, behind "all moments". Raw interview-question text never renders at
+ * any level — a moment's only name is its generated content title.
  *
- * No year range yet, deliberately — §1.4's producer-scoped attribution is not
- * built, and a range derived from entity years would date a childhood by a
- * grandparent's birth. The header slot appears when that lands.
+ * No year range yet, deliberately — §1.4's producer-scoped attribution is
+ * not built. The header slot appears when that lands.
  *
  * Empty periods are already gone by the time they arrive: a category with no
- * recording is a question not yet answered, not a fact about the life. The
- * count of what was hidden is shown, because a producer looking at three
- * bubbles should know whether that is the whole interview.
+ * recording is a question not yet answered, not a fact about the life.
  */
 
-/** What is expanded and how it is narrowed. `group` and `person` are lenses
- *  over one period's recordings; person narrows within group. */
+/** Which bubble is open and how deep. `person` only exists inside the
+ *  "all moments" level — highlights are curated, not filtered. */
 interface Expansion {
   category: string
-  group: TimelineGroup | null
+  group: TimelineGroup
+  showAll: boolean
   person: TimelinePerson | null
 }
 
@@ -47,6 +47,9 @@ interface RecordingSelection {
   category: string
   recording: TimelineRecording
 }
+
+/** A moment with no generated title yet (generation retries server-side). */
+const UNTITLED = 'Recorded moment'
 
 function GroupBubble({
   group,
@@ -86,7 +89,7 @@ function PersonChip({
     <button
       type="button"
       onClick={() => onSelect(person)}
-      title={selected ? 'Show every recording again' : `Only the moments about ${person.name}`}
+      title={selected ? 'Show every moment again' : `Only the moments about ${person.name}`}
       className={`px-3 py-1.5 rounded-xl border text-left transition-colors ${
         selected
           ? 'border-primary-400 bg-primary-500/15'
@@ -104,12 +107,14 @@ function PersonChip({
   )
 }
 
-function RecordingRow({
+function MomentRow({
   recording,
+  caption,
   onSelect,
   selected,
 }: {
   recording: TimelineRecording
+  caption?: string | null
   onSelect: (r: TimelineRecording) => void
   selected: boolean
 }) {
@@ -117,18 +122,25 @@ function RecordingRow({
     <button
       type="button"
       onClick={() => onSelect(recording)}
-      className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl border text-left transition-colors ${
+      className={`w-full flex items-start gap-2 px-3 py-2 rounded-xl border text-left transition-colors ${
         selected
           ? 'border-primary-400 bg-primary-500/15'
           : 'border-white/10 bg-surface-800/50 hover:border-white/25'
       }`}
     >
-      <Play size={13} className="shrink-0 text-primary-400" />
-      <span dir="auto" className="text-sm text-white leading-snug flex-1">
-        {recording.question_asked}
+      <Play size={13} className="shrink-0 mt-1 text-primary-400" />
+      <span className="flex-1 min-w-0">
+        <span dir="auto" className="block text-sm text-white leading-snug">
+          {recording.title || UNTITLED}
+        </span>
+        {caption && (
+          <span dir="auto" className="block text-[11px] text-gray-500 leading-snug mt-0.5">
+            {caption}
+          </span>
+        )}
       </span>
       {recording.take_count > 1 && (
-        <span className="text-[11px] text-gray-500 shrink-0">
+        <span className="text-[11px] text-gray-500 shrink-0 mt-0.5">
           take {recording.take_index}/{recording.take_count}
         </span>
       )}
@@ -139,38 +151,40 @@ function RecordingRow({
 function Period({
   period,
   expansion,
-  onToggleExpand,
   onSelectGroup,
+  onShowAll,
+  onBackToHighlights,
   onSelectPerson,
   playingSegmentId,
   onPlay,
 }: {
   period: TimelinePeriod
   expansion: Expansion | null
-  onToggleExpand: () => void
   onSelectGroup: (g: TimelineGroup) => void
+  onShowAll: () => void
+  onBackToHighlights: () => void
   onSelectPerson: (p: TimelinePerson) => void
   playingSegmentId: string | null
   onPlay: (r: TimelineRecording) => void
 }) {
-  const expanded = expansion !== null
   const group = expansion?.group ?? null
   const person = expansion?.person ?? null
+  const byId = new Map(period.recordings.map((r) => [r.segment_id, r]))
 
-  // The expanded view's lenses. A group narrows chips and recordings to its
-  // members; a person narrows recordings further. Everything is derived from
-  // the payload — no requests here.
-  const visiblePeople = group
-    ? period.people.filter((p) => group.entity_ids.includes(p.id))
-    : period.people
-  const groupSegmentIds = group
-    ? new Set(visiblePeople.flatMap((p) => p.segment_ids))
-    : null
-  const visibleRecordings = person
-    ? period.recordings.filter((r) => person.segment_ids.includes(r.segment_id))
-    : groupSegmentIds
-      ? period.recordings.filter((r) => groupSegmentIds.has(r.segment_id))
-      : period.recordings
+  // "All moments" — the deepest level, and the only one whose length follows
+  // the archive. Chips narrow it; the moments group carries every entity.
+  const chipPeople = group
+    ? group.key === 'moments'
+      ? period.people
+      : period.people.filter((p) => group.entity_ids.includes(p.id))
+    : []
+  const allRecordings = group
+    ? period.recordings.filter((r) =>
+        person
+          ? person.segment_ids.includes(r.segment_id)
+          : group.segment_ids.includes(r.segment_id)
+      )
+    : []
 
   return (
     <section className="relative pl-8 pb-8 last:pb-0">
@@ -179,27 +193,14 @@ function Period({
       <span className="absolute left-0 top-1.5 w-3.5 h-3.5 rounded-full bg-primary-500/80 ring-4 ring-surface-900" aria-hidden />
 
       <div className="glass-card p-4">
-        {/* The header is the expand control — the card, not the lists, is the
-            default unit of the page. */}
-        <button
-          type="button"
-          onClick={onToggleExpand}
-          className="w-full flex flex-wrap items-baseline justify-between gap-2 text-left"
-        >
-          <h2 dir="auto" className="text-base font-bold text-white">
-            {period.category_label}
-          </h2>
-          <span className="flex items-center gap-2 text-[11px] text-gray-500">
-            {period.question_count} question{period.question_count === 1 ? '' : 's'} answered
-            {period.recording_count !== period.question_count &&
-              ` · ${period.recording_count} recordings`}
-            {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          </span>
-        </button>
+        {/* The collapsed shape: title, sentence, bubbles. Nothing else, at
+            any archive size — the card itself is static. */}
+        <h2 dir="auto" className="text-base font-bold text-white">
+          {period.category_label}
+        </h2>
 
-        {/* A period the interview no longer contains. Kept visible rather than
-            dropped — the recordings in it are real answers, and they stay
-            until the producer moves them somewhere. */}
+        {/* A period the interview no longer contains. Kept visible rather
+            than dropped — its recordings are real answers. */}
         {period.retired_only && (
           <p className="text-[11px] text-amber-300/80 mt-1">
             From an earlier version of the interview.
@@ -225,37 +226,67 @@ function Period({
           </div>
         )}
 
-        {expanded && (
-          <div className="mt-4 pt-3 border-t border-white/10 flex flex-col gap-3">
-            {visiblePeople.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {visiblePeople.map((p) => (
-                  <PersonChip
-                    key={p.id}
-                    person={p}
-                    selected={person?.id === p.id}
-                    onSelect={onSelectPerson}
-                  />
-                ))}
-              </div>
-            )}
-
-            <div className="flex flex-col gap-1.5">
-              {visibleRecordings.map((recording) => (
-                <RecordingRow
-                  key={recording.segment_id}
-                  recording={recording}
-                  selected={playingSegmentId === recording.segment_id}
-                  onSelect={onPlay}
-                />
-              ))}
-            </div>
-
-            {person && (
-              <p dir="auto" className="text-[11px] text-gray-500">
-                Only the moments about {person.name} — choose them again to see
-                everything.
-              </p>
+        {group && (
+          <div className="mt-4 pt-3 border-t border-white/10 flex flex-col gap-2">
+            {!expansion?.showAll ? (
+              <>
+                {group.highlights.map((h) => {
+                  const recording = byId.get(h.segment_id)
+                  if (!recording) return null
+                  return (
+                    <MomentRow
+                      key={h.segment_id}
+                      recording={recording}
+                      caption={h.caption}
+                      selected={playingSegmentId === h.segment_id}
+                      onSelect={onPlay}
+                    />
+                  )
+                })}
+                {group.segment_ids.length > group.highlights.length && (
+                  <button
+                    type="button"
+                    onClick={onShowAll}
+                    className="self-start flex items-center gap-1 text-xs text-primary-300 hover:text-primary-200 mt-1"
+                  >
+                    All moments ({group.segment_ids.length})
+                    <ChevronRight size={13} />
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={onBackToHighlights}
+                  className="self-start flex items-center gap-1 text-xs text-primary-300 hover:text-primary-200"
+                >
+                  <ChevronLeft size={13} />
+                  Highlights
+                </button>
+                {chipPeople.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {chipPeople.map((p) => (
+                      <PersonChip
+                        key={p.id}
+                        person={p}
+                        selected={person?.id === p.id}
+                        onSelect={onSelectPerson}
+                      />
+                    ))}
+                  </div>
+                )}
+                <div className="flex flex-col gap-1.5">
+                  {allRecordings.map((recording) => (
+                    <MomentRow
+                      key={recording.segment_id}
+                      recording={recording}
+                      selected={playingSegmentId === recording.segment_id}
+                      onSelect={onPlay}
+                    />
+                  ))}
+                </div>
+              </>
             )}
           </div>
         )}
@@ -287,29 +318,18 @@ export function TimelinePanel() {
     load()
   }, [load])
 
-  const toggleExpand = (category: string) => {
-    setExpansion((current) =>
-      current?.category === category ? null : { category, group: null, person: null }
-    )
-  }
-
   const selectGroup = (category: string) => (group: TimelineGroup) => {
-    // Clicking a group opens the period narrowed to it; clicking the selected
-    // group again widens back to the whole (still expanded) period.
     setExpansion((current) =>
-      current?.category === category && current.group?.key === group.key
-        ? { category, group: null, person: null }
-        : { category, group, person: null }
+      current?.category === category && current.group.key === group.key
+        ? null
+        : { category, group, showAll: false, person: null }
     )
   }
 
   const selectPerson = (category: string) => (person: TimelinePerson) => {
     setExpansion((current) => {
       if (current?.category !== category) return current
-      return {
-        ...current,
-        person: current.person?.id === person.id ? null : person,
-      }
+      return { ...current, person: current.person?.id === person.id ? null : person }
     })
   }
 
@@ -356,8 +376,13 @@ export function TimelinePanel() {
                 key={period.category}
                 period={period}
                 expansion={expansion?.category === period.category ? expansion : null}
-                onToggleExpand={() => toggleExpand(period.category)}
                 onSelectGroup={selectGroup(period.category)}
+                onShowAll={() =>
+                  setExpansion((c) => (c ? { ...c, showAll: true } : c))
+                }
+                onBackToHighlights={() =>
+                  setExpansion((c) => (c ? { ...c, showAll: false, person: null } : c))
+                }
                 onSelectPerson={selectPerson(period.category)}
                 playingSegmentId={playing?.recording.segment_id ?? null}
                 onPlay={(recording) => setPlaying({ category: period.category, recording })}
@@ -394,7 +419,7 @@ export function TimelinePanel() {
           ) : (
             <div className="glass-card p-4 flex flex-col gap-3">
               <h2 dir="auto" className="text-base font-bold text-white leading-snug">
-                {playing.recording.question_asked}
+                {playing.recording.title || UNTITLED}
               </h2>
               {playing.recording.take_count > 1 && (
                 <p className="text-[11px] text-gray-500">

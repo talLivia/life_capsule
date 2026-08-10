@@ -150,6 +150,51 @@ sitting in a childhood recording: deriving a range from entity years would
 ship precisely the bug §1.4 exists to prevent. The header slot appears when
 producer-scoped attribution lands.
 
+### ✅ 1.7 The constant-shape principle — built 2026-08-11
+
+§1.6 shipped the compact card but its expanded state was still Phase 1's
+flat lists, and the collapsed header still counted questions. Restated as a
+GENERAL principle, to hold for every category at every archive size:
+
+> A period's default view is a summary, not a listing. The collapsed shape
+> is constant — title, year range (or nothing), one sentence, a few grouped
+> bubbles — whether the category holds 3 recordings or 50. Volume is
+> absorbed by grouping and summarization, never expressed as more chips,
+> rows, or text. Raw interview-question text never renders by default at
+> any archive size. One click deep is still curated — constant shape, not a
+> proportionally longer list.
+
+**What renders where now:**
+
+- **Collapsed:** title · summary sentence · bubbles. Counters removed —
+  under the strict reading "3 questions answered · 5 recordings" is a
+  listing leak too. The card is static (approved): bubbles are the ONLY way
+  in.
+- **Every period leads with a רגעים bubble.** With a static card this is the
+  only route into an entity-less period's recordings — the G bug §1 fixed,
+  re-solved one layer up. Not the container §1.2 rejected: that objection
+  was to a bubble existing only for the empty case; this one is uniform.
+- **Bubble click → capped highlights** (4), approved mechanism "title once +
+  ranked selection": ranked by the `importance_score` ingestion already
+  computed (zero LLM at read), diversified so one much-discussed person
+  cannot fill every slot, presented chronologically — the cap decides WHAT,
+  recording order decides WHERE. Captions quote the stored
+  `entity_mentions.summary` for the group's most-present member.
+- **"All moments" one level deeper** (approved): the complete list plus the
+  Phase 1 per-entity chips, so §1.2's reachability rule still holds and
+  density is opt-in.
+- **Moment titles** (migration `0023`, `raw_segments.moment_title` +
+  language): a recording's only rendered name everywhere, including the
+  player — generated once per recording by the same lazy/batched/stored
+  seam as §1.6's summaries (batches of 20; unparseable reply leaves NULL
+  and retries; untranscribed segments wait for their transcript). The
+  question text is model INPUT (it names unnamed referents — CLAUDE.md) but
+  never renders. `question_asked` stays in the payload as data.
+
+**Costs this adds:** one titling call per ~20 recordings, once ever per
+recording; highlight selection is free at read. Summary/subtype costs
+unchanged from §1.6.
+
 ### 1.4 Year range per category — "about the producer" only (NEW, see §9.1)
 
 Each category bubble should also show an earliest–latest year range on the

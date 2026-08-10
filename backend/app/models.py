@@ -321,6 +321,14 @@ class RawSegment(Base):
     # Set by extract_topics (Prompt 5) — actual-content classification,
     # independent of question_asked. Prompt 6's primary_match queries this.
     topic_tags = Column(JSON, nullable=True)
+    # A generated CONTENT title ("הבית הראשון בטבריה") — what the timeline
+    # shows instead of question_asked, which never renders by default at any
+    # archive size (docs/MEDIA_GALLERY.md §1.7). Written once per recording by
+    # period_insights, lazily at read; NULL means not yet generated (retried),
+    # and a language mismatch with moment_title_language is staleness. The
+    # transcript never changes after ingest, so there is no other watermark.
+    moment_title = Column(Text, nullable=True)
+    moment_title_language = Column(String, nullable=True)
     # Set by score_importance (Prompt 5), 0-10, Generative Agents style.
     # Reused at retrieval time (Prompt 7) with no additional LLM call.
     importance_score = Column(Float, nullable=True)

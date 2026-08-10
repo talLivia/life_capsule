@@ -562,20 +562,36 @@ export interface TimelinePerson {
   segment_ids: string[]
 }
 
+/** One curated pick inside a group view. The recording it points at lives in
+ *  the period's `recordings`; the caption is what that recording said about
+ *  the group's most-present member in it (null for the moments group). */
+export interface TimelineHighlight {
+  segment_id: string
+  caption: string | null
+}
+
 /** A grouped bubble on the compact card — "משפחה ×12", not a chip per name.
- *  Carries its member entity ids so the expanded view can show exactly the
- *  chips behind it and filter recordings to them, with no second request. */
+ *  Opening one shows `highlights` (capped, same shape at any archive size);
+ *  `segment_ids` is the full set behind "all moments", and `entity_ids` the
+ *  member chips at that deepest level. All derived — no second request.
+ *  Every period leads with a `moments` group; the card itself is static. */
 export interface TimelineGroup {
   key: string
   label: string
   count: number
   entity_ids: string[]
+  segment_ids: string[]
+  highlights: TimelineHighlight[]
 }
 
-/** A period's own content — docs/MEDIA_GALLERY.md §1. Titled by its interview
- *  question, playable directly; people are a lens over these, not the content. */
+/** A period's own content — docs/MEDIA_GALLERY.md §1, §1.7. Rendered under
+ *  its generated content `title`; `question_asked` is payload data the page
+ *  never shows — raw interview questions do not render at any archive size. */
 export interface TimelineRecording {
   segment_id: string
+  /** Generated content title — the moment's only rendered name. Null until
+   *  generation succeeds (fallback label, retried server-side). */
+  title: string | null
   question_asked: string
   question_id: string
   created_at: string

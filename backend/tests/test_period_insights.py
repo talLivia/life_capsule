@@ -54,6 +54,10 @@ def _classify_calls(mock):
     return [c for c in mock.call_args_list if "Classify" in c.kwargs["system_prompt"]]
 
 
+def _title_calls(mock):
+    return [c for c in mock.call_args_list if "title" in c.kwargs["system_prompt"]]
+
+
 # ── summaries: the cost contract ──────────────────────────────────────────
 
 
@@ -155,6 +159,63 @@ async def test_a_failure_with_nothing_stored_shows_no_summary(
     assert (await db_session.execute(
         PeriodSummary.__table__.select()
     )).all() == []
+
+
+# ── moment titles: written once, retried on garbage ───────────────────────
+
+
+async def test_a_moment_is_titled_once_and_the_payload_carries_it(
+    db_session, archive, monkeypatch
+):
+    user, session = archive
+    segment = await _record(db_session, session, _first_question_id())
+
+    def dispatch(messages, system_prompt=None, **kwargs):
+        if "title" in (system_prompt or ""):
+            return json.dumps({segment.id: "הבית הראשון בטבריה"})
+        return "משפט."
+
+    mock = AsyncMock(side_effect=dispatch)
+    monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
+
+    first = await timeline.build_timeline(db_session, user.id, "he")
+    assert first["periods"][0]["recordings"][0]["title"] == "הבית הראשון בטבריה"
+    await timeline.build_timeline(db_session, user.id, "he")
+    # Written once, ever — the transcript never changes after ingest.
+    assert len(_title_calls(mock)) == 1
+
+
+async def test_an_unparseable_title_reply_leaves_null_and_retries(
+    db_session, archive, monkeypatch
+):
+    user, session = archive
+    await _record(db_session, session, _first_question_id())
+
+    def dispatch(messages, system_prompt=None, **kwargs):
+        if "title" in (system_prompt or ""):
+            return "not json at all"
+        return "משפט."
+
+    mock = AsyncMock(side_effect=dispatch)
+    monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
+
+    period = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]
+    assert period["recordings"][0]["title"] is None
+    await timeline.build_timeline(db_session, user.id, "he")
+    assert len(_title_calls(mock)) == 2
+
+
+async def test_an_untranscribed_moment_is_not_sent_for_titling(
+    db_session, archive, monkeypatch
+):
+    """Nothing to title yet — it is picked up once the transcript lands."""
+    user, session = archive
+    await _record(db_session, session, _first_question_id(), transcript=None)
+    mock = AsyncMock(return_value="משפט.")
+    monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
+
+    await timeline.build_timeline(db_session, user.id, "he")
+    assert _title_calls(mock) == []
 
 
 # ── subtypes: asked once, and 'other' is an answer ────────────────────────

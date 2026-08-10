@@ -8,6 +8,7 @@ the honest option — the alternative is claiming a live check that cannot be
 run — but it is worth knowing these assert a shape rather than a measurement.
 """
 
+from datetime import datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -55,11 +56,15 @@ async def archive(db_session):
     return user, session
 
 
-async def _record(db, session, question_id, index=0, question_asked="?", video_url=None):
+async def _record(db, session, question_id, index=0, question_asked="?",
+                  video_url=None, importance=None, created_at=None):
     segment = RawSegment(
         interview_session_id=session.id, question_asked=question_asked,
         question_index=index, question_id=question_id, status="ready",
-        video_url=video_url,
+        video_url=video_url, importance_score=importance,
+        # SQLite's CURRENT_TIMESTAMP is second-resolution, so rows created in
+        # one test tie; anything asserting chronology passes explicit times.
+        created_at=created_at,
     )
     db.add(segment)
     await db.flush()
@@ -206,9 +211,15 @@ async def test_a_period_with_no_named_entities_shows_its_recordings(
     period = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]
     assert period["people"] == []
     assert [r["segment_id"] for r in period["recordings"]] == [segment.id]
-    # Titled by the interview question, playable directly.
-    assert period["recordings"][0]["question_asked"] == "מה אהבת לעשות בתור ילד?"
     assert period["recordings"][0]["video_url"] == "https://cdn/x.mp4"
+    # With the card static, the moments bubble is the route in — it must
+    # exist and carry this recording even though no entity group does.
+    moments = period["groups"][0]
+    assert moments["key"] == "moments"
+    assert moments["segment_ids"] == [segment.id]
+    assert [h["segment_id"] for h in moments["highlights"]] == [segment.id]
+    # Its caption is None — the moments group's titles carry the content.
+    assert moments["highlights"][0]["caption"] is None
 
 
 async def test_takes_are_numbered_within_their_question(db_session, archive):
@@ -274,18 +285,80 @@ async def test_groups_split_by_relation_and_subtype_not_one_chip_per_name(
     await db_session.flush()
 
     groups = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]["groups"]
+    # Moments leads, always — with the card static it is the only route into
+    # an entity-less period's recordings.
     assert [g["key"] for g in groups] == [
-        "family", "people", "places", "education", "military", "more"
+        "moments", "family", "people", "places", "education", "military", "more"
     ]
     by_key = {g["key"]: g for g in groups}
+    assert by_key["moments"]["segment_ids"] == [segment.id]
     assert by_key["family"]["entity_ids"] == [sibling.id]
     assert by_key["people"]["entity_ids"] == [friend.id]
     assert by_key["education"]["entity_ids"] == [school.id]
     assert by_key["military"]["entity_ids"] == [base.id]
     assert by_key["more"]["entity_ids"] == [unclassified.id]
     assert by_key["places"]["count"] == 1
+    # A group carries the recordings behind it, uniformly.
+    assert by_key["family"]["segment_ids"] == [segment.id]
     # Hebrew page, Hebrew labels.
     assert by_key["family"]["label"] == "משפחה"
+    assert by_key["moments"]["label"] == "רגעים"
+
+
+async def test_highlights_are_capped_diversified_and_chronological(
+    db_session, archive
+):
+    """The view one click deep has a constant shape: capped at 4, ranked by
+    the stored importance score, but diversified — a much-discussed person
+    must not fill every slot, so the one moment covering somebody else beats
+    a higher-scored repeat. Presentation is chronological: the cap decides
+    WHAT is shown, recording order decides where."""
+    user, session = archive
+    _, question_id = _live_ids(1)[0]
+    often_segments = [
+        await _record(db_session, session, question_id, importance=9 - i,
+                      created_at=datetime(2026, 1, 1 + i))
+        for i in range(5)
+    ]
+    rare_segment = await _record(db_session, session, question_id, importance=1,
+                                 created_at=datetime(2026, 1, 10))
+
+    often = Entity(producer_id=user.id, name="Often", normalized_name="often", type="person")
+    rare = Entity(producer_id=user.id, name="Rare", normalized_name="rare", type="person")
+    db_session.add_all([often, rare])
+    await db_session.flush()
+    db_session.add_all(
+        [EntityMention(entity_id=often.id, raw_segment_id=s.id) for s in often_segments]
+        + [EntityMention(entity_id=rare.id, raw_segment_id=rare_segment.id)]
+    )
+    await db_session.flush()
+
+    groups = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]["groups"]
+    people_group = next(g for g in groups if g["key"] == "people")
+    picked = [h["segment_id"] for h in people_group["highlights"]]
+    # Four slots: the top-ranked moments about Often, plus Rare's only moment
+    # despite its low score — then back in chronological order.
+    assert picked == [
+        often_segments[0].id, often_segments[1].id, often_segments[2].id, rare_segment.id
+    ]
+
+
+async def test_highlight_captions_quote_what_the_recording_said(db_session, archive):
+    user, session = archive
+    _, question_id = _live_ids(1)[0]
+    segment = await _record(db_session, session, question_id)
+    brother = Entity(producer_id=user.id, name="ניר", normalized_name="ניר", type="person")
+    db_session.add(brother)
+    await db_session.flush()
+    db_session.add(
+        EntityMention(entity_id=brother.id, raw_segment_id=segment.id,
+                      summary="אח של הדובר, הקטן מבין הארבעה")
+    )
+    await db_session.flush()
+
+    groups = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]["groups"]
+    people_group = next(g for g in groups if g["key"] == "people")
+    assert people_group["highlights"][0]["caption"] == "אח של הדובר, הקטן מבין הארבעה"
 
 
 async def test_every_period_carries_its_summary_sentence(db_session, archive):

@@ -156,6 +156,90 @@ async def classify_organisation_subtypes(db: AsyncSession, producer_id: str) -> 
     await db.commit()
 
 
+# ── moment titles ─────────────────────────────────────────────────────────
+
+# Segments per titling call. A first load of a full real archive has a
+# hundred untitled recordings; one giant prompt risks a truncated reply that
+# loses every title in it, where a lost chunk loses twenty and retries.
+_TITLE_BATCH = 20
+
+
+async def ensure_moment_titles(
+    db: AsyncSession, language: str, segments: Sequence[RawSegment]
+) -> None:
+    """Give every transcribed segment a content title, once.
+
+    The interview question never renders by default, so a moment's only name
+    is this. Untranscribed segments are skipped (nothing to title yet) and
+    picked up once the transcript lands; an unparseable reply leaves NULL and
+    the next read retries. The question text IS given to the model — it names
+    referents the words never do ("my commander") — it just never renders.
+    """
+    untitled = [
+        s
+        for s in segments
+        if (s.transcript or "").strip()
+        and (s.moment_title is None or s.moment_title_language != language)
+    ]
+    if not untitled:
+        return
+
+    language_name = _LANGUAGE_NAMES.get(language, language)
+    wrote = False
+    for start in range(0, len(untitled), _TITLE_BATCH):
+        batch = untitled[start : start + _TITLE_BATCH]
+        lines = [
+            f"{s.id}:\nQ: {s.question_asked}\nA: {(s.transcript or '')[:_TRANSCRIPT_CHARS]}"
+            for s in batch
+        ]
+        try:
+            raw = await llm_service.generate_response(
+                messages=[{"role": "user", "content": "\n\n".join(lines)}],
+                system_prompt=(
+                    "Each block is one recorded moment from a life-story "
+                    "archive: an id, the interview question asked, and what "
+                    "the storyteller answered.\n"
+                    f"Give each moment a short, concrete title in {language_name} "
+                    "(3-6 words) naming what the ANSWER is about — never a "
+                    "rephrasing of the question.\n"
+                    'Reply with ONLY a JSON object mapping id to title, e.g. '
+                    '{"<id>": "..."}.'
+                ),
+            )
+        except Exception as e:
+            logger.warning(f"moment titling failed, leaving NULLs: {e}")
+            continue
+        titles = _parse_title_reply(raw, {s.id for s in batch})
+        for segment in batch:
+            title = titles.get(segment.id)
+            if title:
+                segment.moment_title = title
+                segment.moment_title_language = language
+                wrote = True
+    if wrote:
+        await db.commit()
+
+
+def _parse_title_reply(raw: str, expected_ids: set) -> Dict[str, str]:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:]
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("moment-title reply was not JSON; leaving NULLs")
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        segment_id: title.strip()
+        for segment_id, title in parsed.items()
+        if segment_id in expected_ids and isinstance(title, str) and title.strip()
+    }
+
+
 # ── period summaries ──────────────────────────────────────────────────────
 
 

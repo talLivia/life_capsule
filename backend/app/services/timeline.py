@@ -50,14 +50,19 @@ segment ids that mention them so selecting one FILTERS the recordings rather
 than opening anything separate. No special case for the entity-less period:
 it shows its recordings exactly like every other one.
 
-## The default card is a SUMMARY; the full list is behind an expand
+## The default card is a SUMMARY; every deeper level keeps a constant shape
 
-docs/MEDIA_GALLERY.md §1.6. On a real archive a card per recording and a chip
-per name is a wall, so each period also carries a generated one-sentence
-summary (period_insights, stored and refreshed only when the recordings
-change) and a handful of GROUPED bubbles (`groups`) — family by recorded
-relation, places by type, organisations by their classified subtype. The
-recordings and per-entity chips stay in the payload for the expanded view.
+docs/MEDIA_GALLERY.md §1.6–§1.7. The collapsed card is title, one generated
+sentence, and grouped bubbles — the SAME shape at 3 recordings or 50; volume
+is absorbed by grouping and summarization, never expressed as more chips or
+rows. The card itself is static: bubbles are the only way in, every period
+leads with a moments bubble (the only route into an entity-less period), and
+a bubble opens a CAPPED highlight selection ranked by the importance score
+ingestion already computed — the full list is one more click ("all moments"),
+so §1.2's reachability rule still holds. Raw interview-question text never
+renders here at any level; a moment's only name is its generated content
+title (period_insights).
+
 No year range yet, deliberately: §1.4's producer-scoped attribution is not
 built, and the only year in the live archive is the father's birth year —
 exactly the year a childhood range must NOT be derived from.
@@ -100,6 +105,17 @@ _GROUPS: List[tuple] = [
     ("community", {"he": "קהילה", "en": "Community"}),
     ("more", {"he": "עוד", "en": "More"}),
 ]
+
+# Every period leads with a moments bubble — its recordings as a whole. The
+# card itself is static (bubbles are the only way in), so without this an
+# entity-less period would have no route to its recordings at all: the G bug
+# again, one layer up. Not the container §1.2 rejected — that objection was
+# to a bubble existing ONLY for the empty case; this one is uniform.
+_MOMENTS_LABELS = {"he": "רגעים", "en": "Moments"}
+
+# Highlights per group view — the shape is constant whatever the archive
+# holds; everything else lives behind "all moments".
+_HIGHLIGHT_CAP = 4
 
 
 def _buckets(language: str) -> List[Dict[str, Any]]:
@@ -171,6 +187,11 @@ async def build_timeline(
             # outside the guided set. Counted, never silently dropped.
             undated.append(segment)
 
+    # Content titles before anything renders: the interview question never
+    # names a moment on this page, so a moment's only name is generated.
+    placed = [s for takes in by_question.values() for s in takes]
+    await period_insights.ensure_moment_titles(db, language, placed)
+
     periods: List[Dict[str, Any]] = []
     period_segments: List[List[RawSegment]] = []
     hidden = 0
@@ -182,6 +203,11 @@ async def build_timeline(
             continue
         segments.sort(key=lambda s: s.created_at)
         people = await _people_in(db, producer_id, [s.id for s in segments])
+        groups = _groups_for(people, family_ids, language, segments)
+        # Mention summaries fed the highlight captions above; they are not
+        # part of the payload — the tree's moments endpoint serves them.
+        for person in people:
+            person.pop("mention_summaries", None)
         periods.append(
             {
                 "category": bucket["category"],
@@ -193,7 +219,7 @@ async def build_timeline(
                 "question_count": len({s.question_id for s in segments}),
                 "recordings": _recordings_in(segments),
                 "people": people,
-                "groups": _groups_for(people, family_ids, language),
+                "groups": groups,
             }
         )
         period_segments.append(segments)
@@ -263,27 +289,106 @@ def _group_key(entity: Dict[str, Any], family_ids: set) -> str:
 
 
 def _groups_for(
-    people: List[Dict[str, Any]], family_ids: set, language: str
+    people: List[Dict[str, Any]],
+    family_ids: set,
+    language: str,
+    segments: List[RawSegment],
 ) -> List[Dict[str, Any]]:
     """The compact card's bubbles — a handful of groups, not a chip per name.
 
-    Carries the member entity ids so the expanded view can show exactly the
-    chips behind a bubble and filter recordings to them, with no second
-    request.
+    Every group carries the segment ids behind it (uniform client filtering,
+    no special case) and a capped highlight selection — the view one click
+    deep has the same shape whether the group holds five people or forty.
+    The moments bubble leads and always exists; it is the only route into an
+    entity-less period's recordings now that the card is static.
     """
-    members: Dict[str, List[str]] = {}
-    for entity in people:
-        members.setdefault(_group_key(entity, family_ids), []).append(entity["id"])
-    return [
+    groups: List[Dict[str, Any]] = [
         {
-            "key": key,
-            "label": labels.get(language, labels["en"]),
-            "count": len(members[key]),
-            "entity_ids": members[key],
+            "key": "moments",
+            "label": _MOMENTS_LABELS.get(language, _MOMENTS_LABELS["en"]),
+            "count": len(segments),
+            "entity_ids": [],
+            "segment_ids": [s.id for s in segments],
+            "highlights": _highlights(segments, None),
         }
-        for key, labels in _GROUPS
-        if key in members
     ]
+    members: Dict[str, List[Dict[str, Any]]] = {}
+    for entity in people:
+        members.setdefault(_group_key(entity, family_ids), []).append(entity)
+    for key, labels in _GROUPS:
+        if key not in members:
+            continue
+        group_people = members[key]
+        mentioned = {sid for person in group_people for sid in person["segment_ids"]}
+        group_segments = [s for s in segments if s.id in mentioned]
+        groups.append(
+            {
+                "key": key,
+                "label": labels.get(language, labels["en"]),
+                "count": len(group_people),
+                "entity_ids": [person["id"] for person in group_people],
+                "segment_ids": [s.id for s in group_segments],
+                "highlights": _highlights(group_segments, group_people),
+            }
+        )
+    return groups
+
+
+def _highlights(
+    segments: List[RawSegment], group_people: List[Dict[str, Any]] | None
+) -> List[Dict[str, Any]]:
+    """A capped, content-aware selection — never a proportionally longer list.
+
+    Ranked by the importance score ingestion already computed (no LLM call
+    here), diversified so one much-discussed person cannot fill every slot:
+    the first pass prefers moments that cover a member not yet represented,
+    the second fills the rest by rank. Presented in recording order — the
+    cap decides WHAT is shown, chronology decides the order, which is the
+    "years decorate, they never move" rule one level down.
+
+    Captions come from the stored mention summaries — what the recording
+    actually said about the group's most-present member in it. None for the
+    moments group: its titles carry the content.
+    """
+    ranked = sorted(
+        segments,
+        key=lambda s: (
+            -(s.importance_score if s.importance_score is not None else -1.0),
+            s.created_at,
+        ),
+    )
+    picked: List[RawSegment] = []
+    if group_people:
+        covered: set = set()
+        by_segment: Dict[str, List[Dict[str, Any]]] = {}
+        for person in group_people:
+            for sid in person["segment_ids"]:
+                by_segment.setdefault(sid, []).append(person)
+        for segment in ranked:
+            if len(picked) >= _HIGHLIGHT_CAP:
+                break
+            new_members = [p for p in by_segment.get(segment.id, []) if p["id"] not in covered]
+            if new_members:
+                picked.append(segment)
+                covered.update(p["id"] for p in new_members)
+    for segment in ranked:
+        if len(picked) >= _HIGHLIGHT_CAP:
+            break
+        if segment not in picked:
+            picked.append(segment)
+    picked.sort(key=lambda s: s.created_at)
+
+    highlights = []
+    for segment in picked:
+        caption = None
+        if group_people:
+            for person in group_people:  # already mentions-desc ordered
+                summary = person.get("mention_summaries", {}).get(segment.id)
+                if summary:
+                    caption = summary
+                    break
+        highlights.append({"segment_id": segment.id, "caption": caption})
+    return highlights
 
 
 def _recordings_in(segments: List[RawSegment]) -> List[Dict[str, Any]]:
@@ -305,6 +410,10 @@ def _recordings_in(segments: List[RawSegment]) -> List[Dict[str, Any]]:
         recordings.append(
             {
                 "segment_id": segment.id,
+                # The generated content title — the moment's ONLY rendered
+                # name. question_asked stays in the payload as data, but the
+                # page never shows raw question text at any archive size.
+                "title": segment.moment_title,
                 "question_asked": segment.question_asked,
                 "question_id": segment.question_id,
                 "created_at": segment.created_at,
@@ -334,7 +443,7 @@ async def _people_in(
         return []
     rows = (
         await db.execute(
-            select(Entity, EntityMention.raw_segment_id)
+            select(Entity, EntityMention.raw_segment_id, EntityMention.summary)
             .join(EntityMention, EntityMention.entity_id == Entity.id)
             .where(
                 Entity.producer_id == producer_id,
@@ -344,7 +453,7 @@ async def _people_in(
     ).all()
 
     by_entity: Dict[str, Dict[str, Any]] = {}
-    for entity, raw_segment_id in rows:
+    for entity, raw_segment_id, mention_summary in rows:
         person = by_entity.setdefault(
             entity.id,
             {
@@ -356,9 +465,14 @@ async def _people_in(
                 # Decoration only — never used to order anything. See the header.
                 "year_start": entity.year_start,
                 "segment_ids": [],
+                # What each recording said about them — feeds the highlight
+                # captions, stripped before the payload ships.
+                "mention_summaries": {},
             },
         )
         person["segment_ids"].append(raw_segment_id)
+        if mention_summary:
+            person["mention_summaries"][raw_segment_id] = mention_summary
 
     people = list(by_entity.values())
     for person in people:
