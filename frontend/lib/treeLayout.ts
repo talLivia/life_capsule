@@ -446,6 +446,44 @@ export function computeTreeLayout(tree: FamilyTree): TreeLayout {
   const totalWidth = cursor - BAND_GAP
 
   const hasBranches = bandOrder.length > 1
+
+  /**
+   * A sibling arc is REDUNDANT — and suppressed — when the fork already says
+   * it: two recorded children of the same parents share a trunk and a bus,
+   * and that shared fork IS the sibling statement. Found live the hard way:
+   * a producer's sibling moved to their own band (they have a family), and
+   * the ניר~Tal arc — lane-routed into the gap above their row, which for
+   * generation 0 is exactly where the parent fork lives — sliced across
+   * every other sibling's drop line as a long stray dash. The arc earns its
+   * keep only where no fork ties the two ends together (an uncle beside a
+   * parent whose own parents are not recorded).
+   */
+  const parentIdsOf = new Map<string, Set<string>>()
+  for (const e of tree.edges) {
+    const [parent, child] =
+      e.relation_type === 'parent'
+        ? [e.from_id, e.to_id]
+        : e.relation_type === 'child'
+          ? [e.to_id, e.from_id]
+          : [null, null]
+    if (!parent || !child) continue
+    if (!parentIdsOf.has(child)) parentIdsOf.set(child, new Set())
+    parentIdsOf.get(child)!.add(parent)
+  }
+  const forkOf = (id: string): string | null => {
+    // Only parents the chart places draw a fork — same scoping the descent
+    // grouping applies.
+    const placedParents = Array.from(parentIdsOf.get(id) ?? []).filter((p) =>
+      generationOf.has(p)
+    )
+    if (!placedParents.length) return null
+    return `${generationOf.get(id)}::${placedParents.sort().join('|')}`
+  }
+  const sameFork = (a: string, b: string) => {
+    const fork = forkOf(a)
+    return fork !== null && fork === forkOf(b)
+  }
+
   // One lane per cross-band sibling connector, reserved ABOVE the headings.
   // Counted per unordered PAIR: the questionnaire records a symmetric
   // relation once per direction, and counting edges gave the same pair two
@@ -453,6 +491,7 @@ export function computeTreeLayout(tree: FamilyTree): TreeLayout {
   const arcPairs = new Set<string>()
   for (const edge of tree.edges) {
     if (edge.relation_type !== SIBLING_RELATION) continue
+    if (sameFork(edge.from_id, edge.to_id)) continue
     const a = bandOf.get(edge.from_id) ?? MAIN
     const b = bandOf.get(edge.to_id) ?? MAIN
     if (a !== b) arcPairs.add(pairKey(edge.from_id, edge.to_id))
@@ -645,6 +684,8 @@ export function computeTreeLayout(tree: FamilyTree): TreeLayout {
   const siblingArcs: Arc[] = []
   for (const edge of tree.edges) {
     if (edge.relation_type !== SIBLING_RELATION) continue
+    // Redundant with a shared fork — see the suppression comment above.
+    if (sameFork(edge.from_id, edge.to_id)) continue
     const a = out.get(edge.from_id)
     const b = out.get(edge.to_id)
     if (!a || !b || a.y !== b.y) continue

@@ -1448,6 +1448,28 @@ extra line between X and Y" is now answered by a list, not a screenshot.
   right. First-appearance ordering had put ניר & אירה past every extended
   band purely because row 0 is scanned after row -1. Dividers moved to each
   band's MAIN-facing side so a left-seated band still reads as separate.
+- **A sibling arc redundant with a drawn fork is suppressed** (round 3): the
+  ניר~Tal arc lane-routed into the gap above row 0 — which is where the
+  parent fork lives — and sliced across every other sibling's drop as a long
+  stray dash. Two recorded children of the same parents already share a
+  trunk and a bus; that fork IS the sibling statement, so the arc says
+  nothing the chart does not. Arcs survive only where no fork ties the ends
+  (an uncle beside a parent with no recorded parents of their own).
+- **אילן & רחל's marriage is now recorded** (manual spouse edge, written
+  2026-08-10 on the producer's stated fact from the couple-adjacency
+  report). Their "double line" had been the joining bar + children's bus
+  33px apart — a different claim than the 5px marriage glyph — and the two
+  couples now carry identical glyphs. The producer separately removed
+  אילן's questionnaire-era sibling edge to אילנה with the new per-edge
+  Remove — first live use of the feature, and the right call: he is married
+  in, not blood.
+- **Hover asymmetry between the two couples' children is a DATA gap, not a
+  renderer bug**: אליאן/מעיין/יאיר are recorded children of ניר alone, so
+  their fork has one stem and hovering them cannot light a line to אירה
+  that does not exist — the same never-guess-parenthood-from-marriage rule
+  as the descent itself. ניצן/יובל hold edges to both parents and light
+  both stems. If אירה is the children's mother, that is three saves in the
+  editor, not a code change.
 
 ## Known gaps / tech debt
 
