@@ -550,9 +550,6 @@ export interface TimelinePerson {
   id: string
   name: string
   type: string
-  /** Display grouping within a type (school, military, …) — assigned
-   *  server-side; the client reads groups, never classifies. */
-  subtype: string | null
   mentions: number
   /** Decoration only. A year never moves anybody: a page ordered two ways
    *  disagrees with itself. */
@@ -570,16 +567,17 @@ export interface TimelineHighlight {
   caption: string | null
 }
 
-/** A grouped bubble on the compact card — "משפחה ×12", not a chip per name.
- *  Opening one shows `highlights` (capped, same shape at any archive size);
- *  `segment_ids` is the full set behind "all moments", and `entity_ids` the
- *  member chips at that deepest level. All derived — no second request.
- *  Every period leads with a `moments` group; the card itself is static. */
+/** A bubble on the compact card — a real topic tag from the period's own
+ *  recordings ('בתי ספר' ×2), coverage-ranked and capped server-side; the
+ *  generic moments bubble appears only for an untagged period. Opening one
+ *  shows `highlights` (capped, same shape at any archive size). "All
+ *  moments" at the deeper level is the PERIOD's full list, not the tag's —
+ *  capped tags cover less than everything, and every recording must stay
+ *  reachable. The card itself is static; bubbles are the only way in. */
 export interface TimelineGroup {
   key: string
   label: string
   count: number
-  entity_ids: string[]
   segment_ids: string[]
   highlights: TimelineHighlight[]
 }

@@ -52,14 +52,17 @@ it shows its recordings exactly like every other one.
 
 ## The default card is a SUMMARY; every deeper level keeps a constant shape
 
-docs/MEDIA_GALLERY.md §1.6–§1.7. The collapsed card is title, one generated
+docs/MEDIA_GALLERY.md §1.6–§1.8. The collapsed card is title, one generated
 sentence, and grouped bubbles — the SAME shape at 3 recordings or 50; volume
 is absorbed by grouping and summarization, never expressed as more chips or
-rows. The card itself is static: bubbles are the only way in, every period
-leads with a moments bubble (the only route into an entity-less period), and
-a bubble opens a CAPPED highlight selection ranked by the importance score
-ingestion already computed — the full list is one more click ("all moments"),
-so §1.2's reachability rule still holds. Raw interview-question text never
+rows. Bubbles are REAL TAG CONTENT: the top coverage-ranked `topic_tags` of
+the period's recordings, capped — no classification pass, no taxonomy; the
+generic moments bubble survives only as the fallback for an untagged period.
+The card itself is static: bubbles are the only way in, and a bubble opens a
+CAPPED highlight selection ranked by the importance score ingestion already
+computed. The full PERIOD list is one more click ("all moments" — deliberately
+period-wide, not tag-wide, since capped tags cover less than everything), so
+§1.2's reachability rule still holds. Raw interview-question text never
 renders here at any level; a moment's only name is its generated content
 title (period_insights).
 
@@ -77,45 +80,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import interview_config
-from app.models import (
-    Entity,
-    EntityMention,
-    EntityRelation,
-    InterviewSession,
-    RawSegment,
-    RelationType,
-)
+from app.models import Entity, EntityMention, InterviewSession, RawSegment
 from app.services import period_insights
 
 logger = logging.getLogger(__name__)
 
-# The compact card's grouped bubbles, in display order. Keys are stable for
-# the client; labels follow the producer's language. "family" is decided by
-# RELATIONS (a family-category relation touches the person), never by type —
-# nothing in `type` says who is family. The organisation groups read
-# `entities.subtype` (period_insights); an unclassified or unclassifiable
-# entity lands in "more" rather than being guessed at.
-_GROUPS: List[tuple] = [
-    ("family", {"he": "משפחה", "en": "Family"}),
-    ("people", {"he": "אנשים", "en": "People"}),
-    ("places", {"he": "מקומות", "en": "Places"}),
-    ("education", {"he": "מוסדות לימוד", "en": "Education"}),
-    ("military", {"he": "צבא", "en": "Military"}),
-    ("work", {"he": "עבודה", "en": "Work"}),
-    ("community", {"he": "קהילה", "en": "Community"}),
-    ("more", {"he": "עוד", "en": "More"}),
-]
-
-# Every period leads with a moments bubble — its recordings as a whole. The
-# card itself is static (bubbles are the only way in), so without this an
-# entity-less period would have no route to its recordings at all: the G bug
-# again, one layer up. Not the container §1.2 rejected — that objection was
-# to a bubble existing ONLY for the empty case; this one is uniform.
-_MOMENTS_LABELS = {"he": "רגעים", "en": "Moments"}
-
-# Highlights per group view — the shape is constant whatever the archive
-# holds; everything else lives behind "all moments".
+# Bubbles per period, and highlights per bubble — the shape is constant
+# whatever the archive holds; everything else lives behind "all moments".
+_TAG_BUBBLE_CAP = 5
 _HIGHLIGHT_CAP = 4
+
+# The fallback bubble for a period whose segments carry no topic_tags yet
+# (mid-processing, or a pre-topics archive). The card is static — bubbles
+# are the only way in — so a period must never render without one. Where
+# tags exist, the real tag content is the label instead (§1.8).
+_MOMENTS_LABELS = {"he": "רגעים", "en": "Moments"}
 
 
 def _buckets(language: str) -> List[Dict[str, Any]]:
@@ -162,12 +141,6 @@ async def build_timeline(
     db: AsyncSession, producer_id: str, language: str = "he"
 ) -> Dict[str, Any]:
     """One bubble per life period that actually holds a recording."""
-    # Derived display data first: any organisation without a subtype gets one
-    # now, so the grouping below reads settled labels. A no-op on every read
-    # except the first after a new organisation lands.
-    await period_insights.classify_organisation_subtypes(db, producer_id)
-    family_ids = await _family_entity_ids(db, producer_id)
-
     rows = (
         await db.execute(
             select(RawSegment)
@@ -203,7 +176,7 @@ async def build_timeline(
             continue
         segments.sort(key=lambda s: s.created_at)
         people = await _people_in(db, producer_id, [s.id for s in segments])
-        groups = _groups_for(people, family_ids, language, segments)
+        groups = _groups_for(people, language, segments)
         # Mention summaries fed the highlight captions above; they are not
         # part of the payload — the tree's moments endpoint serves them.
         for person in people:
@@ -247,108 +220,78 @@ async def build_timeline(
     }
 
 
-async def _family_entity_ids(db: AsyncSession, producer_id: str) -> set:
-    """Everyone a family-category relation touches, in either direction.
-
-    Membership in "family" is a recorded relation, never an inference from
-    type — the archive holds people who are not family (a commander, an army
-    friend), and nothing on the entity row distinguishes them.
-    """
-    rows = (
-        await db.execute(
-            select(EntityRelation.from_entity_id, EntityRelation.to_entity_id)
-            .join(RelationType, RelationType.relation_type == EntityRelation.relation_type)
-            .join(Entity, Entity.id == EntityRelation.from_entity_id)
-            .where(
-                RelationType.category == "family",
-                Entity.producer_id == producer_id,
-            )
-        )
-    ).all()
-    return {entity_id for pair in rows for entity_id in pair}
-
-
-def _group_key(entity: Dict[str, Any], family_ids: set) -> str:
-    if entity["type"] == "person":
-        return "family" if entity["id"] in family_ids else "people"
-    if entity["type"] == "place":
-        return "places"
-    if entity["type"] == "organisation":
-        subtype = entity.get("subtype")
-        if subtype in ("school", "higher_education"):
-            return "education"
-        if subtype == "military":
-            return "military"
-        if subtype == "workplace":
-            return "work"
-        if subtype == "community":
-            return "community"
-    # event, other, and any organisation not (yet) classifiable. Never guessed
-    # into a named group — "more" is honest about what the archive knows.
-    return "more"
-
-
 def _groups_for(
     people: List[Dict[str, Any]],
-    family_ids: set,
     language: str,
     segments: List[RawSegment],
 ) -> List[Dict[str, Any]]:
-    """The compact card's bubbles — a handful of groups, not a chip per name.
+    """The compact card's bubbles — real tag content, capped (§1.8).
 
-    Every group carries the segment ids behind it (uniform client filtering,
-    no special case) and a capped highlight selection — the view one click
-    deep has the same shape whether the group holds five people or forty.
-    The moments bubble leads and always exists; it is the only route into an
-    entity-less period's recordings now that the card is static.
+    Bubbles come straight from the `topic_tags` ingestion already writes per
+    segment; no classification pass, no taxonomy — the label IS the tag the
+    archive's own content produced ('בתי ספר', 'שירות צבאי'). Ranked by
+    coverage (how many of the period's recordings carry the tag) because
+    free-form tags are mostly one-offs — measured 43 of 47 distinct tags
+    appearing once — and a bubble per one-off is the density bug in bubble
+    form. The cap keeps the shape constant at any archive size.
+
+    A capped tag set does not cover every recording, so reachability lives
+    one level down: every bubble's "all moments" is the PERIOD's full list,
+    not the tag's. A period with no tags at all gets the generic fallback
+    bubble — with a static card, a period must never render without a way in.
     """
-    groups: List[Dict[str, Any]] = [
+    coverage: Dict[str, List[RawSegment]] = {}
+    first_seen: Dict[str, int] = {}
+    for segment in segments:
+        for tag in segment.topic_tags or []:
+            if not isinstance(tag, str) or not tag.strip():
+                continue
+            tag = tag.strip()
+            if tag not in coverage:
+                coverage[tag] = []
+                first_seen[tag] = len(first_seen)
+            coverage[tag].append(segment)
+
+    ranked_tags = sorted(coverage, key=lambda t: (-len(coverage[t]), first_seen[t]))
+    groups = [
         {
-            "key": "moments",
-            "label": _MOMENTS_LABELS.get(language, _MOMENTS_LABELS["en"]),
-            "count": len(segments),
-            "entity_ids": [],
-            "segment_ids": [s.id for s in segments],
-            "highlights": _highlights(segments, None),
+            "key": tag,
+            "label": tag,
+            "count": len(coverage[tag]),
+            "segment_ids": [s.id for s in coverage[tag]],
+            "highlights": _highlights(coverage[tag], people),
         }
+        for tag in ranked_tags[:_TAG_BUBBLE_CAP]
     ]
-    members: Dict[str, List[Dict[str, Any]]] = {}
-    for entity in people:
-        members.setdefault(_group_key(entity, family_ids), []).append(entity)
-    for key, labels in _GROUPS:
-        if key not in members:
-            continue
-        group_people = members[key]
-        mentioned = {sid for person in group_people for sid in person["segment_ids"]}
-        group_segments = [s for s in segments if s.id in mentioned]
+    if not groups:
         groups.append(
             {
-                "key": key,
-                "label": labels.get(language, labels["en"]),
-                "count": len(group_people),
-                "entity_ids": [person["id"] for person in group_people],
-                "segment_ids": [s.id for s in group_segments],
-                "highlights": _highlights(group_segments, group_people),
+                "key": "moments",
+                "label": _MOMENTS_LABELS.get(language, _MOMENTS_LABELS["en"]),
+                "count": len(segments),
+                "segment_ids": [s.id for s in segments],
+                "highlights": _highlights(segments, people),
             }
         )
     return groups
 
 
 def _highlights(
-    segments: List[RawSegment], group_people: List[Dict[str, Any]] | None
+    segments: List[RawSegment], people: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
     """A capped, content-aware selection — never a proportionally longer list.
 
     Ranked by the importance score ingestion already computed (no LLM call
-    here), diversified so one much-discussed person cannot fill every slot:
-    the first pass prefers moments that cover a member not yet represented,
-    the second fills the rest by rank. Presented in recording order — the
-    cap decides WHAT is shown, chronology decides the order, which is the
-    "years decorate, they never move" rule one level down.
+    here), diversified across QUESTIONS so three takes of one answer cannot
+    fill every slot: the first pass prefers moments answering a question not
+    yet represented, the second fills the rest by rank. Presented in
+    recording order — the cap decides WHAT is shown, chronology decides the
+    order, which is the "years decorate, they never move" rule one level
+    down.
 
-    Captions come from the stored mention summaries — what the recording
-    actually said about the group's most-present member in it. None for the
-    moments group: its titles carry the content.
+    Captions quote the stored mention summaries — what the recording said
+    about its most-mentioned person — and are absent when nobody was named:
+    the title carries the content there.
     """
     ranked = sorted(
         segments,
@@ -358,19 +301,13 @@ def _highlights(
         ),
     )
     picked: List[RawSegment] = []
-    if group_people:
-        covered: set = set()
-        by_segment: Dict[str, List[Dict[str, Any]]] = {}
-        for person in group_people:
-            for sid in person["segment_ids"]:
-                by_segment.setdefault(sid, []).append(person)
-        for segment in ranked:
-            if len(picked) >= _HIGHLIGHT_CAP:
-                break
-            new_members = [p for p in by_segment.get(segment.id, []) if p["id"] not in covered]
-            if new_members:
-                picked.append(segment)
-                covered.update(p["id"] for p in new_members)
+    covered_questions: set = set()
+    for segment in ranked:
+        if len(picked) >= _HIGHLIGHT_CAP:
+            break
+        if segment.question_id not in covered_questions:
+            picked.append(segment)
+            covered_questions.add(segment.question_id)
     for segment in ranked:
         if len(picked) >= _HIGHLIGHT_CAP:
             break
@@ -381,12 +318,11 @@ def _highlights(
     highlights = []
     for segment in picked:
         caption = None
-        if group_people:
-            for person in group_people:  # already mentions-desc ordered
-                summary = person.get("mention_summaries", {}).get(segment.id)
-                if summary:
-                    caption = summary
-                    break
+        for person in people:  # already mentions-desc ordered
+            summary = person.get("mention_summaries", {}).get(segment.id)
+            if summary:
+                caption = summary
+                break
         highlights.append({"segment_id": segment.id, "caption": caption})
     return highlights
 
@@ -460,8 +396,6 @@ async def _people_in(
                 "id": entity.id,
                 "name": entity.name,
                 "type": entity.type,
-                # Where this chip sits among the grouped bubbles — see _GROUPS.
-                "subtype": entity.subtype,
                 # Decoration only — never used to order anything. See the header.
                 "year_start": entity.year_start,
                 "segment_ids": [],

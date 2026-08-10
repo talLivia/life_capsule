@@ -195,6 +195,53 @@ GENERAL principle, to hold for every category at every archive size:
 recording; highlight selection is free at read. Summary/subtype costs
 unchanged from §1.6.
 
+### ✅ 1.8 Bubbles from topic_tags; titles watermarked — built 2026-08-11
+
+Two directed corrections to §1.6/§1.7, decisions approved before building.
+
+**The subtype classification pass is GONE** (migration `0024` drops
+`entities.subtype` and its CHECK; the five classified rows were derived
+data with no other consumer). Bubbles now come straight from the
+`topic_tags` ingestion already writes per segment — the school segment was
+already tagged 'בתי ספר', the army segment 'שירות צבאי', so the label IS
+the tag and the classification call bought nothing the archive didn't know.
+The relations-derived משפחה bubble is also gone (approved: tags only —
+'משפחה' appears when recordings are tagged with it; the relations view
+lives on the family tree page). Measured caveat that shaped the mechanism:
+43 of 47 distinct live tags appear exactly ONCE, so raw aggregate-and-dedupe
+would be the density bug in bubble form. Bubbles are therefore the top
+**coverage-ranked** tags (how many of the period's recordings carry the
+tag), capped at 5, ties by first appearance. Free-form tags do not
+self-dedupe across phrasings (סבתא vs סבתות) — accepted, coverage ranking
+hides most of it at scale.
+
+Two consequences, both deliberate:
+
+- **"All moments" is now PERIOD-wide, not bubble-wide.** A capped tag set
+  covers less than everything, so reachability moved down one level: any
+  open bubble's "all moments" lists the whole period. §1.2 still holds.
+- **The generic רגעים bubble survives only as a fallback** for a period
+  whose segments carry no tags at all (mid-processing, pre-topics archive)
+  — with a static card, a period must never render without a way in.
+  Where tags exist, real tag content replaces it entirely.
+
+Highlight diversification changed from entity-coverage to QUESTION
+coverage — takes of one question are near-duplicates, and three takes of
+one answer must not fill the slots.
+
+**Titles regenerate with their words** (migration `0024`,
+`raw_segments.moment_title_source` = sha256 of the transcript the title was
+generated from). §1.7's freshness rule was "a title exists", which could
+not see an in-place transcript change (re-analysis) — the title would
+outlive the words it named. Now staleness is: no title, language changed,
+or transcript hash mismatch — the same watermark pattern as
+period_summaries, per recording. Noted for accuracy: new and re-recorded
+takes are new rows and always titled fresh; this fixes only the in-place
+case, and nothing regenerates on unrelated saves. Existing titles were
+backfilled with their hash in the migration (they WERE generated from the
+transcript in the row), so nothing regenerates on the first read after
+upgrade.
+
 ### 1.4 Year range per category — "about the producer" only (NEW, see §9.1)
 
 Each category bubble should also show an earliest–latest year range on the

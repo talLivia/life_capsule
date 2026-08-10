@@ -18,14 +18,17 @@ import type {
  * ORDER COMES FROM THE SERVER and is the question file's own order. This file
  * never sorts, never reorders by year, and knows no category name.
  *
- * THE SHAPE IS CONSTANT AT ANY ARCHIVE SIZE (docs/MEDIA_GALLERY.md §1.7).
- * The collapsed card is title, one sentence, and grouped bubbles — never a
- * chip per name or a row per recording, whatever exists underneath. The card
- * is static; bubbles are the only way in, and every period leads with a
- * moments bubble. Opening a bubble shows a CAPPED highlight selection; the
- * complete list (and the per-entity chips from Phase 1) live one click
- * deeper, behind "all moments". Raw interview-question text never renders at
- * any level — a moment's only name is its generated content title.
+ * THE SHAPE IS CONSTANT AT ANY ARCHIVE SIZE (docs/MEDIA_GALLERY.md §1.7-8).
+ * The collapsed card is title, one sentence, and bubbles made of REAL TAG
+ * CONTENT — the period's own topic tags, coverage-ranked and capped
+ * server-side — never a chip per name or a row per recording, whatever
+ * exists underneath. The card is static; bubbles are the only way in.
+ * Opening a bubble shows a CAPPED highlight selection; the complete PERIOD
+ * list (and the per-entity chips from Phase 1) lives one click deeper,
+ * behind "all moments" — period-wide deliberately, since capped tags cover
+ * less than everything and every recording must stay reachable. Raw
+ * interview-question text never renders at any level — a moment's only name
+ * is its generated content title.
  *
  * No year range yet, deliberately — §1.4's producer-scoped attribution is
  * not built. The header slot appears when that lands.
@@ -172,18 +175,14 @@ function Period({
   const byId = new Map(period.recordings.map((r) => [r.segment_id, r]))
 
   // "All moments" — the deepest level, and the only one whose length follows
-  // the archive. Chips narrow it; the moments group carries every entity.
-  const chipPeople = group
-    ? group.key === 'moments'
-      ? period.people
-      : period.people.filter((p) => group.entity_ids.includes(p.id))
-    : []
+  // the archive. Deliberately PERIOD-wide whichever bubble opened it: capped
+  // tags cover less than everything, and this is where reachability lives.
+  // Chips narrow it per person.
+  const chipPeople = group ? period.people : []
   const allRecordings = group
-    ? period.recordings.filter((r) =>
-        person
-          ? person.segment_ids.includes(r.segment_id)
-          : group.segment_ids.includes(r.segment_id)
-      )
+    ? person
+      ? period.recordings.filter((r) => person.segment_ids.includes(r.segment_id))
+      : period.recordings
     : []
 
   return (
@@ -243,13 +242,13 @@ function Period({
                     />
                   )
                 })}
-                {group.segment_ids.length > group.highlights.length && (
+                {period.recordings.length > group.highlights.length && (
                   <button
                     type="button"
                     onClick={onShowAll}
                     className="self-start flex items-center gap-1 text-xs text-primary-300 hover:text-primary-200 mt-1"
                   >
-                    All moments ({group.segment_ids.length})
+                    All moments ({period.recordings.length})
                     <ChevronRight size={13} />
                   </button>
                 )}

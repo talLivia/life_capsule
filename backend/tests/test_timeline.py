@@ -14,26 +14,18 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app import interview_config
-from app.models import (
-    Entity,
-    EntityMention,
-    EntityRelation,
-    InterviewSession,
-    RawSegment,
-    RelationType,
-    User,
-)
+from app.models import Entity, EntityMention, InterviewSession, RawSegment, User
 from app.services import period_insights, timeline
 
 
 @pytest.fixture(autouse=True)
 def _canned_llm(monkeypatch):
-    """build_timeline now derives summaries and subtypes via period_insights.
+    """build_timeline derives summaries and moment titles via period_insights.
 
     These tests are about the timeline itself, so the model is canned — its
-    real behavior (staleness, storage, classification) is covered in
-    test_period_insights.py. The canned reply is not JSON, so subtype
-    classification parses nothing and unclassified organisations stay NULL.
+    real behavior (staleness, storage, watermarks) is covered in
+    test_period_insights.py. The canned reply is not JSON, so title parsing
+    stores nothing and titles stay NULL, which these tests never read.
     """
     monkeypatch.setattr(
         period_insights.llm_service,
@@ -57,11 +49,11 @@ async def archive(db_session):
 
 
 async def _record(db, session, question_id, index=0, question_asked="?",
-                  video_url=None, importance=None, created_at=None):
+                  video_url=None, importance=None, created_at=None, topic_tags=None):
     segment = RawSegment(
         interview_session_id=session.id, question_asked=question_asked,
         question_index=index, question_id=question_id, status="ready",
-        video_url=video_url, importance_score=importance,
+        video_url=video_url, importance_score=importance, topic_tags=topic_tags,
         # SQLite's CURRENT_TIMESTAMP is second-resolution, so rows created in
         # one test tie; anything asserting chronology passes explicit times.
         created_at=created_at,
@@ -241,106 +233,70 @@ async def test_takes_are_numbered_within_their_question(db_session, archive):
     assert (other["take_index"], other["take_count"]) == (1, 1)
 
 
-async def test_groups_split_by_relation_and_subtype_not_one_chip_per_name(
+async def test_bubbles_are_the_periods_top_tags_capped(db_session, archive):
+    """The compact card, docs/MEDIA_GALLERY.md §1.8. Bubbles are REAL tag
+    content, ranked by how many recordings carry the tag and capped —
+    measured on the live archive 43 of 47 distinct tags appear once, and a
+    bubble per one-off is the density bug in bubble form."""
+    user, session = archive
+    _, question_id = _live_ids(1)[0]
+    first = await _record(db_session, session, question_id,
+                          topic_tags=["טבריה", "ילדות", "משחקי חצר"])
+    second = await _record(db_session, session, question_id,
+                           topic_tags=["טבריה", "ילדות", "בתי ספר"])
+    await _record(db_session, session, question_id,
+                  topic_tags=["טבריה", "אוכל משפחתי", "סבתא", "ארוחת שישי"])
+
+    groups = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]["groups"]
+    # Coverage first (טבריה 3, ילדות 2), then one-offs in first-appearance
+    # order, capped at five — never one bubble per tag (seven exist here).
+    assert [g["label"] for g in groups] == [
+        "טבריה", "ילדות", "משחקי חצר", "בתי ספר", "אוכל משפחתי"
+    ]
+    assert groups[0]["count"] == 3
+    # A bubble carries exactly the recordings tagged with it.
+    assert groups[1]["segment_ids"] == [first.id, second.id]
+
+
+async def test_an_untagged_period_falls_back_to_a_generic_moments_bubble(
     db_session, archive
 ):
-    """The compact card, docs/MEDIA_GALLERY.md §1.6. Family is a recorded
-    relation, never the person type; organisations follow their classified
-    subtype; anything unclassified lands honestly in "more"."""
+    """No tags yet (mid-processing, or a pre-topics archive) must not mean no
+    way in — the card is static, so a bubble must always exist."""
     user, session = archive
     _, question_id = _live_ids(1)[0]
     segment = await _record(db_session, session, question_id)
 
-    # Production seeds relation_types in migration 0012; a create_all test DB
-    # has the table empty (the documented gotcha), so seed the one type used.
-    db_session.add(
-        RelationType(
-            relation_type="sibling", category="family", is_tree_edge=True,
-            inverse_type=None, is_symmetric=True, generation_delta=0,
-            label_en="Sibling", label_he="אח/אחות",
-        )
-    )
-    me = Entity(producer_id=user.id, name="Me", normalized_name="me",
-                type="person", is_self=True)
-    sibling = Entity(producer_id=user.id, name="ניר", normalized_name="ניר", type="person")
-    friend = Entity(producer_id=user.id, name="רוני", normalized_name="רוני", type="person")
-    school = Entity(producer_id=user.id, name="תחכמוני", normalized_name="תחכמוני",
-                    type="organisation", subtype="school")
-    base = Entity(producer_id=user.id, name="חיל האויר", normalized_name="חיל האויר",
-                  type="organisation", subtype="military")
-    unclassified = Entity(producer_id=user.id, name="המפעל", normalized_name="המפעל",
-                          type="organisation")
-    city = Entity(producer_id=user.id, name="טבריה", normalized_name="טבריה", type="place")
-    db_session.add_all([me, sibling, friend, school, base, unclassified, city])
-    await db_session.flush()
-
-    db_session.add(
-        EntityRelation(from_entity_id=sibling.id, to_entity_id=me.id,
-                       relation_type="sibling", source_segment_id=segment.id)
-    )
-    db_session.add_all([
-        EntityMention(entity_id=e.id, raw_segment_id=segment.id)
-        for e in (sibling, friend, school, base, unclassified, city)
-    ])
-    await db_session.flush()
-
     groups = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]["groups"]
-    # Moments leads, always — with the card static it is the only route into
-    # an entity-less period's recordings.
-    assert [g["key"] for g in groups] == [
-        "moments", "family", "people", "places", "education", "military", "more"
-    ]
-    by_key = {g["key"]: g for g in groups}
-    assert by_key["moments"]["segment_ids"] == [segment.id]
-    assert by_key["family"]["entity_ids"] == [sibling.id]
-    assert by_key["people"]["entity_ids"] == [friend.id]
-    assert by_key["education"]["entity_ids"] == [school.id]
-    assert by_key["military"]["entity_ids"] == [base.id]
-    assert by_key["more"]["entity_ids"] == [unclassified.id]
-    assert by_key["places"]["count"] == 1
-    # A group carries the recordings behind it, uniformly.
-    assert by_key["family"]["segment_ids"] == [segment.id]
-    # Hebrew page, Hebrew labels.
-    assert by_key["family"]["label"] == "משפחה"
-    assert by_key["moments"]["label"] == "רגעים"
+    assert [g["key"] for g in groups] == ["moments"]
+    assert groups[0]["label"] == "רגעים"
+    assert groups[0]["segment_ids"] == [segment.id]
 
 
 async def test_highlights_are_capped_diversified_and_chronological(
     db_session, archive
 ):
     """The view one click deep has a constant shape: capped at 4, ranked by
-    the stored importance score, but diversified — a much-discussed person
-    must not fill every slot, so the one moment covering somebody else beats
-    a higher-scored repeat. Presentation is chronological: the cap decides
-    WHAT is shown, recording order decides where."""
+    the stored importance score, but diversified across QUESTIONS — three
+    takes of one answer are near-duplicates, so the only take of another
+    question beats a higher-scored repeat. Presentation is chronological:
+    the cap decides WHAT is shown, recording order decides where."""
     user, session = archive
-    _, question_id = _live_ids(1)[0]
-    often_segments = [
-        await _record(db_session, session, question_id, importance=9 - i,
+    cat = interview_config.get_categories("he")[0]
+    repeated, other = cat["question_ids"][0], cat["question_ids"][1]
+    takes = [
+        await _record(db_session, session, repeated, importance=9 - i,
                       created_at=datetime(2026, 1, 1 + i))
         for i in range(5)
     ]
-    rare_segment = await _record(db_session, session, question_id, importance=1,
-                                 created_at=datetime(2026, 1, 10))
-
-    often = Entity(producer_id=user.id, name="Often", normalized_name="often", type="person")
-    rare = Entity(producer_id=user.id, name="Rare", normalized_name="rare", type="person")
-    db_session.add_all([often, rare])
-    await db_session.flush()
-    db_session.add_all(
-        [EntityMention(entity_id=often.id, raw_segment_id=s.id) for s in often_segments]
-        + [EntityMention(entity_id=rare.id, raw_segment_id=rare_segment.id)]
-    )
-    await db_session.flush()
+    other_take = await _record(db_session, session, other, importance=1,
+                               created_at=datetime(2026, 1, 10))
 
     groups = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]["groups"]
-    people_group = next(g for g in groups if g["key"] == "people")
-    picked = [h["segment_id"] for h in people_group["highlights"]]
-    # Four slots: the top-ranked moments about Often, plus Rare's only moment
-    # despite its low score — then back in chronological order.
-    assert picked == [
-        often_segments[0].id, often_segments[1].id, often_segments[2].id, rare_segment.id
-    ]
+    picked = [h["segment_id"] for h in groups[0]["highlights"]]
+    # Four slots: the top-ranked takes of the repeated question, plus the
+    # other question's only take despite its low score — chronologically.
+    assert picked == [takes[0].id, takes[1].id, takes[2].id, other_take.id]
 
 
 async def test_highlight_captions_quote_what_the_recording_said(db_session, archive):
@@ -357,8 +313,7 @@ async def test_highlight_captions_quote_what_the_recording_said(db_session, arch
     await db_session.flush()
 
     groups = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]["groups"]
-    people_group = next(g for g in groups if g["key"] == "people")
-    assert people_group["highlights"][0]["caption"] == "אח של הדובר, הקטן מבין הארבעה"
+    assert groups[0]["highlights"][0]["caption"] == "אח של הדובר, הקטן מבין הארבעה"
 
 
 async def test_every_period_carries_its_summary_sentence(db_session, archive):

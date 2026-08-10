@@ -1,10 +1,9 @@
-"""Derived timeline display data — docs/MEDIA_GALLERY.md §1.6.
+"""Derived timeline display data — docs/MEDIA_GALLERY.md §1.6–§1.8.
 
 What matters here is the COST CONTRACT, not the sentences: a summary is
-generated when the recordings behind a category change and never otherwise,
-a failure serves the stale sentence rather than a blank, and an organisation
-is sent to the model once — with 'other' and NULL meaning different things,
-the same asked-vs-never-asked split as the *_asked_at columns.
+generated when the recordings behind a category change and never otherwise;
+a title is generated when ITS OWN transcript (or the language) changes and
+never otherwise; a failure serves the stale text rather than a blank.
 """
 
 import json
@@ -13,7 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app import interview_config
-from app.models import Entity, EntityMention, InterviewSession, PeriodSummary, RawSegment, User
+from app.models import InterviewSession, PeriodSummary, RawSegment, User
 from app.services import period_insights, timeline
 
 
@@ -48,10 +47,6 @@ def _first_question_id():
 def _summary_calls(mock):
     """The generate_response calls that were summaries, not classifications."""
     return [c for c in mock.call_args_list if "summarize" in c.kwargs["system_prompt"]]
-
-
-def _classify_calls(mock):
-    return [c for c in mock.call_args_list if "Classify" in c.kwargs["system_prompt"]]
 
 
 def _title_calls(mock):
@@ -218,76 +213,31 @@ async def test_an_untranscribed_moment_is_not_sent_for_titling(
     assert _title_calls(mock) == []
 
 
-# ── subtypes: asked once, and 'other' is an answer ────────────────────────
-
-
-async def _org(db, user, session, name, subtype=None):
-    entity = Entity(
-        producer_id=user.id, name=name, normalized_name=name,
-        type="organisation", subtype=subtype,
-    )
-    db.add(entity)
-    await db.flush()
-    segment = await _record(db, session, _first_question_id())
-    db.add(EntityMention(entity_id=entity.id, raw_segment_id=segment.id))
-    await db.flush()
-    return entity
-
-
-async def test_an_organisation_is_classified_once(db_session, archive, monkeypatch):
-    user, session = archive
-    org = await _org(db_session, user, session, "הכפר הירוק")
-
-    def dispatch(messages, system_prompt=None, **kwargs):
-        if "Classify" in (system_prompt or ""):
-            return json.dumps({org.id: "school"})
-        return "משפט."
-
-    mock = AsyncMock(side_effect=dispatch)
-    monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
-
-    await timeline.build_timeline(db_session, user.id, "he")
-    assert org.subtype == "school"
-    await timeline.build_timeline(db_session, user.id, "he")
-    assert len(_classify_calls(mock)) == 1
-
-
-async def test_other_is_an_answer_and_is_not_reasked(db_session, archive, monkeypatch):
-    user, session = archive
-    org = await _org(db_session, user, session, "משהו עמום")
-
-    def dispatch(messages, system_prompt=None, **kwargs):
-        if "Classify" in (system_prompt or ""):
-            return json.dumps({org.id: "other"})
-        return "משפט."
-
-    mock = AsyncMock(side_effect=dispatch)
-    monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
-
-    await timeline.build_timeline(db_session, user.id, "he")
-    assert org.subtype == "other"
-    await timeline.build_timeline(db_session, user.id, "he")
-    assert len(_classify_calls(mock)) == 1
-
-
-async def test_an_invented_label_leaves_null_so_the_next_read_retries(
+async def test_a_changed_transcript_regenerates_the_title(
     db_session, archive, monkeypatch
 ):
-    """Coercing garbage to 'other' would stamp asked-and-unknown on an entity
-    the model never actually judged — the stamp is what stops retries, so it
-    must only be written for a real answer."""
+    """The watermark is the transcript itself (migration 0024): a title must
+    not outlive the words it named. An in-place re-analysis is the only way
+    a recording's content changes — new and re-recorded takes are new rows —
+    and nothing regenerates when nothing changed."""
     user, session = archive
-    org = await _org(db_session, user, session, "המפעל")
+    segment = await _record(db_session, session, _first_question_id())
 
     def dispatch(messages, system_prompt=None, **kwargs):
-        if "Classify" in (system_prompt or ""):
-            return json.dumps({org.id: "castle"})
+        if "title" in (system_prompt or ""):
+            return json.dumps({segment.id: "כותרת"})
         return "משפט."
 
     mock = AsyncMock(side_effect=dispatch)
     monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
 
     await timeline.build_timeline(db_session, user.id, "he")
-    assert org.subtype is None
     await timeline.build_timeline(db_session, user.id, "he")
-    assert len(_classify_calls(mock)) == 2
+    assert len(_title_calls(mock)) == 1
+
+    segment.transcript = "תמלול חדש לגמרי אחרי ניתוח מחדש."
+    await db_session.flush()
+    await timeline.build_timeline(db_session, user.id, "he")
+    assert len(_title_calls(mock)) == 2
+    await timeline.build_timeline(db_session, user.id, "he")
+    assert len(_title_calls(mock)) == 2
