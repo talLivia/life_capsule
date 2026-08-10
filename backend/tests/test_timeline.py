@@ -8,11 +8,37 @@ the honest option — the alternative is claiming a live check that cannot be
 run — but it is worth knowing these assert a shape rather than a measurement.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from app import interview_config
-from app.models import Entity, EntityMention, InterviewSession, RawSegment, User
-from app.services import timeline
+from app.models import (
+    Entity,
+    EntityMention,
+    EntityRelation,
+    InterviewSession,
+    RawSegment,
+    RelationType,
+    User,
+)
+from app.services import period_insights, timeline
+
+
+@pytest.fixture(autouse=True)
+def _canned_llm(monkeypatch):
+    """build_timeline now derives summaries and subtypes via period_insights.
+
+    These tests are about the timeline itself, so the model is canned — its
+    real behavior (staleness, storage, classification) is covered in
+    test_period_insights.py. The canned reply is not JSON, so subtype
+    classification parses nothing and unclassified organisations stay NULL.
+    """
+    monkeypatch.setattr(
+        period_insights.llm_service,
+        "generate_response",
+        AsyncMock(return_value="משפט סיכום אחד."),
+    )
 
 
 @pytest.fixture
@@ -202,6 +228,74 @@ async def test_takes_are_numbered_within_their_question(db_session, archive):
     assert {t["take_count"] for t in takes} == {3}
     (other,) = [r for r in period["recordings"] if r["question_id"] == single]
     assert (other["take_index"], other["take_count"]) == (1, 1)
+
+
+async def test_groups_split_by_relation_and_subtype_not_one_chip_per_name(
+    db_session, archive
+):
+    """The compact card, docs/MEDIA_GALLERY.md §1.6. Family is a recorded
+    relation, never the person type; organisations follow their classified
+    subtype; anything unclassified lands honestly in "more"."""
+    user, session = archive
+    _, question_id = _live_ids(1)[0]
+    segment = await _record(db_session, session, question_id)
+
+    # Production seeds relation_types in migration 0012; a create_all test DB
+    # has the table empty (the documented gotcha), so seed the one type used.
+    db_session.add(
+        RelationType(
+            relation_type="sibling", category="family", is_tree_edge=True,
+            inverse_type=None, is_symmetric=True, generation_delta=0,
+            label_en="Sibling", label_he="אח/אחות",
+        )
+    )
+    me = Entity(producer_id=user.id, name="Me", normalized_name="me",
+                type="person", is_self=True)
+    sibling = Entity(producer_id=user.id, name="ניר", normalized_name="ניר", type="person")
+    friend = Entity(producer_id=user.id, name="רוני", normalized_name="רוני", type="person")
+    school = Entity(producer_id=user.id, name="תחכמוני", normalized_name="תחכמוני",
+                    type="organisation", subtype="school")
+    base = Entity(producer_id=user.id, name="חיל האויר", normalized_name="חיל האויר",
+                  type="organisation", subtype="military")
+    unclassified = Entity(producer_id=user.id, name="המפעל", normalized_name="המפעל",
+                          type="organisation")
+    city = Entity(producer_id=user.id, name="טבריה", normalized_name="טבריה", type="place")
+    db_session.add_all([me, sibling, friend, school, base, unclassified, city])
+    await db_session.flush()
+
+    db_session.add(
+        EntityRelation(from_entity_id=sibling.id, to_entity_id=me.id,
+                       relation_type="sibling", source_segment_id=segment.id)
+    )
+    db_session.add_all([
+        EntityMention(entity_id=e.id, raw_segment_id=segment.id)
+        for e in (sibling, friend, school, base, unclassified, city)
+    ])
+    await db_session.flush()
+
+    groups = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]["groups"]
+    assert [g["key"] for g in groups] == [
+        "family", "people", "places", "education", "military", "more"
+    ]
+    by_key = {g["key"]: g for g in groups}
+    assert by_key["family"]["entity_ids"] == [sibling.id]
+    assert by_key["people"]["entity_ids"] == [friend.id]
+    assert by_key["education"]["entity_ids"] == [school.id]
+    assert by_key["military"]["entity_ids"] == [base.id]
+    assert by_key["more"]["entity_ids"] == [unclassified.id]
+    assert by_key["places"]["count"] == 1
+    # Hebrew page, Hebrew labels.
+    assert by_key["family"]["label"] == "משפחה"
+
+
+async def test_every_period_carries_its_summary_sentence(db_session, archive):
+    """Wiring only — the store/staleness rules live in test_period_insights."""
+    user, session = archive
+    _, question_id = _live_ids(1)[0]
+    await _record(db_session, session, question_id)
+
+    period = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]
+    assert period["summary"] == "משפט סיכום אחד."
 
 
 async def test_people_carry_the_segment_ids_that_mention_them(db_session, archive):

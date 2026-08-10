@@ -103,6 +103,53 @@ always counted and are now visible as rows — a mid-flight one shows "still
 being processed" in the player. If failed segments should be excluded, that
 is a change to the period counts too, and its own decision.
 
+### ✅ 1.6 The compact card — built 2026-08-10, same day
+
+§1.5 as shipped rendered every recording and every chip by default — correct
+data, wrong altitude: on a real archive every category arrives as a wall.
+Redesigned the same day, decisions approved before building:
+
+**The default card** is category title, one generated sentence, and a handful
+of grouped bubbles. The §1.5 lists (per-entity chips + playable recordings)
+are the EXPANDED view — click the card, or click a group bubble to arrive
+already narrowed to it. A person chip narrows within a group. Nothing from
+§1.5 was discarded; it moved behind the expand.
+
+**Summary sentences: stored, refreshed on read** (approved over generate-live
+and generate-at-ingest). `period_summaries` table (migration `0022`), one row
+per (producer, category) with the source segment ids and language as the
+watermark — regenerate exactly when those change, serve from Postgres
+otherwise, so repeat views cost zero LLM calls and deletion can never leave a
+sentence describing footage that is gone. On generation failure the stale
+sentence is served (beats a blank card) and the unchanged watermark retries
+next read. Not cache_service, deliberately: without Redis it silently no-ops
+and dev would regenerate on every view with nothing surfacing the cost.
+
+**Grouping: relations + a classified subtype** (approved over type-only).
+Family is membership in a family-category relation, never the person type —
+measured on live data this correctly puts the one relation-less person
+(אמנון) in "אנשים". `type` cannot say "school" (three schools, the air force
+and a college all share `organisation`), so `entities.subtype` (migration
+`0022`, closed CHECK'd vocabulary: school / higher_education / military /
+workplace / community / other) is assigned by one batched LLM call over
+name + mention summaries. NULL vs 'other' is the never-asked vs
+asked-and-unknown split the `*_asked_at` columns use: 'other' is never
+re-sent, an unparseable label leaves NULL and retries. Group order:
+משפחה, אנשים, מקומות, מוסדות לימוד, צבא, עבודה, קהילה, עוד.
+
+**One deviation from the approved wording, flagged at build time:**
+classification runs lazily at READ (the same seam as the summary refresh),
+not at ingest + a backfill script. Identical outcome and cost — the first
+load classifies the existing organisations, later loads classify only what
+is new — and it keeps this out of `analysis_graph`, which is unsafe to edit
+while a recording is in flight (§9.7 of FAMILY_TREE_TIMELINE.md).
+
+**Year range: omitted** until §1.4 is built, per the approved decision — the
+only year in the live archive is צבי's birth 1956, the producer's father's,
+sitting in a childhood recording: deriving a range from entity years would
+ship precisely the bug §1.4 exists to prevent. The header slot appears when
+producer-scoped attribution lands.
+
 ### 1.4 Year range per category — "about the producer" only (NEW, see §9.1)
 
 Each category bubble should also show an earliest–latest year range on the

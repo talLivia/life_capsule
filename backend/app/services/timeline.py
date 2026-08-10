@@ -49,6 +49,18 @@ recordings, titled by their interview question, and each person carries the
 segment ids that mention them so selecting one FILTERS the recordings rather
 than opening anything separate. No special case for the entity-less period:
 it shows its recordings exactly like every other one.
+
+## The default card is a SUMMARY; the full list is behind an expand
+
+docs/MEDIA_GALLERY.md §1.6. On a real archive a card per recording and a chip
+per name is a wall, so each period also carries a generated one-sentence
+summary (period_insights, stored and refreshed only when the recordings
+change) and a handful of GROUPED bubbles (`groups`) — family by recorded
+relation, places by type, organisations by their classified subtype. The
+recordings and per-entity chips stay in the payload for the expanded view.
+No year range yet, deliberately: §1.4's producer-scoped attribution is not
+built, and the only year in the live archive is the father's birth year —
+exactly the year a childhood range must NOT be derived from.
 """
 
 from __future__ import annotations
@@ -60,9 +72,34 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import interview_config
-from app.models import Entity, EntityMention, InterviewSession, RawSegment
+from app.models import (
+    Entity,
+    EntityMention,
+    EntityRelation,
+    InterviewSession,
+    RawSegment,
+    RelationType,
+)
+from app.services import period_insights
 
 logger = logging.getLogger(__name__)
+
+# The compact card's grouped bubbles, in display order. Keys are stable for
+# the client; labels follow the producer's language. "family" is decided by
+# RELATIONS (a family-category relation touches the person), never by type —
+# nothing in `type` says who is family. The organisation groups read
+# `entities.subtype` (period_insights); an unclassified or unclassifiable
+# entity lands in "more" rather than being guessed at.
+_GROUPS: List[tuple] = [
+    ("family", {"he": "משפחה", "en": "Family"}),
+    ("people", {"he": "אנשים", "en": "People"}),
+    ("places", {"he": "מקומות", "en": "Places"}),
+    ("education", {"he": "מוסדות לימוד", "en": "Education"}),
+    ("military", {"he": "צבא", "en": "Military"}),
+    ("work", {"he": "עבודה", "en": "Work"}),
+    ("community", {"he": "קהילה", "en": "Community"}),
+    ("more", {"he": "עוד", "en": "More"}),
+]
 
 
 def _buckets(language: str) -> List[Dict[str, Any]]:
@@ -109,6 +146,12 @@ async def build_timeline(
     db: AsyncSession, producer_id: str, language: str = "he"
 ) -> Dict[str, Any]:
     """One bubble per life period that actually holds a recording."""
+    # Derived display data first: any organisation without a subtype gets one
+    # now, so the grouping below reads settled labels. A no-op on every read
+    # except the first after a new organisation lands.
+    await period_insights.classify_organisation_subtypes(db, producer_id)
+    family_ids = await _family_entity_ids(db, producer_id)
+
     rows = (
         await db.execute(
             select(RawSegment)
@@ -129,6 +172,7 @@ async def build_timeline(
             undated.append(segment)
 
     periods: List[Dict[str, Any]] = []
+    period_segments: List[List[RawSegment]] = []
     hidden = 0
     for bucket in _buckets(language):
         ids = set(bucket["question_ids"]) | set(bucket["retired_question_ids"])
@@ -137,6 +181,7 @@ async def build_timeline(
             hidden += 1
             continue
         segments.sort(key=lambda s: s.created_at)
+        people = await _people_in(db, producer_id, [s.id for s in segments])
         periods.append(
             {
                 "category": bucket["category"],
@@ -147,9 +192,25 @@ async def build_timeline(
                 # question is one question answered. Same rule as /record.
                 "question_count": len({s.question_id for s in segments}),
                 "recordings": _recordings_in(segments),
-                "people": await _people_in(db, producer_id, [s.id for s in segments]),
+                "people": people,
+                "groups": _groups_for(people, family_ids, language),
             }
         )
+        period_segments.append(segments)
+
+    # One sentence per period, from the store unless the recordings behind it
+    # changed. Attached last so a summary failure can never cost the page.
+    summaries = await period_insights.refresh_period_summaries(
+        db,
+        producer_id,
+        language,
+        [
+            (p["category"], p["category_label"], segments)
+            for p, segments in zip(periods, period_segments)
+        ],
+    )
+    for period in periods:
+        period["summary"] = summaries.get(period["category"])
 
     return {
         "periods": periods,
@@ -158,6 +219,71 @@ async def build_timeline(
         "hidden_empty_periods": hidden,
         "unplaced_recordings": len(undated),
     }
+
+
+async def _family_entity_ids(db: AsyncSession, producer_id: str) -> set:
+    """Everyone a family-category relation touches, in either direction.
+
+    Membership in "family" is a recorded relation, never an inference from
+    type — the archive holds people who are not family (a commander, an army
+    friend), and nothing on the entity row distinguishes them.
+    """
+    rows = (
+        await db.execute(
+            select(EntityRelation.from_entity_id, EntityRelation.to_entity_id)
+            .join(RelationType, RelationType.relation_type == EntityRelation.relation_type)
+            .join(Entity, Entity.id == EntityRelation.from_entity_id)
+            .where(
+                RelationType.category == "family",
+                Entity.producer_id == producer_id,
+            )
+        )
+    ).all()
+    return {entity_id for pair in rows for entity_id in pair}
+
+
+def _group_key(entity: Dict[str, Any], family_ids: set) -> str:
+    if entity["type"] == "person":
+        return "family" if entity["id"] in family_ids else "people"
+    if entity["type"] == "place":
+        return "places"
+    if entity["type"] == "organisation":
+        subtype = entity.get("subtype")
+        if subtype in ("school", "higher_education"):
+            return "education"
+        if subtype == "military":
+            return "military"
+        if subtype == "workplace":
+            return "work"
+        if subtype == "community":
+            return "community"
+    # event, other, and any organisation not (yet) classifiable. Never guessed
+    # into a named group — "more" is honest about what the archive knows.
+    return "more"
+
+
+def _groups_for(
+    people: List[Dict[str, Any]], family_ids: set, language: str
+) -> List[Dict[str, Any]]:
+    """The compact card's bubbles — a handful of groups, not a chip per name.
+
+    Carries the member entity ids so the expanded view can show exactly the
+    chips behind a bubble and filter recordings to them, with no second
+    request.
+    """
+    members: Dict[str, List[str]] = {}
+    for entity in people:
+        members.setdefault(_group_key(entity, family_ids), []).append(entity["id"])
+    return [
+        {
+            "key": key,
+            "label": labels.get(language, labels["en"]),
+            "count": len(members[key]),
+            "entity_ids": members[key],
+        }
+        for key, labels in _GROUPS
+        if key in members
+    ]
 
 
 def _recordings_in(segments: List[RawSegment]) -> List[Dict[str, Any]]:
@@ -225,6 +351,8 @@ async def _people_in(
                 "id": entity.id,
                 "name": entity.name,
                 "type": entity.type,
+                # Where this chip sits among the grouped bubbles — see _GROUPS.
+                "subtype": entity.subtype,
                 # Decoration only — never used to order anything. See the header.
                 "year_start": entity.year_start,
                 "segment_ids": [],

@@ -550,6 +550,9 @@ export interface TimelinePerson {
   id: string
   name: string
   type: string
+  /** Display grouping within a type (school, military, …) — assigned
+   *  server-side; the client reads groups, never classifies. */
+  subtype: string | null
   mentions: number
   /** Decoration only. A year never moves anybody: a page ordered two ways
    *  disagrees with itself. */
@@ -557,6 +560,16 @@ export interface TimelinePerson {
   /** The recordings mentioning this person. Selecting them FILTERS the
    *  period's recording list to these — it opens nothing separate. */
   segment_ids: string[]
+}
+
+/** A grouped bubble on the compact card — "משפחה ×12", not a chip per name.
+ *  Carries its member entity ids so the expanded view can show exactly the
+ *  chips behind it and filter recordings to them, with no second request. */
+export interface TimelineGroup {
+  key: string
+  label: string
+  count: number
+  entity_ids: string[]
 }
 
 /** A period's own content — docs/MEDIA_GALLERY.md §1. Titled by its interview
@@ -581,6 +594,13 @@ export interface TimelinePeriod {
   recording_count: number
   /** DISTINCT questions — three takes on one question is one answered. */
   question_count: number
+  /** One generated sentence on what this period covers; null when generation
+   *  has not succeeded yet. Stored server-side, refreshed only when the
+   *  recordings behind the period change. */
+  summary: string | null
+  /** The compact card's bubbles. The full people/recordings lists below are
+   *  the EXPANDED view, reached by clicking the card or a group. */
+  groups: TimelineGroup[]
   recordings: TimelineRecording[]
   people: TimelinePerson[]
 }
