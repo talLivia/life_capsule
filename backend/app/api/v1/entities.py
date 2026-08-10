@@ -223,3 +223,69 @@ async def set_relation(
 
     await db.commit()
     return result
+
+
+@router.delete("/{entity_id}/relations/{relation_id}")
+async def remove_relation(
+    entity_id: str,
+    relation_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """Remove ONE recorded relation, from a person's card on the tree.
+
+    The counterpart `set_relation` cannot reach: setting a relation replaces
+    what contradicts it, but a relation that is simply WRONG — with nothing
+    true to put in its place — had no way out. Reported live: the
+    questionnaire attached אילן to ג'ולי, and the only "fix" available was
+    inventing some other relation between them.
+
+    Scoped to an entity the producer owns AND that the edge actually touches:
+    the entity id is how the card asked, and checking it keeps a leaked
+    relation id from deleting an edge between two strangers.
+
+    ⚠️ Removing a RECORDING-origin edge does not stop a re-analysis of that
+    recording from proposing the relation again — deletion removes the row,
+    not the sentence it came from. Re-analysis is rare and manual; a tombstone
+    for every deleted edge is complexity this page does not need yet.
+    """
+    owned = (
+        await db.execute(
+            select(Entity.id).where(Entity.id == entity_id, Entity.producer_id == user.id)
+        )
+    ).scalar_one_or_none()
+    if owned is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    relation = (
+        await db.execute(
+            select(EntityRelation)
+            .join(Entity, Entity.id == EntityRelation.from_entity_id)
+            .where(
+                EntityRelation.id == relation_id,
+                Entity.producer_id == user.id,
+                (EntityRelation.from_entity_id == entity_id)
+                | (EntityRelation.to_entity_id == entity_id),
+            )
+        )
+    ).scalars().first()
+    if relation is None:
+        # Same shape as the 404 above: "no such edge" and "not this person's
+        # edge" get one answer.
+        raise HTTPException(status_code=404, detail="Relation not found")
+
+    removed = {
+        "id": relation.id,
+        "from_entity_id": relation.from_entity_id,
+        "to_entity_id": relation.to_entity_id,
+        "relation_type": relation.relation_type,
+        "origin": relation.origin,
+    }
+    await db.delete(relation)
+    await db.commit()
+    logger.info(
+        f"Relation removed by hand: {removed['from_entity_id'][:8]} "
+        f"-{removed['relation_type']}-> {removed['to_entity_id'][:8]} "
+        f"(origin {removed['origin']})"
+    )
+    return {"removed": removed}

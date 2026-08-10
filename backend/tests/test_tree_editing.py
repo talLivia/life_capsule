@@ -496,3 +496,49 @@ async def test_a_side_makes_no_sense_for_a_sibling(client, db_session, archive):
     )
 
     assert response.status_code == 400
+
+
+# ── removing one relation from a person's card ───────────────────────────────
+
+
+async def test_removing_a_relation_deletes_exactly_that_edge(client, db_session, archive):
+    """The way out for an edge that is simply WRONG — set_relation can only
+    replace a contradiction with a different claim, never retract one."""
+    kept = await archive["relate"](archive["chen"], "sibling", archive["root"])
+    wrong = await archive["relate"](archive["raz"], "parent", archive["chen"])
+    await db_session.commit()
+
+    from app.api.v1.users import create_access_token
+
+    token = create_access_token({"sub": archive["user"].id})
+    response = await client.delete(
+        f"/api/v1/entities/{archive['raz'].id}/relations/{wrong.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["removed"]["relation_type"] == "parent"
+    assert await _edges(db_session, archive["raz"], archive["chen"]) == []
+    assert len(await _edges(db_session, archive["chen"], archive["root"])) == 1, (
+        f"the unrelated edge {kept.id} must survive"
+    )
+
+
+async def test_removing_a_relation_requires_the_edge_to_touch_the_person(
+    client, db_session, archive
+):
+    """A leaked relation id must not delete an edge between two strangers —
+    the entity in the URL is part of the authorisation, not decoration."""
+    edge = await archive["relate"](archive["chen"], "sibling", archive["root"])
+    await db_session.commit()
+
+    from app.api.v1.users import create_access_token
+
+    token = create_access_token({"sub": archive["user"].id})
+    response = await client.delete(
+        f"/api/v1/entities/{archive['raz'].id}/relations/{edge.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 404
+    assert len(await _edges(db_session, archive["chen"], archive["root"])) == 1

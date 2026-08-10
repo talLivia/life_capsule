@@ -462,6 +462,8 @@ export interface TreeGeneration {
 }
 
 export interface TreeEdge {
+  /** The relation row's own id — the handle "remove this edge" needs. */
+  id: string
   from_id: string
   to_id: string
   relation_type: string

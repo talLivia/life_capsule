@@ -1403,6 +1403,46 @@ children as its NORMAL output — the questionnaire's parentage question
 exists precisely to close this, and the manual flow still has no equivalent
 for siblings.
 
+## Tree round 2: layout as a testable module — 2026-08-10
+
+Follow-up report on 93bad05, three items, and a method change worth keeping:
+**the layout now lives in `frontend/lib/treeLayout.ts` as pure functions**,
+and `frontend/scripts/tree_layout_report.mts` (npx tsx) runs it against a
+tree JSON and prints every node position and connector segment. "There is an
+extra line between X and Y" is now answered by a list, not a screenshot.
+
+- **A generation-0 person with a family of their own heads a side band.**
+  ניר and אירה (plus their three children) were inlined in the producer's
+  row, which buried it; they now render as "ניר & אירה's family" like the
+  other couple branches. The sibling arc and the recorded parent-descent
+  drop still tie ניר back to the main family — placement moved, no claim
+  changed.
+- **The reported "4 lines between ניר and אירה" had NO duplicate edge behind
+  it.** Harness-verified: the marriage double-line (2) was sandwiched between
+  the five-sibling bus above and their children's bus below — four stacked
+  horizontals in one narrow gap. The band move dissolves it (the strip now
+  contains exactly the marriage line). Same-row connectors and arcs are also
+  deduplicated by unordered PAIR now: the questionnaire records symmetric
+  relations once per direction (ניצן↔יובל exists both ways in live data),
+  and per-edge drawing gave one fact two connectors — two arcs in different
+  lanes, reading as two relations.
+- **A person's card now lists their recorded relations, each removable**
+  (two clicks, second confirms). DELETE /entities/{id}/relations/{rel_id},
+  scoped to an owned entity the edge touches; tree edges now carry the row
+  id. This is the way out for an edge that is WRONG with nothing true to put
+  in its place — set_relation can only replace a contradiction with a
+  different claim. ⚠️ Removing a recording-origin edge does not stop
+  re-analysis of that recording from proposing it again; accepted, noted in
+  the endpoint docstring.
+  - The report's motivating case ("אילן mistakenly linked to ג'ולי")
+    turned out to have NO edge in the data — the "line" was אילן's sibling
+    arc and ג'ולי's descent both converging on אילנה. The relations list
+    makes exactly this checkable from the page.
+- **Hovering (or selecting) a person highlights their own connectors** —
+  their drop, the shared trunk/bar/bus, parent stems, marriage and sibling
+  links — while their siblings' drops stay dim, which is the distinction a
+  shared fork erases. Hovering a parent lights the whole family's fork.
+
 ## Known gaps / tech debt
 
 - 🚨 **KNOWN GAP, deliberately unfixed (2026-08-10): a "עוד" question can

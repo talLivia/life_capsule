@@ -75,6 +75,7 @@ async def _load_edges(db: AsyncSession, producer_id: str) -> List[Dict[str, Any]
     ).all()
     return [
         {
+            "id": rel.id,
             "from_id": rel.from_entity_id,
             "to_id": rel.to_entity_id,
             "relation_type": rel.relation_type,
@@ -218,6 +219,10 @@ async def build_tree(db: AsyncSession, producer_id: str) -> Dict[str, Any]:
         "unplaced": [_node_view(n, None) for n in unplaced],
         "edges": [
             {
+                # The row id travels too, so the page can point at ONE edge —
+                # removing a wrong relation needs a handle, and (from, to,
+                # type) is not one.
+                "id": e["id"],
                 "from_id": e["from_id"],
                 "to_id": e["to_id"],
                 "relation_type": e["relation_type"],

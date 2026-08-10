@@ -360,6 +360,15 @@ export const api = {
     return response.data
   },
 
+  /** Remove ONE recorded relation from a person's card — the way out for an
+   *  edge that is simply wrong, with nothing true to put in its place. */
+  deleteEntityRelation: async (entityId: string, relationId: string) => {
+    const response = await apiClient.delete(
+      `/api/v1/entities/${entityId}/relations/${relationId}`,
+    )
+    return response.data
+  },
+
   /** The relation vocabulary, from the relation_types TABLE — so adding a
    *  type is a data change and the picker cannot offer one that would be
    *  refused. */

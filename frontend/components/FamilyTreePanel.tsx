@@ -6,7 +6,7 @@ import { AlertTriangle, Loader2, Network, User as UserIcon, X } from 'lucide-rea
 import { FamilyTreeGraph } from '@/components/FamilyTreeGraph'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
-import type { ApiError, EntityMoment, FamilyTree, TreePerson } from '@/lib/types'
+import type { ApiError, EntityMoment, FamilyTree, TreeEdge, TreePerson } from '@/lib/types'
 
 /**
  * The producer's family tree — read-only, and the whole page.
@@ -248,11 +248,106 @@ function RelationEditor({
   )
 }
 
+/**
+ * This person's recorded relations, each with a way out.
+ *
+ * The editor above SETS relations, replacing what contradicts them — but a
+ * relation that is simply WRONG, with nothing true to put in its place, had
+ * no exit at all. Reported live: the questionnaire attached אילן to ג'ולי
+ * (his wife's mother), and no possible edit could remove the claim without
+ * making a different false one.
+ *
+ * Removal is TWO CLICKS ON THE SAME BUTTON, not a dialog: the second click
+ * confirms, clicking anywhere else forgets. Same reasoning as the editor's
+ * "saving replaces" note — state the consequence where the finger already
+ * is, don't interrupt.
+ */
+function RelationList({
+  person,
+  people,
+  edges,
+  onRemoved,
+}: {
+  person: TreePerson
+  people: TreePerson[]
+  edges: TreeEdge[]
+  onRemoved: () => void
+}) {
+  const [confirming, setConfirming] = useState<string | null>(null)
+  const [removing, setRemoving] = useState(false)
+  const nameOf = new Map(people.map((p) => [p.id, p.is_self ? 'you' : p.name]))
+
+  const mine = edges.filter(
+    (e) => e.from_id === person.id || e.to_id === person.id
+  )
+  if (!mine.length) return null
+
+  const remove = async (edge: TreeEdge) => {
+    setRemoving(true)
+    try {
+      await api.deleteEntityRelation(person.id, edge.id)
+      toast.success('Relation removed')
+      setConfirming(null)
+      onRemoved()
+    } catch (err: unknown) {
+      const detail = (err as ApiError)?.response?.data?.detail || (err as ApiError)?.message
+      toast.error(detail || 'Could not remove that')
+    } finally {
+      setRemoving(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <p className="text-xs uppercase tracking-wide text-gray-400 font-semibold">
+        Recorded relations
+      </p>
+      {mine.map((edge) => {
+        // One directed row per relation: the sentence reads from the edge's
+        // own subject, whichever end this card is.
+        const subject = nameOf.get(edge.from_id) ?? '?'
+        const object = nameOf.get(edge.to_id) ?? '?'
+        const label = edge.label_en || edge.relation_type.replace('_', ' ')
+        return (
+          <div
+            key={edge.id}
+            className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-white/8 bg-surface-800/40"
+          >
+            <span className="text-xs text-gray-300">
+              <span dir="auto" className="text-white font-medium">{subject}</span>
+              {` is the ${label} of `}
+              <span dir="auto" className="text-white font-medium">{object}</span>
+              <span className="text-gray-500">
+                {edge.source_segment_id ? ' · from a recording' : ' · added by hand'}
+              </span>
+            </span>
+            <button
+              type="button"
+              disabled={removing}
+              onClick={() =>
+                confirming === edge.id ? remove(edge) : setConfirming(edge.id)
+              }
+              className={`shrink-0 px-2 py-1 rounded-md border text-[11px] transition-colors ${
+                confirming === edge.id
+                  ? 'border-red-400 bg-red-500/15 text-red-200'
+                  : 'border-white/10 text-gray-400 hover:border-white/25 hover:text-white'
+              }`}
+            >
+              {confirming === edge.id ? 'Remove — sure?' : 'Remove'}
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function MomentsModal({
   person,
   people,
   relationTypes,
   parentsOf,
+  edges,
   moments,
   loading,
   onClose,
@@ -262,6 +357,7 @@ function MomentsModal({
   people: TreePerson[]
   relationTypes: { value: string; label: string }[]
   parentsOf: Map<string, TreePerson[]>
+  edges: TreeEdge[]
   moments: EntityMoment[] | null
   loading: boolean
   onClose: () => void
@@ -337,6 +433,14 @@ function MomentsModal({
             onSaved={onSaved}
           />
         )}
+
+        <RelationList
+          person={person}
+          people={people}
+          edges={edges}
+          onRemoved={onSaved}
+        />
+
 
         {loading && <Loader2 size={20} className="animate-spin text-primary-400 self-center" />}
 
@@ -569,6 +673,7 @@ export function FamilyTreePanel() {
           people={everyone}
           relationTypes={relationTypes}
           parentsOf={parentsOf}
+          edges={tree?.edges ?? []}
           moments={moments}
           loading={momentsLoading}
           onClose={() => setSelected(null)}

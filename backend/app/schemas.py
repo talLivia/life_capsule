@@ -302,6 +302,10 @@ class TreeGeneration(BaseModel):
 
 
 class TreeEdge(BaseModel):
+    # The relation row's own id, so the page can address ONE edge — "remove
+    # this" needs a handle, and (from, to, type) is not one: the same pair can
+    # legitimately hold a row per direction.
+    id: str
     from_id: str
     to_id: str
     relation_type: str
