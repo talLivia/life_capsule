@@ -29,10 +29,11 @@ async def archive(db_session):
     return user, session
 
 
-async def _record(db, session, question_id, index=0):
+async def _record(db, session, question_id, index=0, question_asked="?", video_url=None):
     segment = RawSegment(
-        interview_session_id=session.id, question_asked="?",
+        interview_session_id=session.id, question_asked=question_asked,
         question_index=index, question_id=question_id, status="ready",
+        video_url=video_url,
     )
     db.add(segment)
     await db.flush()
@@ -161,6 +162,65 @@ async def test_live_question_ids_never_gain_retired_ones(monkeypatch):
 
 
 # ── sub-bubbles ───────────────────────────────────────────────────────────
+
+
+async def test_a_period_with_no_named_entities_shows_its_recordings(
+    db_session, archive
+):
+    """The G bug, docs/MEDIA_GALLERY.md §1. A childhood-hobbies answer names
+    nobody — correctly — and the period must still show its real, playable
+    recording rather than rendering empty."""
+    user, session = archive
+    _, question_id = _live_ids(1)[0]
+    segment = await _record(
+        db_session, session, question_id,
+        question_asked="מה אהבת לעשות בתור ילד?", video_url="https://cdn/x.mp4",
+    )
+
+    period = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]
+    assert period["people"] == []
+    assert [r["segment_id"] for r in period["recordings"]] == [segment.id]
+    # Titled by the interview question, playable directly.
+    assert period["recordings"][0]["question_asked"] == "מה אהבת לעשות בתור ילד?"
+    assert period["recordings"][0]["video_url"] == "https://cdn/x.mp4"
+
+
+async def test_takes_are_numbered_within_their_question(db_session, archive):
+    """Three takes of one question are takes 1..3 of 3; a single take of a
+    different question in the same period is 1 of 1. `created_at` order alone
+    separates takes — the CLAUDE.md rule, there is no take column."""
+    user, session = archive
+    cat = interview_config.get_categories("he")[0]
+    repeated, single = cat["question_ids"][0], cat["question_ids"][1]
+    for _ in range(3):
+        await _record(db_session, session, repeated)
+    await _record(db_session, session, single)
+
+    period = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]
+    takes = [r for r in period["recordings"] if r["question_id"] == repeated]
+    assert sorted(t["take_index"] for t in takes) == [1, 2, 3]
+    assert {t["take_count"] for t in takes} == {3}
+    (other,) = [r for r in period["recordings"] if r["question_id"] == single]
+    assert (other["take_index"], other["take_count"]) == (1, 1)
+
+
+async def test_people_carry_the_segment_ids_that_mention_them(db_session, archive):
+    """The filter: selecting a person narrows the recordings already shown,
+    so each person must say which segments mention them."""
+    user, session = archive
+    _, question_id = _live_ids(1)[0]
+    mentioned_in = await _record(db_session, session, question_id)
+    not_mentioned_in = await _record(db_session, session, question_id)
+
+    person = Entity(producer_id=user.id, name="ניר", normalized_name="ניר", type="person")
+    db_session.add(person)
+    await db_session.flush()
+    db_session.add(EntityMention(entity_id=person.id, raw_segment_id=mentioned_in.id))
+    await db_session.flush()
+
+    period = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]
+    assert period["people"][0]["segment_ids"] == [mentioned_in.id]
+    assert not_mentioned_in.id in {r["segment_id"] for r in period["recordings"]}
 
 
 async def test_people_are_listed_by_how_often_this_period_mentions_them(

@@ -39,6 +39,16 @@ the life. Sixteen bubbles with eleven empty reads as a broken page, so they are
 hidden and counted. This is the opposite call from the tree's "not yet placed",
 and deliberately: there, the person IS a fact — someone the producer talked
 about — and hiding them would lose something real.
+
+## A period's content is its RECORDINGS; people are a lens on them
+
+docs/MEDIA_GALLERY.md §1. A childhood-hobbies answer names nobody, and that is
+correct — but a period whose sub-bubbles are only mentioned people renders
+empty despite holding a real, playable recording. So every period lists its
+recordings, titled by their interview question, and each person carries the
+segment ids that mention them so selecting one FILTERS the recordings rather
+than opening anything separate. No special case for the entity-less period:
+it shows its recordings exactly like every other one.
 """
 
 from __future__ import annotations
@@ -46,7 +56,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import interview_config
@@ -136,6 +146,7 @@ async def build_timeline(
                 # DISTINCT questions, not recordings: three takes on one
                 # question is one question answered. Same rule as /record.
                 "question_count": len({s.question_id for s in segments}),
+                "recordings": _recordings_in(segments),
                 "people": await _people_in(db, producer_id, [s.id for s in segments]),
             }
         )
@@ -149,36 +160,81 @@ async def build_timeline(
     }
 
 
+def _recordings_in(segments: List[RawSegment]) -> List[Dict[str, Any]]:
+    """The period's own content — one sub-bubble per recording.
+
+    No query: build_timeline already holds the rows. `take_index` is not a
+    column anywhere; takes of one question are separated by `created_at`
+    order alone (the CLAUDE.md rule), so it is derived here the same way.
+    `video_url` is served as stored, exactly as `get_entity_moments` does.
+    """
+    seen_takes: Dict[str, int] = {}
+    take_totals: Dict[str, int] = {}
+    for segment in segments:
+        take_totals[segment.question_id] = take_totals.get(segment.question_id, 0) + 1
+
+    recordings = []
+    for segment in segments:  # already created_at-sorted by the caller
+        seen_takes[segment.question_id] = seen_takes.get(segment.question_id, 0) + 1
+        recordings.append(
+            {
+                "segment_id": segment.id,
+                "question_asked": segment.question_asked,
+                "question_id": segment.question_id,
+                "created_at": segment.created_at,
+                "take_index": seen_takes[segment.question_id],
+                # So the client can label "take 2 of 3" without counting —
+                # a second take of one question renders under the same title.
+                "take_count": take_totals[segment.question_id],
+                "video_url": segment.video_url,
+            }
+        )
+    return recordings
+
+
 async def _people_in(
     db: AsyncSession, producer_id: str, segment_ids: List[str]
 ) -> List[Dict[str, Any]]:
-    """Who this period is about — the sub-bubbles.
+    """Who this period is about — a lens on its recordings, not the content.
 
     A person is not owned by one period: someone mentioned in two life stages
     appears in both, which is correct and needs no special case.
+
+    Each person carries the ids of the segments mentioning them, so selecting
+    one filters the recording sub-bubbles client-side — no second request and
+    no separate endpoint to drift.
     """
     if not segment_ids:
         return []
     rows = (
         await db.execute(
-            select(Entity, func.count(EntityMention.id))
+            select(Entity, EntityMention.raw_segment_id)
             .join(EntityMention, EntityMention.entity_id == Entity.id)
             .where(
                 Entity.producer_id == producer_id,
                 EntityMention.raw_segment_id.in_(segment_ids),
             )
-            .group_by(Entity.id)
-            .order_by(func.count(EntityMention.id).desc(), Entity.name)
         )
     ).all()
-    return [
-        {
-            "id": entity.id,
-            "name": entity.name,
-            "type": entity.type,
-            "mentions": mentions,
-            # Decoration only — never used to order anything. See the header.
-            "year_start": entity.year_start,
-        }
-        for entity, mentions in rows
-    ]
+
+    by_entity: Dict[str, Dict[str, Any]] = {}
+    for entity, raw_segment_id in rows:
+        person = by_entity.setdefault(
+            entity.id,
+            {
+                "id": entity.id,
+                "name": entity.name,
+                "type": entity.type,
+                # Decoration only — never used to order anything. See the header.
+                "year_start": entity.year_start,
+                "segment_ids": [],
+            },
+        )
+        person["segment_ids"].append(raw_segment_id)
+
+    people = list(by_entity.values())
+    for person in people:
+        # One mention row per (entity, recording), so the count IS the list.
+        person["mentions"] = len(person["segment_ids"])
+    people.sort(key=lambda p: (-p["mentions"], p["name"]))
+    return people

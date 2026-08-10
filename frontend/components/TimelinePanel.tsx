@@ -1,9 +1,9 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { CalendarRange, Clock, Loader2, Users } from 'lucide-react'
+import { CalendarRange, Clock, Film, Loader2, Play } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { ApiError, EntityMoment, Timeline, TimelinePerson, TimelinePeriod } from '@/lib/types'
+import type { ApiError, Timeline, TimelinePerson, TimelinePeriod, TimelineRecording } from '@/lib/types'
 
 /**
  * The producer's life, one bubble per period — read-only.
@@ -11,6 +11,12 @@ import type { ApiError, EntityMoment, Timeline, TimelinePerson, TimelinePeriod }
  * ORDER COMES FROM THE SERVER and is the question file's own order. This file
  * never sorts, never reorders by year, and knows no category name. Reordering
  * the interview reorders this page with no change here.
+ *
+ * A period's content is its RECORDINGS (docs/MEDIA_GALLERY.md §1): every
+ * period lists them, titled by their interview question, playable directly.
+ * People are a lens — selecting one filters the recordings already shown to
+ * those mentioning them; it opens nothing separate. A period whose answers
+ * named nobody shows its recordings exactly like every other one.
  *
  * Empty periods are already gone by the time they arrive: a category with no
  * recording is a question not yet answered, not a fact about the life. The
@@ -21,6 +27,18 @@ import type { ApiError, EntityMoment, Timeline, TimelinePerson, TimelinePeriod }
  * never moves anybody — a page ordered two ways is a page that disagrees with
  * itself.
  */
+
+/** Which person filters which period. A person can appear in two periods, so
+ *  the selection is scoped to the period whose chip was clicked. */
+interface PersonSelection {
+  category: string
+  person: TimelinePerson
+}
+
+interface RecordingSelection {
+  category: string
+  recording: TimelineRecording
+}
 
 function PersonChip({
   person,
@@ -35,6 +53,7 @@ function PersonChip({
     <button
       type="button"
       onClick={() => onSelect(person)}
+      title={selected ? 'Show every recording again' : `Only the moments about ${person.name}`}
       className={`px-3 py-1.5 rounded-xl border text-left transition-colors ${
         selected
           ? 'border-primary-400 bg-primary-500/15'
@@ -52,15 +71,55 @@ function PersonChip({
   )
 }
 
+function RecordingRow({
+  recording,
+  onSelect,
+  selected,
+}: {
+  recording: TimelineRecording
+  onSelect: (r: TimelineRecording) => void
+  selected: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(recording)}
+      className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl border text-left transition-colors ${
+        selected
+          ? 'border-primary-400 bg-primary-500/15'
+          : 'border-white/10 bg-surface-800/50 hover:border-white/25'
+      }`}
+    >
+      <Play size={13} className="shrink-0 text-primary-400" />
+      <span dir="auto" className="text-sm text-white leading-snug flex-1">
+        {recording.question_asked}
+      </span>
+      {recording.take_count > 1 && (
+        <span className="text-[11px] text-gray-500 shrink-0">
+          take {recording.take_index}/{recording.take_count}
+        </span>
+      )}
+    </button>
+  )
+}
+
 function Period({
   period,
-  selectedId,
-  onSelect,
+  selectedPerson,
+  onSelectPerson,
+  playingSegmentId,
+  onPlay,
 }: {
   period: TimelinePeriod
-  selectedId: string | null
-  onSelect: (p: TimelinePerson) => void
+  selectedPerson: TimelinePerson | null
+  onSelectPerson: (p: TimelinePerson) => void
+  playingSegmentId: string | null
+  onPlay: (r: TimelineRecording) => void
 }) {
+  const recordings = selectedPerson
+    ? period.recordings.filter((r) => selectedPerson.segment_ids.includes(r.segment_id))
+    : period.recordings
+
   return (
     <section className="relative pl-8 pb-8 last:pb-0">
       {/* The spine. Purely decorative — the ORDER is the server's. */}
@@ -88,20 +147,34 @@ function Period({
           </p>
         )}
 
-        {period.people.length > 0 ? (
+        {period.people.length > 0 && (
           <div className="flex flex-wrap gap-2 mt-2">
             {period.people.map((person) => (
               <PersonChip
                 key={person.id}
                 person={person}
-                selected={selectedId === person.id}
-                onSelect={onSelect}
+                selected={selectedPerson?.id === person.id}
+                onSelect={onSelectPerson}
               />
             ))}
           </div>
-        ) : (
-          <p className="text-xs text-gray-500 mt-1">
-            Nobody was named by name in these answers.
+        )}
+
+        <div className="flex flex-col gap-1.5 mt-2">
+          {recordings.map((recording) => (
+            <RecordingRow
+              key={recording.segment_id}
+              recording={recording}
+              selected={playingSegmentId === recording.segment_id}
+              onSelect={onPlay}
+            />
+          ))}
+        </div>
+
+        {selectedPerson && (
+          <p dir="auto" className="text-[11px] text-gray-500 mt-2">
+            Only the moments about {selectedPerson.name} — choose them again to
+            see everything.
           </p>
         )}
       </div>
@@ -113,8 +186,8 @@ export function TimelinePanel() {
   const [timeline, setTimeline] = useState<Timeline | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [selected, setSelected] = useState<TimelinePerson | null>(null)
-  const [moments, setMoments] = useState<EntityMoment[] | null>(null)
+  const [selected, setSelected] = useState<PersonSelection | null>(null)
+  const [playing, setPlaying] = useState<RecordingSelection | null>(null)
 
   const load = useCallback(async () => {
     setError(null)
@@ -132,16 +205,12 @@ export function TimelinePanel() {
     load()
   }, [load])
 
-  const selectPerson = async (person: TimelinePerson) => {
-    setSelected(person)
-    setMoments(null)
-    try {
-      // The same endpoint the tree uses, deliberately — one way to answer
-      // "show me where they appear", so the two pages cannot drift.
-      setMoments(await api.getEntityMoments(person.id))
-    } catch {
-      setMoments([])
-    }
+  const togglePerson = (category: string) => (person: TimelinePerson) => {
+    setSelected((current) =>
+      current?.category === category && current.person.id === person.id
+        ? null
+        : { category, person }
+    )
   }
 
   if (loading) {
@@ -186,8 +255,12 @@ export function TimelinePanel() {
               <Period
                 key={period.category}
                 period={period}
-                selectedId={selected?.id ?? null}
-                onSelect={selectPerson}
+                selectedPerson={
+                  selected?.category === period.category ? selected.person : null
+                }
+                onSelectPerson={togglePerson(period.category)}
+                playingSegmentId={playing?.recording.segment_id ?? null}
+                onPlay={(recording) => setPlaying({ category: period.category, recording })}
               />
             ))
           )}
@@ -211,40 +284,36 @@ export function TimelinePanel() {
         </div>
 
         <aside className="lg:col-span-2 lg:sticky lg:top-6">
-          {!selected ? (
+          {!playing ? (
             <div className="glass-card p-5 flex flex-col items-center gap-2 text-center">
-              <Users size={18} className="text-gray-500" />
+              <Film size={18} className="text-gray-500" />
               <p className="text-xs text-gray-500">
-                Choose someone to watch the moments they appear in.
+                Choose a moment to watch it here.
               </p>
             </div>
           ) : (
             <div className="glass-card p-4 flex flex-col gap-3">
-              <h2 dir="auto" className="text-base font-bold text-white">{selected.name}</h2>
-              {moments === null && (
-                <Loader2 size={18} className="animate-spin text-primary-400 self-center" />
+              <h2 dir="auto" className="text-base font-bold text-white leading-snug">
+                {playing.recording.question_asked}
+              </h2>
+              {playing.recording.take_count > 1 && (
+                <p className="text-[11px] text-gray-500">
+                  Take {playing.recording.take_index} of {playing.recording.take_count}
+                </p>
               )}
-              {moments?.length === 0 && (
-                <p className="text-xs text-gray-500">No recordings mention them yet.</p>
+              {playing.recording.video_url ? (
+                <video
+                  key={playing.recording.segment_id}
+                  src={playing.recording.video_url}
+                  controls
+                  playsInline
+                  className="w-full rounded-lg border border-white/10"
+                />
+              ) : (
+                <p className="text-xs text-gray-500">
+                  This recording is still being processed.
+                </p>
               )}
-              {moments?.map((moment) => (
-                <article key={moment.segment_id} className="flex flex-col gap-1.5">
-                  <h3 dir="auto" className="text-xs text-primary-300 leading-snug">
-                    {moment.question_asked}
-                  </h3>
-                  {moment.video_url && (
-                    <video
-                      src={moment.video_url}
-                      controls
-                      playsInline
-                      className="w-full rounded-lg border border-white/10"
-                    />
-                  )}
-                  {moment.summary && (
-                    <p dir="auto" className="text-xs text-gray-400">{moment.summary}</p>
-                  )}
-                </article>
-              ))}
             </div>
           )}
         </aside>

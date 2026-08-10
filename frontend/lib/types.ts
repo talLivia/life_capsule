@@ -554,6 +554,22 @@ export interface TimelinePerson {
   /** Decoration only. A year never moves anybody: a page ordered two ways
    *  disagrees with itself. */
   year_start: number | null
+  /** The recordings mentioning this person. Selecting them FILTERS the
+   *  period's recording list to these — it opens nothing separate. */
+  segment_ids: string[]
+}
+
+/** A period's own content — docs/MEDIA_GALLERY.md §1. Titled by its interview
+ *  question, playable directly; people are a lens over these, not the content. */
+export interface TimelineRecording {
+  segment_id: string
+  question_asked: string
+  question_id: string
+  created_at: string
+  /** Takes of one question, numbered 1..take_count in created_at order. */
+  take_index: number
+  take_count: number
+  video_url: string | null
 }
 
 export interface TimelinePeriod {
@@ -565,6 +581,7 @@ export interface TimelinePeriod {
   recording_count: number
   /** DISTINCT questions — three takes on one question is one answered. */
   question_count: number
+  recordings: TimelineRecording[]
   people: TimelinePerson[]
 }
 
