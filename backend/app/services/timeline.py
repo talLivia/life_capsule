@@ -55,9 +55,10 @@ it shows its recordings exactly like every other one.
 docs/MEDIA_GALLERY.md §1.6–§1.8. The collapsed card is title, one generated
 sentence, and grouped bubbles — the SAME shape at 3 recordings or 50; volume
 is absorbed by grouping and summarization, never expressed as more chips or
-rows. Bubbles are REAL TAG CONTENT: the top coverage-ranked `topic_tags` of
-the period's recordings, capped — no classification pass, no taxonomy; the
-generic moments bubble survives only as the fallback for an untagged period.
+rows. Bubbles are REAL TAG CONTENT: the period's own `topic_tags`, chosen by
+set cover, capped, and DISJOINT — every recording belongs to exactly one
+bubble — with no classification pass and no taxonomy; the generic moments
+bubble survives only as the fallback for an untagged period.
 The card itself is static: bubbles are the only way in, and a bubble opens a
 CAPPED highlight selection ranked by the importance score ingestion already
 computed. The full PERIOD list is one more click ("all moments" — deliberately
@@ -225,20 +226,28 @@ def _groups_for(
     language: str,
     segments: List[RawSegment],
 ) -> List[Dict[str, Any]]:
-    """The compact card's bubbles — real tag content, capped (§1.8).
+    """The compact card's bubbles — real tag content, capped, DISJOINT (§1.8).
 
     Bubbles come straight from the `topic_tags` ingestion already writes per
     segment; no classification pass, no taxonomy — the label IS the tag the
-    archive's own content produced ('בתי ספר', 'שירות צבאי'). Ranked by
-    coverage (how many of the period's recordings carry the tag) because
+    archive's own content produced ('בתי ספר', 'שירות צבאי'). Capped because
     free-form tags are mostly one-offs — measured 43 of 47 distinct tags
     appearing once — and a bubble per one-off is the density bug in bubble
-    form. The cap keeps the shape constant at any archive size.
+    form.
 
-    A capped tag set does not cover every recording, so reachability lives
-    one level down: every bubble's "all moments" is the PERIOD's full list,
-    not the tag's. A period with no tags at all gets the generic fallback
-    bubble — with a static card, a period must never render without a way in.
+    Bubbles PARTITION the recordings: a segment carries several tags, but it
+    belongs to exactly one bubble — tags are chosen greedily by how many
+    still-unassigned recordings they cover (set cover, ties by first
+    appearance), and each chosen tag claims its unassigned recordings. The
+    same recording showing under both משפחה and טבריה read as a duplication
+    bug, and exclusive membership is what makes the counts honest: they sum
+    to at most the period's recordings, never more.
+
+    A capped disjoint tag set can still leave recordings in no bubble, so
+    reachability lives one level down: every bubble's "all moments" is the
+    PERIOD's full list, not the bubble's. A period with no tags at all gets
+    the generic fallback bubble — with a static card, a period must never
+    render without a way in.
     """
     coverage: Dict[str, List[RawSegment]] = {}
     first_seen: Dict[str, int] = {}
@@ -252,17 +261,31 @@ def _groups_for(
                 first_seen[tag] = len(first_seen)
             coverage[tag].append(segment)
 
-    ranked_tags = sorted(coverage, key=lambda t: (-len(coverage[t]), first_seen[t]))
-    groups = [
-        {
-            "key": tag,
-            "label": tag,
-            "count": len(coverage[tag]),
-            "segment_ids": [s.id for s in coverage[tag]],
-            "highlights": _highlights(coverage[tag], people),
+    groups: List[Dict[str, Any]] = []
+    assigned: set = set()
+    while len(groups) < _TAG_BUBBLE_CAP and coverage:
+        remaining = {
+            tag: [s for s in tagged if s.id not in assigned]
+            for tag, tagged in coverage.items()
         }
-        for tag in ranked_tags[:_TAG_BUBBLE_CAP]
-    ]
+        best = min(
+            remaining,
+            key=lambda t: (-len(remaining[t]), first_seen[t]),
+        )
+        members = remaining[best]
+        if not members:
+            break
+        assigned.update(s.id for s in members)
+        del coverage[best]
+        groups.append(
+            {
+                "key": best,
+                "label": best,
+                "count": len(members),
+                "segment_ids": [s.id for s in members],
+                "highlights": _highlights(members, people),
+            }
+        )
     if not groups:
         groups.append(
             {

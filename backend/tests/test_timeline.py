@@ -233,29 +233,55 @@ async def test_takes_are_numbered_within_their_question(db_session, archive):
     assert (other["take_index"], other["take_count"]) == (1, 1)
 
 
-async def test_bubbles_are_the_periods_top_tags_capped(db_session, archive):
+async def test_bubbles_partition_the_recordings_no_overlap(db_session, archive):
     """The compact card, docs/MEDIA_GALLERY.md §1.8. Bubbles are REAL tag
-    content, ranked by how many recordings carry the tag and capped —
-    measured on the live archive 43 of 47 distinct tags appear once, and a
-    bubble per one-off is the density bug in bubble form."""
+    content, and they PARTITION the recordings: a segment carrying both
+    משפחה and טבריה must appear under exactly one of them — the same
+    recording under two bubbles reads as a duplication bug. Tags are chosen
+    greedily by how many still-unassigned recordings they cover."""
     user, session = archive
     _, question_id = _live_ids(1)[0]
-    first = await _record(db_session, session, question_id,
-                          topic_tags=["טבריה", "ילדות", "משחקי חצר"])
-    second = await _record(db_session, session, question_id,
-                           topic_tags=["טבריה", "ילדות", "בתי ספר"])
+    only_family = await _record(db_session, session, question_id,
+                                topic_tags=["משפחה"])
+    both = await _record(db_session, session, question_id,
+                         topic_tags=["משפחה", "טבריה"])
+    tveria_a = await _record(db_session, session, question_id,
+                             topic_tags=["טבריה"])
+    tveria_b = await _record(db_session, session, question_id,
+                             topic_tags=["טבריה"])
+
+    groups = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]["groups"]
+    # טבריה covers 3 unassigned, so it claims `both`; משפחה keeps only what
+    # is left. Counts are exclusive and sum to the period's recordings.
+    assert [g["label"] for g in groups] == ["טבריה", "משפחה"]
+    assert groups[0]["segment_ids"] == [both.id, tveria_a.id, tveria_b.id]
+    assert groups[1]["segment_ids"] == [only_family.id]
+    assert [g["count"] for g in groups] == [3, 1]
+    seen = [sid for g in groups for sid in g["segment_ids"]]
+    assert len(seen) == len(set(seen))
+
+
+async def test_bubbles_are_capped_and_a_covered_tag_is_not_repeated(
+    db_session, archive
+):
+    """Cap at five, and a tag whose recordings were all claimed by an
+    earlier bubble never renders as an empty echo — measured on the live
+    archive 43 of 47 distinct tags appear once, and a bubble per one-off is
+    the density bug in bubble form."""
+    user, session = archive
+    _, question_id = _live_ids(1)[0]
+    await _record(db_session, session, question_id,
+                  topic_tags=["טבריה", "ילדות", "משחקי חצר"])
+    await _record(db_session, session, question_id,
+                  topic_tags=["טבריה", "ילדות", "בתי ספר"])
     await _record(db_session, session, question_id,
                   topic_tags=["טבריה", "אוכל משפחתי", "סבתא", "ארוחת שישי"])
 
     groups = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]["groups"]
-    # Coverage first (טבריה 3, ילדות 2), then one-offs in first-appearance
-    # order, capped at five — never one bubble per tag (seven exist here).
-    assert [g["label"] for g in groups] == [
-        "טבריה", "ילדות", "משחקי חצר", "בתי ספר", "אוכל משפחתי"
-    ]
+    # טבריה claims all three recordings; every other tag then covers nothing
+    # unassigned, so ONE bubble renders — not seven, and not empty echoes.
+    assert [g["label"] for g in groups] == ["טבריה"]
     assert groups[0]["count"] == 3
-    # A bubble carries exactly the recordings tagged with it.
-    assert groups[1]["segment_ids"] == [first.id, second.id]
 
 
 async def test_an_untagged_period_falls_back_to_a_generic_moments_bubble(

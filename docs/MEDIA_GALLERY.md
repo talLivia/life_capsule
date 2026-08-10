@@ -229,6 +229,18 @@ Highlight diversification changed from entity-coverage to QUESTION
 coverage — takes of one question are near-duplicates, and three takes of
 one answer must not fill the slots.
 
+**Update, later the same day — bubbles are DISJOINT.** A recording tagged
+both משפחה and טבריה appeared under both bubbles, which read as a
+duplication bug. Bubbles now PARTITION the recordings: tags are chosen
+greedily by how many still-unassigned recordings they cover (set cover,
+ties by first appearance), each chosen tag claims its unassigned
+recordings, and a tag left covering nothing new never renders as an empty
+echo. Counts are exclusive and sum to at most the period's recordings.
+"All moments" stays period-wide (the reachability decision above), so
+recordings whose tags missed the cap remain reachable; if bubble-scoped
+"all moments" is ever wanted instead, it needs a catch-all bubble for
+unclaimed recordings — not built.
+
 **Titles regenerate with their words** (migration `0024`,
 `raw_segments.moment_title_source` = sha256 of the transcript the title was
 generated from). §1.7's freshness rule was "a title exists", which could
