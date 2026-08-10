@@ -24,18 +24,22 @@ import type { FamilyTree, TreePerson } from '@/lib/types'
  * are about family structure. The split is deliberate: the library never sees
  * a node or an edge.
  *
- * ## Only parent-child relations are drawn
+ * ## Only parent-child relations and marriages are drawn
  *
- * Same-generation relations — siblings, partners — are shown by SHARING A ROW,
- * not by a line. The row already carries that information, and the connectors
- * were pure noise: with four siblings all recorded as siblings of the
- * producer, the lines fanned out from one node and had to be routed around
- * the nodes in between to avoid reading as a chain that nobody recorded.
- * Deleting them deleted that whole problem.
+ * Sibling relations are shown by SHARING A ROW, not by a line. The row
+ * already carries that information, and the connectors were pure noise: with
+ * four siblings all recorded as siblings of the producer, the lines fanned
+ * out from one node and had to be routed around the nodes in between to
+ * avoid reading as a chain that nobody recorded. Deleting them deleted that
+ * whole problem.
  *
- * Note this means a recorded MARRIAGE between two people in the same row is
- * not visible as such — they are simply both in the row. Called out in the
- * caption under the chart rather than left for someone to notice.
+ * A recorded MARRIAGE is the exception, drawn as the short double line
+ * genealogy charts use. It is safe where the sibling connectors were not,
+ * for the same reason the adjacent-column sibling dash is: COUPLES ARE KEPT
+ * ADJACENT by the ordering pass, so the line never has anyone behind it. A
+ * couple here means a spouse edge OR two people with a recorded child in
+ * common — the joining bar below already says the second kind, the double
+ * line says only the first, because only the first is a recorded marriage.
  *
  * ## Descents are one trunk per parent group, not one line per child
  *
@@ -186,16 +190,65 @@ function generationLabel(generation: number): string {
 }
 
 /**
+ * Who forms a COUPLE, for layout purposes: a spouse edge, or two people with
+ * a recorded child in common. Both are recorded facts — this never infers a
+ * marriage, it only reads what an edge already says.
+ *
+ * Derived from co-parenthood as well as spouse edges because the two arrive
+ * separately: the questionnaire captures "their children are ניצן and יובל"
+ * without anyone ever saying "married", and a marriage can be recorded for a
+ * couple whose children are not. Either fact alone is enough that drawing
+ * somebody ELSE between the two misreads the family.
+ */
+function couplePairs(edges: FamilyTree['edges']): [string, string][] {
+  const pairs = new Map<string, [string, string]>()
+  const add = (a: string, b: string) => {
+    if (a === b) return
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`
+    if (!pairs.has(key)) pairs.set(key, [a, b])
+  }
+  const parentsOfChild = new Map<string, Set<string>>()
+  for (const e of edges) {
+    if (e.relation_type === 'spouse') add(e.from_id, e.to_id)
+    // One directed row per relation: 'parent' reads "from is the parent of
+    // to", 'child' the reverse.
+    const [parent, child] =
+      e.relation_type === 'parent'
+        ? [e.from_id, e.to_id]
+        : e.relation_type === 'child'
+          ? [e.to_id, e.from_id]
+          : [null, null]
+    if (!parent || !child) continue
+    if (!parentsOfChild.has(child)) parentsOfChild.set(child, new Set())
+    parentsOfChild.get(child)!.add(parent)
+  }
+  parentsOfChild.forEach((parents) => {
+    const list = Array.from(parents)
+    for (let i = 0; i < list.length; i++)
+      for (let j = i + 1; j < list.length; j++) add(list[i], list[j])
+  })
+  return Array.from(pairs.values())
+}
+
+/**
  * Order each row to reduce crossings: a node sits near the average position of
  * the neighbours it is already connected to in the row above.
  *
  * One pass, top-down. Enough for family-sized graphs, and predictable — an
  * iterative solver would reshuffle the whole chart when a single relation is
  * added, which is worse than a stray crossing on a page people revisit.
+ *
+ * After the sort, COUPLES ARE PULLED ADJACENT. The barycentric pass cannot do
+ * this on its own: a spouse with no relations in the row above sorts to the
+ * end of the row alphabetically, and a sibling whose average lands between
+ * two partners splits them — which is how אמנון נחום came to be drawn in the
+ * middle of a married couple. The partner later in the sorted row moves to
+ * sit beside the earlier one, so the pass disturbs as little as possible.
  */
 function orderRows(
   generations: FamilyTree['generations'],
-  edges: FamilyTree['edges']
+  edges: FamilyTree['edges'],
+  couples: [string, string][]
 ): TreePerson[][] {
   const neighbours = new Map<string, Set<string>>()
   for (const e of edges) {
@@ -223,6 +276,16 @@ function orderRows(
       const diff = key(a) - key(b)
       return diff !== 0 ? diff : a.name.localeCompare(b.name)
     })
+    // Couples adjacent, whatever the sort said. The mover is the LATER
+    // partner, spliced in immediately after the earlier one.
+    for (const [a, b] of couples) {
+      const ia = ordered.findIndex((p) => p.id === a)
+      const ib = ordered.findIndex((p) => p.id === b)
+      if (ia === -1 || ib === -1 || Math.abs(ia - ib) === 1) continue
+      const [anchor, mover] = ia < ib ? [ia, ib] : [ib, ia]
+      const [moved] = ordered.splice(mover, 1)
+      ordered.splice(anchor + 1, 0, moved)
+    }
     rows.push(ordered)
     previousIndex = new Map(ordered.map((p, i) => [p.id, i]))
   }
@@ -253,10 +316,20 @@ const CLICK_SLOP_PX = 5
  * the parent they are a sibling of is the only thing joining it to the main
  * family, which is the point: it should read as an arc reaching over, not as
  * a spine line cutting through.
+ *
+ * A COUPLE OF HEADS IS ONE BAND. An aunt and the spouse she raised children
+ * with are one household, not two side branches — and treating them as two
+ * heads did worse than look odd: each ran its own walk over the SAME
+ * children, whichever ran last silently claimed them, and the two halves of
+ * the couple were left heading separate bands with another head's band free
+ * to land between them. Heads whose couple includes somebody ON the spine
+ * are not banded at all — their place is beside their spouse in the main
+ * family, and the ordering pass keeps them there.
  */
 function assignBands(
   tree: FamilyTree,
-  generationOf: Map<string, number>
+  generationOf: Map<string, number>,
+  couples: [string, string][]
 ): { bandOf: Map<string, string>; headName: Map<string, string> } {
   const family = new Map<string, { id: string; type: string }[]>()
   for (const edge of tree.edges) {
@@ -306,30 +379,69 @@ function assignBands(
 
   // Branch heads: everyone in an ancestor row who is not on the spine — the
   // aunts and uncles. They stay in the main band; their descendants do not.
+  const heads: string[] = []
   for (const row of tree.generations) {
     if (row.generation >= 0) continue
     for (const head of row.people) {
-      if (spine.has(head.id)) continue
-      // The head joins their own band, not the parents' row.
-      bandOf.set(head.id, head.id)
-      headName.set(head.id, nameOf.get(head.id) ?? '')
-      const queue = [head.id]
-      const seen = new Set([head.id])
-      while (queue.length) {
-        const current = queue.shift()!
-        for (const next of family.get(current) ?? []) {
-          if (next.type !== 'parent' && next.type !== 'child') continue
-          if (seen.has(next.id) || spine.has(next.id)) continue
-          // Downwards only: an uncle's PARENT is not part of his branch.
-          if ((generationOf.get(next.id) ?? 0) <= (generationOf.get(current) ?? 0)) continue
-          seen.add(next.id)
-          bandOf.set(next.id, head.id)
-          headName.set(head.id, nameOf.get(head.id) ?? '')
-          queue.push(next.id)
-        }
-      }
+      if (!spine.has(head.id)) heads.push(head.id)
     }
   }
+
+  // Union couples into shared groups. Tiny union-find — a family tree's
+  // couple list is a handful of pairs, so path compression would be ceremony.
+  const canon = new Map<string, string>()
+  const find = (id: string): string => {
+    let current = id
+    while (canon.get(current) !== undefined && canon.get(current) !== current) {
+      current = canon.get(current)!
+    }
+    return current
+  }
+  for (const [a, b] of couples) {
+    const ra = find(a)
+    const rb = find(b)
+    if (ra !== rb) canon.set(ra < rb ? rb : ra, ra < rb ? ra : rb)
+  }
+
+  const headSet = new Set(heads)
+  const groups = new Map<string, string[]>()
+  for (const head of heads) {
+    // A head married into the spine belongs beside their spouse in the main
+    // family, not at the top of a side branch.
+    const groupIds = [head, ...couples.flatMap(([a, b]) =>
+      a === head ? [b] : b === head ? [a] : []
+    )]
+    if (groupIds.some((id) => spine.has(id))) continue
+    const key = find(head)
+    groups.set(key, [...(groups.get(key) ?? []), head])
+  }
+
+  groups.forEach((groupHeads) => {
+    // Stable band id whichever order the heads arrive in.
+    const band = [...groupHeads].sort()[0]
+    const names = groupHeads
+      .map((id) => nameOf.get(id) ?? '')
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+    headName.set(band, names.join(' & '))
+    // ONE walk from the whole couple, with one seen-set — two walks over the
+    // shared children had whichever ran last silently claim them.
+    const queue = [...groupHeads]
+    const seen = new Set(groupHeads)
+    for (const id of groupHeads) bandOf.set(id, band)
+    while (queue.length) {
+      const current = queue.shift()!
+      for (const next of family.get(current) ?? []) {
+        if (next.type !== 'parent' && next.type !== 'child') continue
+        if (seen.has(next.id) || spine.has(next.id) || headSet.has(next.id)) continue
+        // Downwards only: an uncle's PARENT is not part of his branch.
+        if ((generationOf.get(next.id) ?? 0) <= (generationOf.get(current) ?? 0)) continue
+        seen.add(next.id)
+        bandOf.set(next.id, band)
+        queue.push(next.id)
+      }
+    }
+  })
   return { bandOf, headName }
 }
 
@@ -347,16 +459,17 @@ export function FamilyTreeGraph({
   const pressRef = useRef<{ x: number; y: number } | null>(null)
 
   const {
-    placed, rowLabels, descents, siblingLinks, siblingArcs, bandHeadings,
-    arcSpacePx, width, height,
+    placed, rowLabels, descents, siblingLinks, siblingArcs, spouseLinks,
+    bandHeadings, arcSpacePx, width, height,
   } =
     useMemo(() => {
-    const rows = orderRows(tree.generations, tree.edges)
+    const couples = couplePairs(tree.edges)
+    const rows = orderRows(tree.generations, tree.edges, couples)
     const generationOf = new Map<string, number>()
     tree.generations.forEach((row) =>
       row.people.forEach((p) => generationOf.set(p.id, row.generation))
     )
-    const { bandOf, headName } = assignBands(tree, generationOf)
+    const { bandOf, headName } = assignBands(tree, generationOf, couples)
 
     // One band for the producer's own line, then one per side branch. Order is
     // fixed by first appearance so the chart does not reshuffle between loads.
@@ -592,11 +705,53 @@ export function FamilyTreeGraph({
         }
       })
 
+    /**
+     * The marriage line — a recorded spouse edge, drawn as the double line
+     * genealogy charts use, between the couple's facing edges.
+     *
+     * Restricted to ADJACENT columns of the same band for the same reason the
+     * sibling dash is: a longer line passes behind whoever sits between. The
+     * ordering pass makes couples adjacent, so in practice the restriction is
+     * a guard, not a gap — and if a future layout ever fails to seat a couple
+     * together, silently drawing a line through a stranger would be the worse
+     * of the two bugs.
+     *
+     * Only for SPOUSE edges. A couple detected by co-parenthood already shows
+     * as the joining bar below; giving them the marriage line too would claim
+     * a marriage nobody recorded.
+     */
+    const spouseLinks = tree.edges
+      .filter((edge) => {
+        const a = out.get(edge.from_id)
+        const b = out.get(edge.to_id)
+        if (!a || !b || edge.relation_type !== 'spouse') return false
+        if (a.y !== b.y) return false
+        if ((bandOf.get(edge.from_id) ?? MAIN) !== (bandOf.get(edge.to_id) ?? MAIN)) {
+          return false
+        }
+        return (
+          Math.abs((columnOf.get(edge.from_id) ?? 0) - (columnOf.get(edge.to_id) ?? 0)) === 1
+        )
+      })
+      .map((edge) => {
+        const a = out.get(edge.from_id)!
+        const b = out.get(edge.to_id)!
+        const left = a.x < b.x ? a : b
+        const right = a.x < b.x ? b : a
+        return {
+          key: `spouse-${edge.from_id}-${edge.to_id}`,
+          x1: left.x + NODE_W,
+          x2: right.x,
+          y: left.y + NODE_H / 2,
+        }
+      })
+
     return {
       placed: out,
       rowLabels: labels,
       siblingLinks,
       siblingArcs,
+      spouseLinks,
       descents: descentList,
       bandHeadings,
       arcSpacePx: arcSpace,
@@ -754,6 +909,15 @@ export function FamilyTreeGraph({
                     d={`M ${link.x1} ${link.y} H ${link.x2}`}
                     strokeDasharray="4 4"
                   />
+                ))}
+                {/* A recorded marriage: the genealogy double line. Solid where
+                    the sibling dash is dashed, so the two same-row claims can
+                    never be misread as each other. */}
+                {spouseLinks.map((link) => (
+                  <g key={link.key} stroke="rgb(148 163 184 / 0.55)">
+                    <path d={`M ${link.x1} ${link.y - 2.5} H ${link.x2}`} />
+                    <path d={`M ${link.x1} ${link.y + 2.5} H ${link.x2}`} />
+                  </g>
                 ))}
                 {descents.map((d) => {
                   const cx = (p: Placed) => p.x + NODE_W / 2

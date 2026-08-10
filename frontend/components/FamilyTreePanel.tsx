@@ -99,18 +99,35 @@ function RelationEditor({
   person,
   people,
   types,
+  parentsOf,
   onSaved,
 }: {
   person: TreePerson
   people: TreePerson[]
   types: { value: string; label: string }[]
+  /** Recorded parents by entity id, for the side-of-family question. */
+  parentsOf: Map<string, TreePerson[]>
   onSaved: () => void
 }) {
   const [relationType, setRelationType] = useState('')
   const [otherId, setOtherId] = useState('')
+  const [sideParentId, setSideParentId] = useState('')
   const [saving, setSaving] = useState(false)
 
   const others = people.filter((p) => p.id !== person.id)
+
+  /**
+   * WHICH SIDE OF THE FAMILY — the same clarifying question the
+   * post-recording questionnaire asks, in the same words, because the edge
+   * alone has the same gap here: "uncle" places somebody in the parents' row
+   * and says nothing about which parent they are the sibling of. Offered
+   * whenever the other end has recorded parents to choose between; optional,
+   * exactly like the questionnaire's version — not knowing the side must not
+   * block recording the relation.
+   */
+  const sideKind =
+    relationType === 'aunt_uncle' || relationType === 'grandparent' ? relationType : null
+  const sideParents = sideKind && otherId ? (parentsOf.get(otherId) ?? []) : []
 
   const save = async () => {
     if (!relationType || !otherId) return
@@ -122,6 +139,7 @@ function RelationEditor({
         // The card belongs to `person`, and the sentence reads
         // "<person> is the <type> of <other>" — so this end is the subject.
         direction: 'outgoing',
+        ...(sideParents.length && sideParentId ? { side_parent_id: sideParentId } : {}),
       })
       const replaced = result?.replaced?.length ?? 0
       toast.success(
@@ -131,6 +149,7 @@ function RelationEditor({
       )
       setRelationType('')
       setOtherId('')
+      setSideParentId('')
       onSaved()
     } catch (err: unknown) {
       const detail = (err as ApiError)?.response?.data?.detail || (err as ApiError)?.message
@@ -176,6 +195,39 @@ function RelationEditor({
         </select>
       </div>
 
+      {/* Same wording as the questionnaire (EntityConfirmModal's side
+          question), so the two flows read as one feature. Clicking the
+          chosen parent again clears it — a way back to saying nothing. */}
+      {sideParents.length > 0 && (
+        <fieldset className="flex flex-col gap-1.5">
+          <legend className="text-xs text-white leading-relaxed mb-1">
+            {sideKind === 'grandparent'
+              ? 'Whose mother or father are they?'
+              : 'Whose brother or sister are they?'}
+          </legend>
+          <div className="flex flex-wrap items-center gap-2">
+            {sideParents.map((parent) => {
+              const chosen = sideParentId === parent.id
+              return (
+                <button
+                  key={parent.id}
+                  type="button"
+                  disabled={saving}
+                  onClick={() => setSideParentId(chosen ? '' : parent.id)}
+                  className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
+                    chosen
+                      ? 'border-primary-400 bg-primary-500/15 text-white'
+                      : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
+                  }`}
+                >
+                  <span dir="auto">{parent.name}</span>
+                </button>
+              )
+            })}
+          </div>
+        </fieldset>
+      )}
+
       {/* Stated before the click, on the same screen — not a dialog asking
           permission. The producer went out of their way to say this. */}
       <p className="text-[11px] text-gray-500">
@@ -200,6 +252,7 @@ function MomentsModal({
   person,
   people,
   relationTypes,
+  parentsOf,
   moments,
   loading,
   onClose,
@@ -208,6 +261,7 @@ function MomentsModal({
   person: TreePerson
   people: TreePerson[]
   relationTypes: { value: string; label: string }[]
+  parentsOf: Map<string, TreePerson[]>
   moments: EntityMoment[] | null
   loading: boolean
   onClose: () => void
@@ -279,6 +333,7 @@ function MomentsModal({
             person={person}
             people={people}
             types={relationTypes}
+            parentsOf={parentsOf}
             onSaved={onSaved}
           />
         )}
@@ -358,6 +413,30 @@ export function FamilyTreePanel() {
     ? [...tree.generations.flatMap((row) => row.people), ...tree.unplaced]
     : []
 
+  // Recorded parents by person, for the side-of-family question — the same
+  // list the questionnaire offers. From the edges the tree already carries,
+  // so no extra request and no second source of truth.
+  const parentsOf = new Map<string, TreePerson[]>()
+  if (tree) {
+    const byId = new Map(everyone.map((p) => [p.id, p]))
+    for (const edge of tree.edges) {
+      // One directed row per relation: 'parent' reads "from is the parent of
+      // to", 'child' the reverse. Both spell out a parent.
+      const [parentId, childId] =
+        edge.relation_type === 'parent'
+          ? [edge.from_id, edge.to_id]
+          : edge.relation_type === 'child'
+            ? [edge.to_id, edge.from_id]
+            : [null, null]
+      if (!parentId || !childId) continue
+      const parent = byId.get(parentId)
+      if (!parent) continue
+      const list = parentsOf.get(childId) ?? []
+      if (!list.some((p) => p.id === parent.id)) list.push(parent)
+      parentsOf.set(childId, list)
+    }
+  }
+
   useEffect(() => {
     api
       .getRelationTypes()
@@ -435,10 +514,10 @@ export function FamilyTreePanel() {
             />
           </div>
           <p className="text-[11px] text-gray-500 mt-2.5 leading-relaxed">
-            Lines are recorded parent–child relations. People in the same row are the
-            same generation — siblings and partners share a row rather than being joined
-            by a line, so a recorded marriage shows as two people side by side. Drag to
-            move, scroll to zoom.
+            Lines are recorded parent–child relations; a double line between two people
+            is a recorded marriage. People in the same row are the same generation —
+            siblings share a row rather than being joined by a line. Drag to move,
+            scroll to zoom.
           </p>
         </>
       )}
@@ -489,6 +568,7 @@ export function FamilyTreePanel() {
           person={selected}
           people={everyone}
           relationTypes={relationTypes}
+          parentsOf={parentsOf}
           moments={moments}
           loading={momentsLoading}
           onClose={() => setSelected(null)}

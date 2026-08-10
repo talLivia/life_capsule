@@ -701,9 +701,19 @@ async def set_relation_by_hand(
     target_generation = (
         None
         if anchor_generation is None or wanted.generation_delta is None
-        # `from` is the subject: "<from> is the <type> of <to>", and the delta
-        # is stated from the subject's side.
-        else anchor_generation - wanted.generation_delta
+        # `from` is the subject: "<from> is the <type> of <to>", and the tree
+        # walks it as gen(from) = gen(to) + delta (see _assign_generations —
+        # `parent` carries -1, and a parent sits one row ABOVE their child).
+        #
+        # ⚠️ This sign was FLIPPED here for as long as the function existed,
+        # and every test passed anyway: when the old and new edge carry the
+        # SAME delta the flip cancels out, and in the tested mixed-delta cases
+        # both sides happened to disagree, so "replace" was right for the
+        # wrong reason. It surfaced the first time an agreeing mixed-delta
+        # edge existed — placing somebody as a parent's child computed their
+        # target a generation ABOVE the parent, decided their sibling, spouse
+        # and children edges all disagreed with it, and deleted the lot.
+        else anchor_generation + wanted.generation_delta
     )
 
     # Every edge touching the person being placed, in either direction.
@@ -765,12 +775,16 @@ async def set_relation_by_hand(
             # disagree. Left alone rather than guessed at — the tree's own rule.
             continue
 
-        # What generation this edge implies for the person being placed.
+        # What generation this edge implies for the person being placed —
+        # same convention as the target above: gen(from) = gen(to) + delta,
+        # so an edge FROM the person implies other + delta, and an edge TO
+        # them implies other - delta. (Both signs were flipped alongside the
+        # target's; see the warning there.)
         delta = rtype.generation_delta
         implied = (
-            other_generation - delta
+            other_generation + delta
             if relation.from_entity_id == from_entity_id
-            else other_generation + delta
+            else other_generation - delta
         )
         if implied == target_generation:
             # Agrees with where this edit puts them. Keep it — replacing a

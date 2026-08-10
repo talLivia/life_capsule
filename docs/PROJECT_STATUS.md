@@ -1357,6 +1357,52 @@ not lower:
 Below that threshold, conditional inclusion plus the regression check is the
 better trade. Revisit when the third or fourth block is proposed, not before.
 
+## Family tree: couples, sides, and a latent sign bug — 2026-08-10
+
+Four reported tree defects, three roots. All landed together.
+
+**🚨 The real find: `set_relation_by_hand`'s replacement math had its
+generation sign FLIPPED since the function existed.** The tree walks an edge
+as gen(from) = gen(to) + delta; the replacement target and the implied
+generations were both computed with minus. Latent because a same-delta
+replacement cancels the flip, and the tested mixed-delta cases disagreed
+under both conventions — "replace" was right for the wrong reason. It
+surfaces on the first AGREEING mixed-delta neighbourhood: placing somebody
+as a parent's child computed their target a generation ABOVE the parent and
+deleted their agreeing sibling, spouse and children edges as contradictions.
+Fixed with a regression test
+(`test_an_agreeing_edge_with_a_different_delta_is_kept`); the two new
+features below would each have tripped it on their first real use.
+
+**Manual uncle/aunt placement now asks the side of the family** — the manual
+twin of the questionnaire's side question, same wording, same resulting edge
+(`sibling` of the chosen parent; `parent` of them for a grandparent).
+`SetRelationRequest.side_parent_id`, validated against the other end's
+recorded parents. Optional, exactly like the questionnaire's version.
+
+**The layout now understands couples.** A couple = a spouse edge OR two
+people with a recorded child in common — recorded facts only, never
+inference. Three consequences: couples are pulled adjacent after the
+barycentric sort (a spouse with no neighbours above used to sort to the end
+of the row alphabetically); two branch heads who form a couple share ONE band
+(אילן & רחל were two bands with אמנון נחום's free to land between them, and
+their shared children were silently claimed by whichever head's walk ran
+last); and a recorded marriage is drawn as the genealogy double line between
+adjacent partners — solid where the sibling dash is dashed. A head married
+into the spine is not banded at all; their place is beside their spouse.
+
+**The five-way sibling fork was a DATA gap, not a renderer bug.** The
+renderer groups children by exact recorded parent set, order-independently —
+but רז/עדי/חן were children of אילנה alone (the tree editor writes one
+relation per save, so the second parent was never stated) and ניר had no
+parent edges at all. `scripts/complete_sibling_parentage.py` (dry-run by
+default, the run's record) added the five missing child edges; all five
+children of צבי+אילנה now hang off one bus. Worth remembering: a
+single-relation editor plus a two-parent family produces half-linked
+children as its NORMAL output — the questionnaire's parentage question
+exists precisely to close this, and the manual flow still has no equivalent
+for siblings.
+
 ## Known gaps / tech debt
 
 - 🚨 **KNOWN GAP, deliberately unfixed (2026-08-10): a "עוד" question can

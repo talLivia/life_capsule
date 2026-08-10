@@ -467,6 +467,15 @@ class SetRelationRequest(BaseModel):
     other_entity_id: str = Field(min_length=1)
     relation_type: str = Field(min_length=1)
     direction: Literal["outgoing", "incoming"] = "outgoing"
+    # WHICH SIDE OF THE FAMILY, for aunt_uncle and grandparent only — the same
+    # question the post-recording questionnaire asks (side_questions /
+    # write_sides), because the edge alone has the same gap either way: it
+    # places somebody in a row and says nothing about which parent they attach
+    # to. The id of one of the other end's recorded parents; the write adds
+    # the attaching edge (sibling of that parent for an aunt/uncle, parent of
+    # that parent for a grandparent). Optional exactly like the questionnaire's
+    # version — not knowing the side must not block recording the relation.
+    side_parent_id: Optional[str] = None
 
 
 class RelationEdit(BaseModel):

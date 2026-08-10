@@ -25,7 +25,7 @@ from app.models import User
 from app.schemas import EntityMomentResponse, SetRelationRequest, TreeResponse
 from app.services import entity_store, family_tree, timeline
 from sqlalchemy import select
-from app.models import Entity, RelationType
+from app.models import Entity, EntityRelation, RelationType
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -163,6 +163,57 @@ async def set_relation(
         )
     except ValueError as invalid:
         raise HTTPException(status_code=400, detail=str(invalid))
+
+    # WHICH SIDE OF THE FAMILY — the manual twin of the questionnaire's side
+    # question (analysis_graph.side_questions -> entity_store.write_sides).
+    # An aunt_uncle or grandparent edge places somebody in a row and says
+    # nothing about which parent they attach to, so without this second edge
+    # the parents' row is boxes with nothing marking whose sibling (or whose
+    # parent) the new arrival is. Same answer, same resulting edge, just
+    # stated from the tree instead of after a recording.
+    if payload.side_parent_id:
+        if payload.relation_type not in ("aunt_uncle", "grandparent"):
+            raise HTTPException(
+                status_code=400,
+                detail="A side of the family only applies to an aunt/uncle or grandparent.",
+            )
+        # The relative is the SUBJECT end ("<from> is the <type> of <to>"),
+        # and the side parent must be a recorded parent of the OTHER end —
+        # the questionnaire offers exactly that list, and accepting anyone
+        # else would attach the relative to a branch nobody stated.
+        is_parent_of_anchor = (
+            await db.execute(
+                select(Entity.id)
+                .join(EntityRelation, EntityRelation.from_entity_id == Entity.id)
+                .where(
+                    Entity.id == payload.side_parent_id,
+                    Entity.producer_id == user.id,
+                    EntityRelation.to_entity_id == to_id,
+                    EntityRelation.relation_type == "parent",
+                )
+            )
+        ).scalar_one_or_none()
+        if is_parent_of_anchor is None:
+            raise HTTPException(
+                status_code=400,
+                detail="The side must be one of their recorded parents.",
+            )
+        try:
+            side_result = await entity_store.set_relation_by_hand(
+                db,
+                producer_id=user.id,
+                from_entity_id=from_id,
+                to_entity_id=payload.side_parent_id,
+                # An aunt or uncle is that parent's SIBLING; a grandparent is
+                # that parent's PARENT — the identical mapping write_sides
+                # applies to the questionnaire's answer.
+                relation_type=(
+                    "sibling" if payload.relation_type == "aunt_uncle" else "parent"
+                ),
+            )
+        except ValueError as invalid:
+            raise HTTPException(status_code=400, detail=str(invalid))
+        result["replaced"] = [*result["replaced"], *side_result["replaced"]]
 
     # Stamp the ask-once questions as settled. The producer has just answered
     # by hand what those questions exist to ask, and a question that comes back

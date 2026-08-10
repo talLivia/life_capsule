@@ -347,7 +347,14 @@ export const api = {
    *  Replaces whatever contradicts it; returns what was replaced. */
   setEntityRelation: async (
     entityId: string,
-    body: { other_entity_id: string; relation_type: string; direction?: 'outgoing' | 'incoming' },
+    body: {
+      other_entity_id: string
+      relation_type: string
+      direction?: 'outgoing' | 'incoming'
+      /** For aunt_uncle/grandparent: which of the other end's parents they
+       *  attach to — the manual twin of the questionnaire's side question. */
+      side_parent_id?: string
+    },
   ) => {
     const response = await apiClient.post(`/api/v1/entities/${entityId}/relations`, body)
     return response.data

@@ -36,6 +36,8 @@ async def archive(db_session):
         ("child", 1, False, "parent"),
         ("sibling", 0, True, None),
         ("spouse", 0, True, None),
+        ("aunt_uncle", -1, False, "niece_nephew"),
+        ("grandparent", -2, False, "grandchild"),
     ]:
         db_session.add(
             RelationType(
@@ -357,3 +359,140 @@ async def test_saving_the_same_relation_twice_does_not_duplicate_it(db_session, 
 
     edges = await _edges(db_session, archive["chen"], archive["raz"])
     assert len(edges) == 1, "one statement, one row, however many times it is saved"
+
+
+async def test_an_agreeing_edge_with_a_different_delta_is_kept(db_session, archive):
+    """THE SIGN REGRESSION. gen(from) = gen(to) + delta is how the tree walks
+    an edge, and the replacement math had it backwards — computing a child's
+    target a generation ABOVE the parent. It stayed hidden because a same-delta
+    replacement cancels the flip, and the mixed-delta cases the other tests
+    cover happened to disagree on both conventions. The first AGREEING
+    mixed-delta neighbourhood — a sibling, a spouse — was deleted wholesale
+    the moment somebody was placed as their parent's child.
+    """
+    # Tzvi is the producer's parent; Chen is the producer's sibling with a
+    # spouse. Placing Chen as Tzvi's child agrees with everything already
+    # recorded, so NOTHING may be replaced.
+    await archive["relate"](archive["tzvi"], "parent", archive["root"])
+    await archive["relate"](archive["chen"], "sibling", archive["root"])
+    await archive["relate"](archive["raz"], "spouse", archive["chen"])
+
+    result = await entity_store.set_relation_by_hand(
+        db_session,
+        producer_id=archive["user"].id,
+        from_entity_id=archive["chen"].id,
+        to_entity_id=archive["tzvi"].id,
+        relation_type="child",
+    )
+
+    assert result["replaced"] == [], "agreeing sibling and spouse edges must survive"
+    assert len(await _edges(db_session, archive["chen"], archive["root"])) == 1
+    assert len(await _edges(db_session, archive["raz"], archive["chen"])) == 1
+
+    from app.services import family_tree
+
+    generations = await family_tree.generations_for(db_session, archive["user"].id)
+    assert generations[archive["chen"].id] == 0, "a parent's child sits a generation BELOW them"
+
+
+# ── the side-of-family question, asked from the tree ─────────────────────────
+#
+# The manual twin of the questionnaire's side question (side_questions /
+# write_sides): an aunt_uncle or grandparent edge places somebody in a row and
+# says nothing about which parent they attach to. The endpoint accepts
+# side_parent_id and writes the attaching edge the questionnaire would have.
+
+
+async def _post_relation(client, archive, entity, body):
+    from app.api.v1.users import create_access_token
+
+    token = create_access_token({"sub": archive["user"].id})
+    return await client.post(
+        f"/api/v1/entities/{entity.id}/relations",
+        json=body,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+async def test_setting_an_uncle_by_hand_can_name_the_side(client, db_session, archive):
+    """"Raz is your uncle, on Tzvi's side" writes BOTH edges the questionnaire
+    would: the aunt_uncle edge, and the sibling edge that attaches Raz beside
+    Tzvi in the parents' row — the whole reason the side question exists."""
+    await archive["relate"](archive["tzvi"], "parent", archive["root"])
+    await db_session.commit()
+
+    response = await _post_relation(
+        client, archive, archive["raz"],
+        {
+            "other_entity_id": archive["root"].id,
+            "relation_type": "aunt_uncle",
+            "side_parent_id": archive["tzvi"].id,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    uncle_edges = await _edges(db_session, archive["raz"], archive["root"])
+    assert [e.relation_type for e in uncle_edges] == ["aunt_uncle"]
+    side_edges = await _edges(db_session, archive["raz"], archive["tzvi"])
+    assert [e.relation_type for e in side_edges] == ["sibling"], (
+        "the side answer is the sibling edge to that parent — and the "
+        "aunt_uncle edge just written must survive it (the sign regression "
+        "made the second write delete the first)"
+    )
+
+
+async def test_setting_a_grandparent_by_hand_attaches_them_as_the_parents_parent(
+    client, db_session, archive
+):
+    await archive["relate"](archive["tzvi"], "parent", archive["root"])
+    await db_session.commit()
+
+    response = await _post_relation(
+        client, archive, archive["raz"],
+        {
+            "other_entity_id": archive["root"].id,
+            "relation_type": "grandparent",
+            "side_parent_id": archive["tzvi"].id,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    side_edges = await _edges(db_session, archive["raz"], archive["tzvi"])
+    assert [e.relation_type for e in side_edges] == ["parent"], (
+        "a grandparent on Tzvi's side is Tzvi's PARENT — same mapping as write_sides"
+    )
+
+
+async def test_the_side_must_be_a_recorded_parent(client, db_session, archive):
+    """Chen is not a recorded parent of the producer, so attaching an uncle to
+    'Chen's side' would invent a branch nobody stated. Refused, and the main
+    relation is not half-written either — the request fails as a whole."""
+    await db_session.commit()
+
+    response = await _post_relation(
+        client, archive, archive["raz"],
+        {
+            "other_entity_id": archive["root"].id,
+            "relation_type": "aunt_uncle",
+            "side_parent_id": archive["chen"].id,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "recorded parent" in response.json()["detail"]
+
+
+async def test_a_side_makes_no_sense_for_a_sibling(client, db_session, archive):
+    await archive["relate"](archive["tzvi"], "parent", archive["root"])
+    await db_session.commit()
+
+    response = await _post_relation(
+        client, archive, archive["raz"],
+        {
+            "other_entity_id": archive["root"].id,
+            "relation_type": "sibling",
+            "side_parent_id": archive["tzvi"].id,
+        },
+    )
+
+    assert response.status_code == 400
