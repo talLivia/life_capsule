@@ -236,10 +236,28 @@ greedily by how many still-unassigned recordings they cover (set cover,
 ties by first appearance), each chosen tag claims its unassigned
 recordings, and a tag left covering nothing new never renders as an empty
 echo. Counts are exclusive and sum to at most the period's recordings.
-"All moments" stays period-wide (the reachability decision above), so
-recordings whose tags missed the cap remain reachable; if bubble-scoped
-"all moments" is ever wanted instead, it needs a catch-all bubble for
-unclaimed recordings — not built.
+
+### ✅ 1.9 The partition is total; bubbles are the sole route — built 2026-08-11
+
+Directed follow-up to §1.8's partition, closing the reachability model:
+
+- **A catch-all bubble makes the partition TOTAL.** Recordings whose tags
+  lost the 5-bubble cap, and untagged recordings alike, land in **עוד** —
+  appended after the tag bubbles. When it is the ONLY bubble (nothing
+  tagged yet) it is labelled **רגעים** instead: "more" than nothing reads
+  wrong. Every recording now belongs to exactly one bubble, guaranteed by
+  `test_leftovers_land_in_a_catch_all_bubble_nothing_is_stranded`, which
+  asserts the exact partition — none stranded, none duplicated.
+- **The period-wide "all moments" screen is GONE**, and with it the Phase 1
+  per-entity filter chips. Bubbles are the sole navigation into a period's
+  recordings; "all N moments" inside an open bubble now reveals the
+  BUBBLE's own full list, nothing wider. §1.2's reachability rule holds
+  through the partition instead of through an escape hatch.
+- **The payload no longer carries `people`.** Nothing rendered it once the
+  chips went. `_people_in` survives internally as the caption source (a
+  highlight quotes what a recording said about its most-mentioned person);
+  entity-centric browsing lives on the family tree page, which has its own
+  endpoint.
 
 **Titles regenerate with their words** (migration `0024`,
 `raw_segments.moment_title_source` = sha256 of the transcript the title was

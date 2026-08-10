@@ -7,7 +7,6 @@ import type {
   ApiError,
   Timeline,
   TimelineGroup,
-  TimelinePerson,
   TimelinePeriod,
   TimelineRecording,
 } from '@/lib/types'
@@ -18,15 +17,14 @@ import type {
  * ORDER COMES FROM THE SERVER and is the question file's own order. This file
  * never sorts, never reorders by year, and knows no category name.
  *
- * THE SHAPE IS CONSTANT AT ANY ARCHIVE SIZE (docs/MEDIA_GALLERY.md §1.7-8).
+ * THE SHAPE IS CONSTANT AT ANY ARCHIVE SIZE (docs/MEDIA_GALLERY.md §1.7-9).
  * The collapsed card is title, one sentence, and bubbles made of REAL TAG
- * CONTENT — the period's own topic tags, coverage-ranked and capped
- * server-side — never a chip per name or a row per recording, whatever
- * exists underneath. The card is static; bubbles are the only way in.
- * Opening a bubble shows a CAPPED highlight selection; the complete PERIOD
- * list (and the per-entity chips from Phase 1) lives one click deeper,
- * behind "all moments" — period-wide deliberately, since capped tags cover
- * less than everything and every recording must stay reachable. Raw
+ * CONTENT — the period's own topic tags, set-cover-chosen and capped
+ * server-side, partitioning the recordings totally: every recording belongs
+ * to exactly one bubble (the catch-all holds what no winning tag claimed).
+ * The card is static and bubbles are the SOLE route in — there is no
+ * period-wide list or filter view. Opening a bubble shows a CAPPED
+ * highlight selection; the bubble's own full list is one click deeper. Raw
  * interview-question text never renders at any level — a moment's only name
  * is its generated content title.
  *
@@ -37,13 +35,11 @@ import type {
  * recording is a question not yet answered, not a fact about the life.
  */
 
-/** Which bubble is open and how deep. `person` only exists inside the
- *  "all moments" level — highlights are curated, not filtered. */
+/** Which bubble is open, and whether it shows highlights or its full list. */
 interface Expansion {
   category: string
   group: TimelineGroup
   showAll: boolean
-  person: TimelinePerson | null
 }
 
 interface RecordingSelection {
@@ -75,37 +71,6 @@ function GroupBubble({
     >
       <span dir="auto" className="text-sm text-white">{group.label}</span>
       <span className="text-[11px] text-primary-300 ml-1.5">×{group.count}</span>
-    </button>
-  )
-}
-
-function PersonChip({
-  person,
-  onSelect,
-  selected,
-}: {
-  person: TimelinePerson
-  onSelect: (p: TimelinePerson) => void
-  selected: boolean
-}) {
-  return (
-    <button
-      type="button"
-      onClick={() => onSelect(person)}
-      title={selected ? 'Show every moment again' : `Only the moments about ${person.name}`}
-      className={`px-3 py-1.5 rounded-xl border text-left transition-colors ${
-        selected
-          ? 'border-primary-400 bg-primary-500/15'
-          : 'border-white/10 bg-surface-800/50 hover:border-white/25'
-      }`}
-    >
-      <span dir="auto" className="text-sm text-white">{person.name}</span>
-      {person.year_start && (
-        <span className="text-[11px] text-gray-500 ml-1.5">{person.year_start}</span>
-      )}
-      {person.mentions > 1 && (
-        <span className="text-[11px] text-primary-300 ml-1.5">×{person.mentions}</span>
-      )}
     </button>
   )
 }
@@ -157,7 +122,6 @@ function Period({
   onSelectGroup,
   onShowAll,
   onBackToHighlights,
-  onSelectPerson,
   playingSegmentId,
   onPlay,
 }: {
@@ -166,23 +130,19 @@ function Period({
   onSelectGroup: (g: TimelineGroup) => void
   onShowAll: () => void
   onBackToHighlights: () => void
-  onSelectPerson: (p: TimelinePerson) => void
   playingSegmentId: string | null
   onPlay: (r: TimelineRecording) => void
 }) {
   const group = expansion?.group ?? null
-  const person = expansion?.person ?? null
   const byId = new Map(period.recordings.map((r) => [r.segment_id, r]))
 
-  // "All moments" — the deepest level, and the only one whose length follows
-  // the archive. Deliberately PERIOD-wide whichever bubble opened it: capped
-  // tags cover less than everything, and this is where reachability lives.
-  // Chips narrow it per person.
-  const chipPeople = group ? period.people : []
+  // The bubble's own full list — bubbles partition the period, so this is
+  // the deepest level and the only one whose length follows the archive.
+  // There is no period-wide list: the partition is the navigation.
   const allRecordings = group
-    ? person
-      ? period.recordings.filter((r) => person.segment_ids.includes(r.segment_id))
-      : period.recordings
+    ? group.segment_ids
+        .map((sid) => byId.get(sid))
+        .filter((r): r is TimelineRecording => r !== undefined)
     : []
 
   return (
@@ -242,13 +202,13 @@ function Period({
                     />
                   )
                 })}
-                {period.recordings.length > group.highlights.length && (
+                {group.segment_ids.length > group.highlights.length && (
                   <button
                     type="button"
                     onClick={onShowAll}
                     className="self-start flex items-center gap-1 text-xs text-primary-300 hover:text-primary-200 mt-1"
                   >
-                    All moments ({period.recordings.length})
+                    All {group.segment_ids.length} moments
                     <ChevronRight size={13} />
                   </button>
                 )}
@@ -263,18 +223,6 @@ function Period({
                   <ChevronLeft size={13} />
                   Highlights
                 </button>
-                {chipPeople.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {chipPeople.map((p) => (
-                      <PersonChip
-                        key={p.id}
-                        person={p}
-                        selected={person?.id === p.id}
-                        onSelect={onSelectPerson}
-                      />
-                    ))}
-                  </div>
-                )}
                 <div className="flex flex-col gap-1.5">
                   {allRecordings.map((recording) => (
                     <MomentRow
@@ -321,15 +269,8 @@ export function TimelinePanel() {
     setExpansion((current) =>
       current?.category === category && current.group.key === group.key
         ? null
-        : { category, group, showAll: false, person: null }
+        : { category, group, showAll: false }
     )
-  }
-
-  const selectPerson = (category: string) => (person: TimelinePerson) => {
-    setExpansion((current) => {
-      if (current?.category !== category) return current
-      return { ...current, person: current.person?.id === person.id ? null : person }
-    })
   }
 
   if (loading) {
@@ -380,9 +321,8 @@ export function TimelinePanel() {
                   setExpansion((c) => (c ? { ...c, showAll: true } : c))
                 }
                 onBackToHighlights={() =>
-                  setExpansion((c) => (c ? { ...c, showAll: false, person: null } : c))
+                  setExpansion((c) => (c ? { ...c, showAll: false } : c))
                 }
-                onSelectPerson={selectPerson(period.category)}
                 playingSegmentId={playing?.recording.segment_id ?? null}
                 onPlay={(recording) => setPlaying({ category: period.category, recording })}
               />

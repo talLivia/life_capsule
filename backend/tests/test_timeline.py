@@ -201,16 +201,15 @@ async def test_a_period_with_no_named_entities_shows_its_recordings(
     )
 
     period = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]
-    assert period["people"] == []
     assert [r["segment_id"] for r in period["recordings"]] == [segment.id]
     assert period["recordings"][0]["video_url"] == "https://cdn/x.mp4"
-    # With the card static, the moments bubble is the route in — it must
-    # exist and carry this recording even though no entity group does.
+    # With the card static, the catch-all bubble is the route in — it must
+    # exist and carry this recording even though nothing tagged it.
     moments = period["groups"][0]
-    assert moments["key"] == "moments"
+    assert moments["key"] == "more"
     assert moments["segment_ids"] == [segment.id]
     assert [h["segment_id"] for h in moments["highlights"]] == [segment.id]
-    # Its caption is None — the moments group's titles carry the content.
+    # Its caption is None — nobody was named, the title carries the content.
     assert moments["highlights"][0]["caption"] is None
 
 
@@ -288,15 +287,43 @@ async def test_an_untagged_period_falls_back_to_a_generic_moments_bubble(
     db_session, archive
 ):
     """No tags yet (mid-processing, or a pre-topics archive) must not mean no
-    way in — the card is static, so a bubble must always exist."""
+    way in — the card is static, so a bubble must always exist. As the ONLY
+    bubble it is labelled רגעים, not עוד — "more" than nothing reads wrong."""
     user, session = archive
     _, question_id = _live_ids(1)[0]
     segment = await _record(db_session, session, question_id)
 
     groups = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]["groups"]
-    assert [g["key"] for g in groups] == ["moments"]
+    assert [g["key"] for g in groups] == ["more"]
     assert groups[0]["label"] == "רגעים"
     assert groups[0]["segment_ids"] == [segment.id]
+
+
+async def test_leftovers_land_in_a_catch_all_bubble_nothing_is_stranded(
+    db_session, archive
+):
+    """Bubbles are the SOLE route into a period (the period-wide "all
+    moments" screen is gone), so the partition must be TOTAL: recordings
+    whose tags lost the cap, and untagged recordings, land in עוד — and
+    every recording belongs to exactly one bubble."""
+    user, session = archive
+    _, question_id = _live_ids(1)[0]
+    winners = [
+        await _record(db_session, session, question_id, topic_tags=[f"תג{i}"])
+        for i in range(5)
+    ]
+    capped_out = await _record(db_session, session, question_id, topic_tags=["תג נדיר"])
+    untagged = await _record(db_session, session, question_id)
+
+    groups = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]["groups"]
+    assert [g["label"] for g in groups] == ["תג0", "תג1", "תג2", "תג3", "תג4", "עוד"]
+    assert groups[-1]["key"] == "more"
+    assert groups[-1]["segment_ids"] == [capped_out.id, untagged.id]
+    # The invariant the whole model rests on: exactly one bubble per
+    # recording, none stranded, none duplicated.
+    seen = [sid for g in groups for sid in g["segment_ids"]]
+    assert sorted(seen) == sorted(s.id for s in winners + [capped_out, untagged])
+    assert len(seen) == len(set(seen))
 
 
 async def test_highlights_are_capped_diversified_and_chronological(
@@ -352,67 +379,28 @@ async def test_every_period_carries_its_summary_sentence(db_session, archive):
     assert period["summary"] == "משפט סיכום אחד."
 
 
-async def test_people_carry_the_segment_ids_that_mention_them(db_session, archive):
-    """The filter: selecting a person narrows the recordings already shown,
-    so each person must say which segments mention them."""
-    user, session = archive
-    _, question_id = _live_ids(1)[0]
-    mentioned_in = await _record(db_session, session, question_id)
-    not_mentioned_in = await _record(db_session, session, question_id)
-
-    person = Entity(producer_id=user.id, name="ניר", normalized_name="ניר", type="person")
-    db_session.add(person)
-    await db_session.flush()
-    db_session.add(EntityMention(entity_id=person.id, raw_segment_id=mentioned_in.id))
-    await db_session.flush()
-
-    period = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]
-    assert period["people"][0]["segment_ids"] == [mentioned_in.id]
-    assert not_mentioned_in.id in {r["segment_id"] for r in period["recordings"]}
-
-
-async def test_people_are_listed_by_how_often_this_period_mentions_them(
-    db_session, archive
-):
+async def test_captions_quote_the_most_mentioned_person(db_session, archive):
+    """The payload carries no people list any more (§1.9) — what remains of
+    the mention data is the caption rule: a highlight quotes what the
+    recording said about its MOST-mentioned person, so the mentions-desc
+    ordering inside _people_in is still load-bearing."""
     user, session = archive
     _, question_id = _live_ids(1)[0]
     one = await _record(db_session, session, question_id)
     two = await _record(db_session, session, question_id)
 
     rare = Entity(producer_id=user.id, name="Rare", normalized_name="rare", type="person")
-    often = Entity(producer_id=user.id, name="Often", normalized_name="often",
-                   type="person", year_start=1948)
+    often = Entity(producer_id=user.id, name="Often", normalized_name="often", type="person")
     db_session.add_all([rare, often])
     await db_session.flush()
     db_session.add_all([
-        EntityMention(entity_id=rare.id, raw_segment_id=one.id),
-        EntityMention(entity_id=often.id, raw_segment_id=one.id),
+        EntityMention(entity_id=rare.id, raw_segment_id=one.id, summary="הנדיר"),
+        EntityMention(entity_id=often.id, raw_segment_id=one.id, summary="השכיח"),
         EntityMention(entity_id=often.id, raw_segment_id=two.id),
     ])
     await db_session.flush()
 
-    people = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]["people"]
-    assert [p["name"] for p in people] == ["Often", "Rare"]
-    # A year decorates; it never orders. See the module header.
-    assert people[0]["year_start"] == 1948 and people[1]["year_start"] is None
-
-
-async def test_someone_in_two_periods_appears_in_both(db_session, archive):
-    """A person is not owned by one life stage, and that needs no special
-    case — it falls out of matching per period."""
-    user, session = archive
-    (cat_a, q_a), (cat_b, q_b) = _live_ids(2)
-    first = await _record(db_session, session, q_a)
-    second = await _record(db_session, session, q_b, 1)
-    person = Entity(producer_id=user.id, name="Both", normalized_name="both", type="person")
-    db_session.add(person)
-    await db_session.flush()
-    db_session.add_all([
-        EntityMention(entity_id=person.id, raw_segment_id=first.id),
-        EntityMention(entity_id=person.id, raw_segment_id=second.id),
-    ])
-    await db_session.flush()
-
-    periods = (await timeline.build_timeline(db_session, user.id, "he"))["periods"]
-    assert [p["people"][0]["name"] for p in periods] == ["Both", "Both"]
-    assert [p["category"] for p in periods] == [cat_a, cat_b]
+    period = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]
+    assert "people" not in period
+    captions = {h["segment_id"]: h["caption"] for h in period["groups"][0]["highlights"]}
+    assert captions[one.id] == "השכיח"

@@ -546,34 +546,21 @@ export interface TalkAvailability {
 // ── Timeline (docs/FAMILY_TREE_TIMELINE.md Phase 5) ──────────────────────
 // Order is the SERVER's — the question file's own order. Never re-sorted here.
 
-export interface TimelinePerson {
-  id: string
-  name: string
-  type: string
-  mentions: number
-  /** Decoration only. A year never moves anybody: a page ordered two ways
-   *  disagrees with itself. */
-  year_start: number | null
-  /** The recordings mentioning this person. Selecting them FILTERS the
-   *  period's recording list to these — it opens nothing separate. */
-  segment_ids: string[]
-}
-
-/** One curated pick inside a group view. The recording it points at lives in
- *  the period's `recordings`; the caption is what that recording said about
- *  the group's most-present member in it (null for the moments group). */
+/** One curated pick inside a bubble view. The recording it points at lives
+ *  in the period's `recordings`; the caption quotes what that recording said
+ *  about its most-mentioned person (null when nobody was named). */
 export interface TimelineHighlight {
   segment_id: string
   caption: string | null
 }
 
 /** A bubble on the compact card — a real topic tag from the period's own
- *  recordings ('בתי ספר' ×2), coverage-ranked and capped server-side; the
- *  generic moments bubble appears only for an untagged period. Opening one
- *  shows `highlights` (capped, same shape at any archive size). "All
- *  moments" at the deeper level is the PERIOD's full list, not the tag's —
- *  capped tags cover less than everything, and every recording must stay
- *  reachable. The card itself is static; bubbles are the only way in. */
+ *  recordings ('בתי ספר' ×2), chosen by set cover and capped server-side.
+ *  Bubbles PARTITION the period: every recording belongs to exactly one
+ *  (the catch-all holds what no winning tag claimed), and they are the sole
+ *  route in — there is no period-wide list. Opening one shows `highlights`
+ *  (capped, same shape at any archive size); `segment_ids` is the bubble's
+ *  own full list, one click deeper. The card itself is static. */
 export interface TimelineGroup {
   key: string
   label: string
@@ -612,11 +599,9 @@ export interface TimelinePeriod {
    *  has not succeeded yet. Stored server-side, refreshed only when the
    *  recordings behind the period change. */
   summary: string | null
-  /** The compact card's bubbles. The full people/recordings lists below are
-   *  the EXPANDED view, reached by clicking the card or a group. */
+  /** The compact card's bubbles — a total partition of `recordings`. */
   groups: TimelineGroup[]
   recordings: TimelineRecording[]
-  people: TimelinePerson[]
 }
 
 export interface Timeline {

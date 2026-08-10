@@ -40,15 +40,14 @@ hidden and counted. This is the opposite call from the tree's "not yet placed",
 and deliberately: there, the person IS a fact — someone the producer talked
 about — and hiding them would lose something real.
 
-## A period's content is its RECORDINGS; people are a lens on them
+## A period's content is its RECORDINGS
 
 docs/MEDIA_GALLERY.md §1. A childhood-hobbies answer names nobody, and that is
-correct — but a period whose sub-bubbles are only mentioned people renders
-empty despite holding a real, playable recording. So every period lists its
-recordings, titled by their interview question, and each person carries the
-segment ids that mention them so selecting one FILTERS the recordings rather
-than opening anything separate. No special case for the entity-less period:
-it shows its recordings exactly like every other one.
+correct — the original bug was a period rendering empty despite holding a
+real, playable recording, because people were the only sub-bubble type. A
+period's recordings are its content; people feed highlight captions and the
+family tree's views, and an entity-less period needs no special case — its
+recordings land in bubbles exactly like every other period's.
 
 ## The default card is a SUMMARY; every deeper level keeps a constant shape
 
@@ -56,16 +55,15 @@ docs/MEDIA_GALLERY.md §1.6–§1.8. The collapsed card is title, one generated
 sentence, and grouped bubbles — the SAME shape at 3 recordings or 50; volume
 is absorbed by grouping and summarization, never expressed as more chips or
 rows. Bubbles are REAL TAG CONTENT: the period's own `topic_tags`, chosen by
-set cover, capped, and DISJOINT — every recording belongs to exactly one
-bubble — with no classification pass and no taxonomy; the generic moments
-bubble survives only as the fallback for an untagged period.
-The card itself is static: bubbles are the only way in, and a bubble opens a
-CAPPED highlight selection ranked by the importance score ingestion already
-computed. The full PERIOD list is one more click ("all moments" — deliberately
-period-wide, not tag-wide, since capped tags cover less than everything), so
-§1.2's reachability rule still holds. Raw interview-question text never
-renders here at any level; a moment's only name is its generated content
-title (period_insights).
+set cover, capped, and a TOTAL PARTITION — every recording belongs to
+exactly one bubble, with the catch-all (עוד) holding whatever no winning tag
+claimed. The card itself is static: bubbles are the SOLE route into a
+period's recordings — there is no period-wide list. A bubble opens a CAPPED
+highlight selection ranked by the importance score ingestion already
+computed, with the bubble's own full list one click deeper, so §1.2's
+reachability rule holds through the partition. Raw interview-question text
+never renders here at any level; a moment's only name is its generated
+content title (period_insights).
 
 No year range yet, deliberately: §1.4's producer-scoped attribution is not
 built, and the only year in the live archive is the father's birth year —
@@ -87,14 +85,18 @@ from app.services import period_insights
 logger = logging.getLogger(__name__)
 
 # Bubbles per period, and highlights per bubble — the shape is constant
-# whatever the archive holds; everything else lives behind "all moments".
+# whatever the archive holds; a bubble's full list is one click deeper
+# inside that bubble.
 _TAG_BUBBLE_CAP = 5
 _HIGHLIGHT_CAP = 4
 
-# The fallback bubble for a period whose segments carry no topic_tags yet
-# (mid-processing, or a pre-topics archive). The card is static — bubbles
-# are the only way in — so a period must never render without one. Where
-# tags exist, the real tag content is the label instead (§1.8).
+# The catch-all bubble: every recording no winning tag claimed — tags that
+# lost the cap, and untagged segments alike. Bubbles are the SOLE route into
+# a period's recordings (the period-wide "all moments" screen is gone), so
+# the catch-all is what makes the partition total: exactly one bubble per
+# recording, always. When it is the ONLY bubble (nothing tagged yet) it is
+# labelled רגעים — "עוד" with nothing before it reads as "more than what?".
+_MORE_LABELS = {"he": "עוד", "en": "More"}
 _MOMENTS_LABELS = {"he": "רגעים", "en": "Moments"}
 
 
@@ -176,12 +178,10 @@ async def build_timeline(
             hidden += 1
             continue
         segments.sort(key=lambda s: s.created_at)
+        # Fetched for the highlight captions only — the payload carries no
+        # people list any more: nothing renders one since the per-entity
+        # chips went, and the tree's moments endpoint serves entity views.
         people = await _people_in(db, producer_id, [s.id for s in segments])
-        groups = _groups_for(people, language, segments)
-        # Mention summaries fed the highlight captions above; they are not
-        # part of the payload — the tree's moments endpoint serves them.
-        for person in people:
-            person.pop("mention_summaries", None)
         periods.append(
             {
                 "category": bucket["category"],
@@ -192,8 +192,7 @@ async def build_timeline(
                 # question is one question answered. Same rule as /record.
                 "question_count": len({s.question_id for s in segments}),
                 "recordings": _recordings_in(segments),
-                "people": people,
-                "groups": groups,
+                "groups": _groups_for(people, language, segments),
             }
         )
         period_segments.append(segments)
@@ -243,11 +242,11 @@ def _groups_for(
     bug, and exclusive membership is what makes the counts honest: they sum
     to at most the period's recordings, never more.
 
-    A capped disjoint tag set can still leave recordings in no bubble, so
-    reachability lives one level down: every bubble's "all moments" is the
-    PERIOD's full list, not the bubble's. A period with no tags at all gets
-    the generic fallback bubble — with a static card, a period must never
-    render without a way in.
+    The partition is TOTAL: recordings no winning tag claimed — losers of
+    the cap and untagged segments alike — land in the catch-all bubble, so
+    every recording belongs to exactly one bubble and bubbles are the sole
+    route into a period. The period-wide "all moments" screen is gone;
+    within a bubble, everything beyond the highlights is its own full list.
     """
     coverage: Dict[str, List[RawSegment]] = {}
     first_seen: Dict[str, int] = {}
@@ -286,14 +285,16 @@ def _groups_for(
                 "highlights": _highlights(members, people),
             }
         )
-    if not groups:
+    leftovers = [s for s in segments if s.id not in assigned]
+    if leftovers:
+        labels = _MORE_LABELS if groups else _MOMENTS_LABELS
         groups.append(
             {
-                "key": "moments",
-                "label": _MOMENTS_LABELS.get(language, _MOMENTS_LABELS["en"]),
-                "count": len(segments),
-                "segment_ids": [s.id for s in segments],
-                "highlights": _highlights(segments, people),
+                "key": "more",
+                "label": labels.get(language, labels["en"]),
+                "count": len(leftovers),
+                "segment_ids": [s.id for s in leftovers],
+                "highlights": _highlights(leftovers, people),
             }
         )
     return groups
@@ -389,14 +390,12 @@ def _recordings_in(segments: List[RawSegment]) -> List[Dict[str, Any]]:
 async def _people_in(
     db: AsyncSession, producer_id: str, segment_ids: List[str]
 ) -> List[Dict[str, Any]]:
-    """Who this period is about — a lens on its recordings, not the content.
+    """Who this period mentions — INTERNAL, feeds the highlight captions.
 
-    A person is not owned by one period: someone mentioned in two life stages
-    appears in both, which is correct and needs no special case.
-
-    Each person carries the ids of the segments mentioning them, so selecting
-    one filters the recording sub-bubbles client-side — no second request and
-    no separate endpoint to drift.
+    Not part of the timeline payload since the per-entity chips went
+    (§1.9): a caption quotes what a recording said about its most-mentioned
+    person, and the mentions-desc order here is what "most-mentioned" means.
+    Entity-centric views live on the family tree page.
     """
     if not segment_ids:
         return []
