@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import interview_config
 from app.api.v1.interview import require_producer
+from app.api.v1.users import require_current_user
 from app.config import settings
 from app.database import get_db
 from app.models import Entity, MediaAsset, User
@@ -300,15 +301,39 @@ async def create_media_asset(
     return await _to_response(asset)
 
 
+def _archive_owner_id(user: User) -> str:
+    """Whose photos this account may READ — the §9.4 access model.
+
+    The same producer-scoping /talk already answers for video: a producer
+    reads their own archive; a family account (invite/redeem flow) reads the
+    producer it is linked to — the identical `producer_id` linkage
+    sessions.py checks before letting them start a session against that
+    producer's avatar. An unlinked family account has no archive to read.
+    Writes stay producer-only; this widens nothing but the list.
+    """
+    if user.role == "producer":
+        return user.id
+    if user.role == "family" and user.producer_id:
+        return user.producer_id
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="This account is not linked to a story archive",
+    )
+
+
 @router.get("", response_model=list[MediaAssetResponse])
 async def list_media_assets(
     entity_id: str | None = None,
     category: str | None = None,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_producer),
+    user: User = Depends(require_current_user),
 ):
     """One owner's gallery — the read every later phase consumes (§3, §4,
-    and eventually /talk's §9.4 union, which calls this once per category).
+    and /talk's §9.4 union, which calls this once per category).
+
+    Readable by the producer AND their linked family accounts (see
+    `_archive_owner_id`) — the only /media route that is; every write stays
+    producer-only.
 
     Ordering per §4.1/§4.3: primary first (an entity's face leads its own
     gallery), then `taken_year` when set, `created_at` otherwise — and the
@@ -320,7 +345,7 @@ async def list_media_assets(
             status_code=400, detail="Pass exactly one of entity_id or category"
         )
 
-    query = select(MediaAsset).where(MediaAsset.producer_id == user.id)
+    query = select(MediaAsset).where(MediaAsset.producer_id == _archive_owner_id(user))
     if entity_id is not None:
         query = query.where(MediaAsset.entity_id == entity_id)
     else:

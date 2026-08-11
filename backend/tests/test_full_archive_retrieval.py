@@ -29,10 +29,27 @@ from app.services.response_assembler import (
 pytestmark = pytest.mark.asyncio
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 async def ar_session_factory(test_engine, monkeypatch):
+    """Autouse, and pinning EVERY module this file's code paths open a
+    session through — not just ar's own:
+
+    - video_clip_assembler: v2's success path calls its
+      photo_categories_for_segments, which opens that module's factory;
+    - retrieval_service: select_units runs _recent_turns through ITS factory.
+
+    Before this was autouse, tests that didn't request it quietly ran those
+    reads against the REAL configured database — which surfaced as an
+    order-dependent "attached to a different loop" failure the moment an
+    earlier test file had used the real engine's pool on its own event loop.
+    No test in this file should ever reach that engine."""
+    from app.services import retrieval_service as _rsvc
+    from app.services import video_clip_assembler as _vca
+
     factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(ar, "AsyncSessionLocal", factory)
+    monkeypatch.setattr(_vca, "AsyncSessionLocal", factory)
+    monkeypatch.setattr(_rsvc, "AsyncSessionLocal", factory)
     return factory
 
 

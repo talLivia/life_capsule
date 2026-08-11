@@ -81,6 +81,10 @@ export type WsMessage =
        *  said next to the player instead of a bare video. Empty for v1,
        *  which has no utterance-unit text to report. */
       text?: string
+      /** The life periods the footage came from — /talk shows each one's
+       *  photo gallery under the clip (MEDIA_GALLERY.md §9.4). A lookup made
+       *  where the clips were chosen, never inferred client-side. */
+      photo_categories?: string[]
       uncovered_clauses: string[]
       follow_up?: { question: string } | null
     }

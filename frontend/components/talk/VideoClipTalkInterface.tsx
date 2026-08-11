@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from 'react'
 import { Send, Mic, MicOff, Loader2, Film } from 'lucide-react'
+import { TurnPhotoGallery } from '@/components/media/TurnPhotoGallery'
 import { useVideoClipChat } from '@/lib/useVideoClipChat'
 
 interface VideoClipTalkInterfaceProps {
@@ -96,6 +97,12 @@ export function VideoClipTalkInterface({ avatarId, producerName }: VideoClipTalk
                     <p className="px-4 py-2.5 rounded-2xl text-sm leading-relaxed bg-calm-card dark:bg-calm-cardDark border border-calm-border dark:border-calm-borderDark">
                       {m.content}
                     </p>
+                  )}
+                  {/* Photos from the life period(s) the footage came from —
+                      under the panel, never inside the video (§9.4). Renders
+                      nothing when those periods have no photos. */}
+                  {m.photoCategories && m.photoCategories.length > 0 && (
+                    <TurnPhotoGallery categories={m.photoCategories} />
                   )}
                 </div>
               ) : (

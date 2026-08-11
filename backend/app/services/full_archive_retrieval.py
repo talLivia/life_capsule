@@ -1746,10 +1746,16 @@ async def assemble_video_clip_response_v2(
             follow_up=selection.follow_up,
         )
 
+    # Which life periods the answer draws on — computed from the SAME clips
+    # that make the video, so the gallery can never disagree with the footage.
+    photo_categories = await video_clip_assembler.photo_categories_for_segments(
+        [c.raw_segment_id for c in clips]
+    )
+
     cache_key = video_clip_assembler._clip_cache_key(group_id, clips)
     cached_url = await cache_service.get(cache_key)
     if cached_url:
-        return VideoClipResult(video_url=cached_url)
+        return VideoClipResult(video_url=cached_url, photo_categories=photo_categories)
 
     video_url = await video_clip_assembler._assemble_and_upload_clip(clips, group_id, session_id)
     if video_url is None:
@@ -1764,6 +1770,7 @@ async def assemble_video_clip_response_v2(
     return VideoClipResult(
         video_url=video_url,
         follow_up=selection.follow_up,
+        photo_categories=photo_categories,
         shown_units=[
             {
                 "key": _unit_key(u.segment_id, u.start_sec),

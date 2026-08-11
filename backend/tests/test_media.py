@@ -584,6 +584,94 @@ async def test_a_failed_file_delete_does_not_resurrect_the_row(
     assert await db_session.get(MediaAsset, asset.id) is None
 
 
+# ── family reads (Phase 8, §9.4) ─────────────────────────────────────────────
+
+
+def _family_of(test_user, n: str):
+    from app.api.v1.users import get_password_hash
+    from app.models import User
+
+    return User(
+        email=f"{n}@example.com",
+        username=n,
+        hashed_password=get_password_hash("pw12345678"),
+        role="family",
+        producer_id=test_user.id,
+    )
+
+
+def _headers_for(user_id: str):
+    from app.api.v1.users import create_access_token
+
+    return {"Authorization": f"Bearer {create_access_token(data={'sub': user_id})}"}
+
+
+@pytest.mark.asyncio
+async def test_a_linked_family_account_reads_the_producers_gallery(
+    client: AsyncClient, db_session, test_user, storage_mocks
+):
+    """The §9.4 access model: the same producer_id linkage that authorises a
+    family member's /talk session against this producer's avatar scopes
+    their photo reads. No new access model — the existing one, extended to
+    the one read /talk needs."""
+    fam = _family_of(test_user, "fam-reader")
+    db_session.add(fam)
+    db_session.add(
+        MediaAsset(
+            producer_id=test_user.id,
+            storage_key=f"photos/{test_user.id}/period/childhood/x.jpg",
+            category="childhood",
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.get(
+        "/api/v1/media",
+        params={"category": "childhood"},
+        headers=_headers_for(fam.id),
+    )
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+    assert resp.json()[0]["category"] == "childhood"
+
+
+@pytest.mark.asyncio
+async def test_an_unlinked_family_account_reads_nothing(
+    client: AsyncClient, db_session, test_user, storage_mocks
+):
+    """No producer_id means no archive to read — 403, not an empty list,
+    because an empty list would claim the archive has no photos."""
+    fam = _family_of(test_user, "fam-unlinked")
+    fam.producer_id = None
+    db_session.add(fam)
+    await db_session.commit()
+
+    resp = await client.get(
+        "/api/v1/media", params={"category": "childhood"}, headers=_headers_for(fam.id)
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_family_reads_are_list_only(
+    client: AsyncClient, db_session, test_user, storage_mocks
+):
+    """Widening the list must not widen anything else: delete (and presign,
+    covered below) stay producer-only for family accounts."""
+    fam = _family_of(test_user, "fam-deleter")
+    asset = MediaAsset(
+        producer_id=test_user.id,
+        storage_key=f"photos/{test_user.id}/period/childhood/x.jpg",
+        category="childhood",
+    )
+    db_session.add_all([fam, asset])
+    await db_session.commit()
+
+    resp = await client.delete(f"/api/v1/media/{asset.id}", headers=_headers_for(fam.id))
+    assert resp.status_code == 403
+    assert await db_session.get(MediaAsset, asset.id) is not None
+
+
 # ── role gate ────────────────────────────────────────────────────────────────
 
 

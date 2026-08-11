@@ -653,7 +653,7 @@ Constraints worth setting before building rather than after:
 | **5** ✅ | F — period galleries, tag-bubble-triggered side panel (§4.1, updated), and the lightbox — DONE 2026-08-11, see §4.4 | Needs 2, benefits from 3's upload UI |
 | **6** | Merge-safety: repoint `media_assets` in the merge tooling | Must land before anyone merges entities that have photos |
 | **7** | Category year-range attribution (§1.4) | Depends on year-attribution rules being defined first — see §9.1 |
-| **8** | `/talk` photo surfacing (§9.4) — APPROVED, part of the plan | Waits on phases 1–6 (producer-side photos must exist before they can surface in chat), not on further sign-off |
+| **8** ✅ | `/talk` photo surfacing (§9.4) — DONE 2026-08-11, see §9.4's build note | Waits on phases 1–6 (producer-side photos must exist before they can surface in chat), not on further sign-off |
 
 Phase 1 is independently useful and worth landing on its own.
 
@@ -760,6 +760,36 @@ the timeline gallery) are stable, since `/talk` surfacing has nothing to
 show until photos exist to surface. The approval here is about **intent**
 (yes, build this), not about **jumping the queue** — Phase 2 (in progress)
 and Phases 3–6 still come first.
+
+### ✅ Phase 8 built — 2026-08-11
+
+All three mechanical needs above, resolved as anticipated:
+
+- **The categories are a lookup, made where the clips are chosen.**
+  `video_clip_assembler.photo_categories_for_segments` resolves the final
+  clips' `raw_segment_id → question_id → category_for_question_id` (live
+  or retired), deduped, in the order the answer plays its footage — so the
+  gallery leads with the period the clip opens in and can never disagree
+  with it. Both modes set `VideoClipResult.photo_categories`; the WS
+  `video_clip_response` message carries it. A segment with no question id
+  or an unresolvable one contributes nothing — never a guess.
+- **The read endpoint is the existing `GET /media?category=`**, called
+  once per category by the client and unioned there (deduped by id,
+  category order), with a per-category cache for the conversation's life —
+  three answers from one period fetch its gallery once.
+- **Access control: the existing model, confirmed and extended by one
+  read.** A family account's `producer_id` linkage — the same check
+  sessions.py runs before a /talk session against that producer's avatar —
+  now scopes `GET /media` (list ONLY; every write stays producer-only).
+  An unlinked family account gets 403, not an empty list, because an
+  empty list would claim the archive has no photos.
+
+UI: `TurnPhotoGallery` renders a thumbnail row under each answer's player
+and text in the /talk layout, opening the shared `PhotoLightbox` (§4.4).
+While loading, or when the turn's periods hold no photos, it renders
+NOTHING — the clip is the answer; photos accompany it when they exist.
+/talk only, per the §9.4 wording; the producer's own chat screen shares
+the hook, not the layout.
 
 ---
 

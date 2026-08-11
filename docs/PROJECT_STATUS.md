@@ -1514,6 +1514,28 @@ exists yet to carry it), Phase 7 (year attribution, blocked on
 TIMELINE_YEAR_ATTRIBUTION.md decisions), Phase 8 (/talk surfacing,
 approved, after 1–6).
 
+**Phase 8 SHIPPED 2026-08-11** (MEDIA_GALLERY.md §9.4 build note): a
+/talk answer's WS message now carries `photo_categories` — the life
+periods its footage came from, a LOOKUP (`raw_segment_id → question_id →
+category`) made from the same clips that make the video, in both clip
+modes; the /talk layout unions those categories' galleries under the
+player via the existing `GET /media?category=` and opens the shared
+PhotoLightbox. Access: `GET /media` (list ONLY) now accepts family
+accounts scoped by the same `producer_id` linkage sessions.py checks —
+confirmed against the existing model, no new one. Suite at 905;
+tsc/eslint/build clean. Not yet exercised live.
+
+⚠️ Found while landing it: `test_full_archive_retrieval.py`'s tests were
+quietly running `_recent_turns` (and anything else off
+`retrieval_service.AsyncSessionLocal`) against the REAL configured
+database — surfacing as an order-dependent "attached to a different
+loop" failure once another file had used the real engine's pool on its
+own event loop. The file's session-factory fixture is now autouse and
+pins ar + video_clip_assembler + retrieval_service to the test engine.
+The same hazard pattern (a service opening its module-level
+AsyncSessionLocal under tests that mock everything else) is worth
+checking when adding DB calls inside service success paths.
+
 ## Known gaps / tech debt
 
 - 🚨 **KNOWN GAP, deliberately unfixed (2026-08-10): a "עוד" question can
@@ -1644,5 +1666,5 @@ python scripts/eval_no_story_subject.py   # tailored no-story line, v2 only
 python scripts/rebaseline_accuracy.py      # ⚠️ references are STALE — see known gaps
 python scripts/compare_retrieval_modes.py  # v1 vs v2: consistency, latency, calls, tokens
 python scripts/seed_sweep.py               # single-run IoU vs known-correct
-python -m pytest -q                        # 900 tests
+python -m pytest -q                        # 905 tests
 ```

@@ -21,8 +21,12 @@ from app.services.response_assembler import NO_STORY_FALLBACK
 pytestmark = pytest.mark.asyncio
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 async def vca_session_factory(test_engine, monkeypatch):
+    """Autouse since photo_categories_for_segments: the success-path
+    orchestration now opens the module-level AsyncSessionLocal itself, so a
+    test that mocks every collaborator would still hit the REAL configured
+    database without this. No test in this file should ever touch it."""
     factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(vca, "AsyncSessionLocal", factory)
     return factory
@@ -746,3 +750,59 @@ async def test_assemble_video_clip_response_no_video_survives_assembly_returns_n
     assert result.no_story is True
     assert result.video_url is None
     assert result.fallback_text == NO_STORY_FALLBACK
+
+
+# ── photo_categories_for_segments (MEDIA_GALLERY.md §9.4) ───────────────────
+
+
+async def _seed_segment(factory, user_id: str, segment_id: str, question_id):
+    async with factory() as db:
+        session = InterviewSession(id=f"is-{segment_id}", user_id=user_id, status="active")
+        db.add(session)
+        await db.flush()
+        db.add(
+            RawSegment(
+                id=segment_id,
+                interview_session_id=session.id,
+                question_asked="q",
+                question_index=0,
+                status="ready",
+                question_id=question_id,
+            )
+        )
+        await db.commit()
+
+
+async def test_photo_categories_resolve_dedupe_and_keep_play_order(
+    vca_session_factory, test_user
+):
+    """A LOOKUP through question_id, never a classification — and the order
+    is the order the answer plays its recordings, deduped, so the /talk
+    gallery leads with the period the clip opens in."""
+    from app import interview_config
+
+    cats = interview_config.get_categories("he")
+    q_a = cats[0]["question_ids"][0]
+    q_b = cats[1]["question_ids"][0]
+    await _seed_segment(vca_session_factory, test_user.id, "seg-a", q_a)
+    await _seed_segment(vca_session_factory, test_user.id, "seg-b", q_b)
+    await _seed_segment(vca_session_factory, test_user.id, "seg-a2", q_a)
+
+    # b first, then a twice — the result is b's category then a's, once each.
+    result = await vca.photo_categories_for_segments(["seg-b", "seg-a", "seg-a2"])
+    assert result == [cats[1]["category"], cats[0]["category"]]
+
+
+async def test_photo_categories_skip_what_cannot_be_resolved(
+    vca_session_factory, test_user
+):
+    """A segment with no question id (an upload outside the guided set), an
+    invented id, or an unknown segment contributes NOTHING — the gallery
+    never guesses a period (the year-attribution rule, applied to photos)."""
+    await _seed_segment(vca_session_factory, test_user.id, "seg-none", None)
+    await _seed_segment(vca_session_factory, test_user.id, "seg-bogus", "not-a-question-id")
+
+    assert await vca.photo_categories_for_segments(
+        ["seg-none", "seg-bogus", "seg-missing"]
+    ) == []
+    assert await vca.photo_categories_for_segments([]) == []

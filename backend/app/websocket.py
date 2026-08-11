@@ -894,6 +894,11 @@ class ConnectionManager:
                     # What the clip actually says, so the chat shows the words
                     # alongside the video instead of a bare player.
                     "text": spoken_text,
+                    # The life periods the footage came from, so /talk can show
+                    # each category's photo gallery under the clip
+                    # (MEDIA_GALLERY.md §9.4). A lookup made where the clips
+                    # were chosen, never an inference here.
+                    "photo_categories": result.photo_categories,
                     "uncovered_clauses": result.uncovered_clauses,
                     # v2's optional "want to hear more about X?" offer. Chat
                     # text only — the client renders it as a message with

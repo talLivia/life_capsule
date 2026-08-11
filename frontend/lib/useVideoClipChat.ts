@@ -32,6 +32,9 @@ export interface TalkMessage {
   // retry the SAME question rather than leaving the listener to retype it.
   retryQuestion?: string
   retryDismissed?: boolean
+  // The life periods this answer's footage came from — /talk renders each
+  // category's photo gallery under the clip (MEDIA_GALLERY.md §9.4).
+  photoCategories?: string[]
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5
@@ -110,6 +113,7 @@ export function useVideoClipChat(avatarId: string) {
             // can't be skimmed and tells you nothing once scrolled past.
             content: msg.text || '',
             videoUrl: msg.video_url,
+            photoCategories: msg.photo_categories ?? [],
           },
           // The offer is a SEPARATE chat message, never mixed into the clip —
           // the video stays verbatim footage with nothing added to it.

@@ -197,6 +197,12 @@ class VideoClipResult:
     # no-story tells a family member their relative has no story about
     # something the archive may cover in full.
     read_failed: bool = False
+    # The life-period categories of the recordings this answer's footage came
+    # from, deduped, first-appearance order — /talk shows each category's
+    # photo gallery under the clip (MEDIA_GALLERY.md §9.4). A LOOKUP through
+    # question_id, never a classification: a clip already knows which period
+    # it belongs to. Set by both modes; empty when nothing played.
+    photo_categories: List[str] = field(default_factory=list)
 
 
 def _parse_json_object(text: str) -> Optional[dict]:
@@ -633,6 +639,38 @@ async def _assemble_and_upload_clip(
             pass
 
 
+async def photo_categories_for_segments(segment_ids: List[str]) -> List[str]:
+    """The life periods these recordings answer for, deduped, in the order
+    the segments were given (i.e. the order the answer plays them).
+
+    A lookup, not a classification (MEDIA_GALLERY.md §9.4): every recording
+    carries `question_id`, and `category_for_question_id` resolves it live or
+    retired. A segment with no question id (an upload outside the guided set)
+    or an unresolvable one contributes nothing — never a guess.
+    """
+    from app import interview_config
+
+    ordered_unique = list(dict.fromkeys(segment_ids))
+    if not ordered_unique:
+        return []
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(RawSegment.id, RawSegment.question_id).where(
+                    RawSegment.id.in_(ordered_unique)
+                )
+            )
+        ).all()
+    question_id_by_segment = {sid: qid for sid, qid in rows}
+    categories: List[str] = []
+    for sid in ordered_unique:
+        qid = question_id_by_segment.get(sid)
+        category = interview_config.category_for_question_id(qid) if qid else None
+        if category and category not in categories:
+            categories.append(category)
+    return categories
+
+
 async def assemble_video_clip_response(
     question: str, group_id: str, recording_language: str, session_id: str
 ) -> VideoClipResult:
@@ -667,10 +705,20 @@ async def assemble_video_clip_response(
     for v in verified:
         expanded.extend(await _expand_chunk_boundaries(v))
 
+    # Which life periods the answer draws on — computed from the SAME clips
+    # that make the video, so the gallery can never disagree with the footage.
+    photo_categories = await photo_categories_for_segments(
+        [c.raw_segment_id for c in expanded]
+    )
+
     cache_key = _clip_cache_key(group_id, expanded)
     cached_url = await cache_service.get(cache_key)
     if cached_url:
-        return VideoClipResult(video_url=cached_url, uncovered_clauses=uncovered)
+        return VideoClipResult(
+            video_url=cached_url,
+            uncovered_clauses=uncovered,
+            photo_categories=photo_categories,
+        )
 
     video_url = await _assemble_and_upload_clip(expanded, group_id, session_id)
     if video_url is None:
@@ -679,4 +727,8 @@ async def assemble_video_clip_response(
     await cache_service.set(cache_key, video_url, ttl=CACHE_TTL_SECONDS)
     await cache_service.add_visited(session_id, list({c.raw_segment_id for c in expanded}))
 
-    return VideoClipResult(video_url=video_url, uncovered_clauses=uncovered)
+    return VideoClipResult(
+        video_url=video_url,
+        uncovered_clauses=uncovered,
+        photo_categories=photo_categories,
+    )
