@@ -86,7 +86,7 @@ from typing import Dict, List, Optional
 from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
-from app.models import InterviewSession, Message, RawSegment, TranscriptChunk
+from app.models import InterviewSession, Message, RawSegment
 from app.services import embeddings, entity_store
 from app.services.entity_names import names_are_similar
 from app.services.cache import cache_service
@@ -107,12 +107,12 @@ _SUMMARY_MAX_CHARS = 160
 # reference needs.
 COREFERENCE_HISTORY_TURNS = 2
 
-# Sanity cap on primary_match/primary_match_chunks' own result count,
-# independent of the coreference fix above — confirmed live: an ambiguous,
-# under-specified question (a bare pronoun follow-up, before the
-# coreference fix existed) can carry no real topic/entity/semantic signal
-# of its own, and primary_match_chunks' second-pass leniency (relaxed
-# semantic threshold) then matched ALL 12 of 12 chunks in a real archive —
+# Sanity cap on primary_match's own result count, independent of the
+# coreference fix above — confirmed live: an ambiguous, under-specified
+# question (a bare pronoun follow-up, before the coreference fix existed)
+# can carry no real topic/entity/semantic signal of its own, and the
+# retired v1 chunk path's second-pass leniency (relaxed semantic
+# threshold) then matched ALL 12 of 12 chunks in a real archive —
 # strictly worse than matching nothing, since it would flood Prompt 13's
 # per-candidate verification with the entire archive instead of failing
 # cleanly. A future ambiguous question could still trigger this even after
@@ -140,15 +140,6 @@ MAX_PRIMARY_MATCHES = 6
 # topic or entity signals depending on phrasing.
 SEMANTIC_MATCH_THRESHOLD = 0.68
 
-# Prompt 12 (original-video-clip mode, parallel to the above — never used by
-# avatar-mode primary_match). Same embedder, same threshold as a starting
-# point: chunk text is shorter than a whole segment's, so cosine-similarity
-# behavior COULD differ, but re-tuning it needs its own QA-harness-style
-# pass against real chunk-level data (Prompt 10 did this for
-# SEMANTIC_MATCH_THRESHOLD; nothing analogous exists yet for chunks) —
-# flagging rather than guessing a different number.
-SEMANTIC_CHUNK_MATCH_THRESHOLD = SEMANTIC_MATCH_THRESHOLD
-
 _TOPIC_CLASSIFY_SYSTEM_PROMPT_TEMPLATE = """\
 You are a strict topic classifier for a personal life-story archive \
 retrieval system. Given a question someone is asking about the \
@@ -170,30 +161,6 @@ question (same language/script). If no proper name is mentioned, output \
 an empty array: []. Do not include any commentary or text outside the \
 JSON array. Example: question "Tell me about Gila" -> ["Gila"]. Question \
 "Who was your commander?" -> []."""
-
-# Prompt 12: a family member's question is naturally 2nd person ("what did
-# you do for work?") or 3rd person about the storyteller, but the
-# storyteller's own transcripts (and every chunk embedding/topic tag
-# computed from them) are first-person narration ("I worked as a
-# carpenter"). Hebrew verb conjugation inflects person/gender directly in
-# the verb (not just a separate pronoun the way English does), so a plain
-# regex/pronoun substitution is fragile across the full range of Hebrew
-# verb forms - an LLM rewrite (temperature=0, same "lightweight structured
-# task" pattern as the topic/entity calls above) handles this reliably
-# instead. Search-purposes ONLY: the caller keeps the ORIGINAL question for
-# Prompt 13, which must answer what was actually asked, not this rewrite.
-_PERSPECTIVE_NORMALIZE_SYSTEM_PROMPT_TEMPLATE = """\
-You are rewriting a question for a search system - you are not answering \
-it. The question is addressed TO a storyteller (2nd person, e.g. "what \
-did you do for work?") or asks ABOUT them (3rd person, e.g. "what did he \
-do for work?"), but the storyteller's own life-story transcripts are \
-narrated in FIRST PERSON (e.g. "I worked as a carpenter"). Rewrite the \
-question as if the storyteller were asking it about themselves, in FIRST \
-PERSON, in {language}, preserving its exact original meaning - do not \
-answer it, add information, or change anything except the grammatical \
-person/verb conjugation. Output ONLY the rewritten question, no \
-commentary, no quotation marks. Example: "מה עבדת?" -> "מה עבדתי?". \
-Example: "what did you do for work?" -> "what did I do for work?"."""
 
 
 @dataclass
@@ -298,21 +265,21 @@ async def _resolve_entity_names(names: List[str], group_id: str) -> List[str]:
     return list(resolved)
 
 
-# ── Coreference resolution — shared by primary_match and primary_match_chunks ──
+# ── Coreference resolution ─────────────────────────────────────────────────
 #
 # Confirmed live (real archive, real LLM calls, no mocks): a follow-up
 # question like "did you love her?" right after "who is Gila?" carries no
 # topic/entity/semantic signal of its own once asked in isolation — exactly
-# what primary_match/primary_match_chunks did before this fix, since neither
-# has ever taken conversation history into account. Observed failure modes
-# on real data: a bare pronoun ("is he still alive?" right after "who most
-# influenced you as a child?") matched either nothing, or — via
-# primary_match_chunks' second-pass leniency — ALL 12 of 12 chunks in the
-# whole archive (see MAX_PRIMARY_MATCHES above for the guard against that).
+# what primary_match did before this fix, since it never took conversation
+# history into account. Observed failure modes on real data: a bare pronoun
+# ("is he still alive?" right after "who most influenced you as a child?")
+# matched either nothing, or — via the retired v1 chunk path's second-pass
+# leniency — ALL 12 of 12 chunks in the whole archive (see
+# MAX_PRIMARY_MATCHES above for the guard against that).
 #
-# This runs BEFORE _normalize_to_first_person: resolving "her" -> "Gila"
-# doesn't depend on grammatical person, and perspective normalization should
-# act on the ALREADY-resolved text, not the other way around.
+# _recent_turns below is ALSO the v2 clip mode's conversation-history
+# window (full_archive_retrieval.select_units) and is patched by name in
+# every eval script — do not rename it.
 
 _COREFERENCE_RESOLVE_SYSTEM_PROMPT_TEMPLATE = """\
 You are rewriting a question for a search system - you are not answering \
@@ -367,10 +334,9 @@ async def _resolve_coreferences(question: str, session_id: str, recording_langua
     """Rewrites a context-dependent follow-up ("did you love her?") into a
     self-contained question ("did you love Gila?") using the last
     COREFERENCE_HISTORY_TURNS messages of this session. Fail-soft to the
-    ORIGINAL question — same contract as _normalize_to_first_person: no
-    history yet (first turn of a session), an LLM failure, or the model
-    finding nothing to resolve must never block retrieval or invent a
-    reference that wasn't actually there."""
+    ORIGINAL question: no history yet (first turn of a session), an LLM
+    failure, or the model finding nothing to resolve must never block
+    retrieval or invent a reference that wasn't actually there."""
     history = await _recent_turns(session_id, COREFERENCE_HISTORY_TURNS)
     if not history:
         return question
@@ -528,254 +494,3 @@ async def retrieve(
         ],
         candidates=candidates,
     )
-
-
-# ── Prompt 12: chunk-level retrieval for the original-video-clip mode ───────
-#
-# Everything below is a PARALLEL path for the new video-clip chat mode only
-# — none of it is called by, or changes the behavior of, primary_match/
-# expand_graph/retrieve above (the existing avatar path). Same three-signal
-# union logic, operating over TranscriptChunk rows instead of whole
-# RawSegment rows, using a first-person-normalized question (see
-# _PERSPECTIVE_NORMALIZE_SYSTEM_PROMPT_TEMPLATE above for why).
-
-
-async def _normalize_to_first_person(question: str, recording_language: str) -> str:
-    """Search-purposes-only rewrite — fails soft to the ORIGINAL question
-    (better than blocking retrieval on a transient LLM error) rather than
-    raising."""
-    system_prompt = _PERSPECTIVE_NORMALIZE_SYSTEM_PROMPT_TEMPLATE.format(
-        language=recording_language
-    )
-    try:
-        raw = await llm_service.generate_response(
-            messages=[{"role": "user", "content": question}],
-            system_prompt=system_prompt,
-            temperature=0,
-        )
-    except Exception as e:
-        logger.warning(f"Perspective normalization failed, using original question: {e}")
-        return question
-    normalized = raw.strip().strip('"').strip("'")
-    return normalized or question
-
-
-async def _load_ready_chunks(group_id: str) -> List[TranscriptChunk]:
-    """Every TranscriptChunk belonging to a 'ready' segment in this
-    producer's archive — mirrors primary_match's own RawSegment scoping
-    join exactly (InterviewSession.user_id == group_id, status == 'ready')."""
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(TranscriptChunk)
-            .join(RawSegment, TranscriptChunk.raw_segment_id == RawSegment.id)
-            .join(InterviewSession, RawSegment.interview_session_id == InterviewSession.id)
-            .where(InterviewSession.user_id == group_id, RawSegment.status == "ready")
-        )
-        return list(result.scalars().all())
-
-
-def _match_chunks(
-    chunks: List[TranscriptChunk],
-    topic: Optional[str],
-    resolved_entity_names: List[str],
-    question_embedding: Optional[List[float]],
-    semantic_threshold: float,
-) -> Dict[str, TranscriptChunk]:
-    """Pure/synchronous: applies the three-signal union filter against an
-    already-loaded chunk list and already-computed signals. Deliberately
-    not async and takes no DB/LLM/embedding dependencies itself, so
-    primary_match_chunks can call this twice (a strict pass, then a
-    relaxed-semantic second pass) without redoing any of that work."""
-    matched: Dict[str, TranscriptChunk] = {}
-
-    if topic:
-        for chunk in chunks:
-            if chunk.topic_tags and topic in {t.strip().lower() for t in chunk.topic_tags}:
-                matched[chunk.id] = chunk
-
-    if resolved_entity_names:
-        resolved_lower = {n.strip().lower() for n in resolved_entity_names}
-        for chunk in chunks:
-            mentioned = chunk.mentioned_entities or []
-            if resolved_lower & {n.strip().lower() for n in mentioned}:
-                matched[chunk.id] = chunk
-
-    if question_embedding:
-        for chunk in chunks:
-            if (
-                chunk.embedding
-                and embeddings.cosine_similarity(question_embedding, chunk.embedding)
-                >= semantic_threshold
-            ):
-                matched[chunk.id] = chunk
-
-    return matched
-
-
-async def primary_match_chunks(
-    question: str, group_id: str, recording_language: str, session_id: str
-) -> List[TranscriptChunk]:
-    """Chunk-level parallel to primary_match, for the video-clip mode only —
-    same three independent signals, unioned: (a) topic classification
-    against each chunk's own topic_tags (Prompt 11); (b) entity names
-    extracted from the question, fuzzy-resolved against the graph, matched
-    against each chunk's mentioned_entities (Prompt 11's substring-tagged
-    traceability field); (c) cosine similarity between the question's
-    embedding and each chunk's own (contextually-computed) embedding.
-
-    `question` is resolved against recent conversation history FIRST (see
-    _resolve_coreferences), THEN first-person-normalized for the three
-    signals above — the caller keeps the true original question text for
-    Prompt 13 (coreference-resolved, but not perspective-flipped, since
-    Prompt 13 needs to know who "her" was, not answer in the storyteller's
-    own grammatical voice).
-
-    Second-pass leniency (Prompt 12 step 3): if the strict pass matches
-    NOTHING across all three signals, retry once with the semantic bar
-    relaxed to half — surfacing borderline candidates a strict first pass
-    filtered out. Only ever widens the net; never invents or fabricates a
-    match. If still nothing, the caller gets an empty list — Prompt 13's
-    NO_STORY_FALLBACK-equivalent path is what eventually handles that, not
-    this function. MAX_PRIMARY_MATCHES caps BOTH passes: confirmed live,
-    an under-specified question can make the relaxed second pass match the
-    ENTIRE archive — worse than matching nothing.
-    """
-    question = await _resolve_coreferences(question, session_id, recording_language)
-    normalized_question = await _normalize_to_first_person(question, recording_language)
-
-    topic, extracted_names, question_embedding = await asyncio.gather(
-        _classify_topic(normalized_question, recording_language),
-        _extract_entity_names_from_question(normalized_question),
-        _embed_question_for_primary_match(normalized_question),
-    )
-    resolved_names = await _resolve_entity_names(extracted_names, group_id) if extracted_names else []
-
-    chunks = await _load_ready_chunks(group_id)
-
-    matched = _match_chunks(
-        chunks, topic, resolved_names, question_embedding, SEMANTIC_CHUNK_MATCH_THRESHOLD
-    )
-
-    if not matched and question_embedding:
-        matched = _match_chunks(
-            chunks, topic, resolved_names, question_embedding, SEMANTIC_CHUNK_MATCH_THRESHOLD / 2
-        )
-
-    if len(matched) > MAX_PRIMARY_MATCHES:
-        logger.warning(
-            f"primary_match_chunks matched {len(matched)} chunks (> MAX_PRIMARY_MATCHES="
-            f"{MAX_PRIMARY_MATCHES}) for question {question!r} — treating as an "
-            "untrustworthy match rather than flooding downstream verification."
-        )
-        return []
-
-    return list(matched.values())
-
-
-async def expand_graph_chunks(
-    primary_chunks: List[TranscriptChunk],
-    session_visited_set: set,
-    group_id: str,
-) -> List[TranscriptChunk]:
-    """Chunk-level parallel to expand_graph, for the video-clip mode only.
-
-    Added after review flagged a real gap: primary_match_chunks alone only
-    surfaces chunks that directly clear the topic/entity/semantic bar
-    against the QUESTION's own text — unlike expand_graph, which bridges
-    to OTHER content sharing an entity with what already matched,
-    regardless of whether that other content's own topic/semantic profile
-    resembles the question. For a broad, multi-part question (e.g. "what
-    did you do for work, did you enjoy it, tell me stories"), the vague
-    follow-up clauses get no targeted signal of their own in EITHER path
-    (the whole question is classified/embedded once as a blend) — but the
-    avatar path gets a second chance to surface related content anyway via
-    shared entities; the chunk path didn't, until now.
-
-    Entity mentions are per-SEGMENT (a chunk has no mention row of its own —
-    `entity_mentions.chunk_id` exists but ingestion writes segment-level
-    rows), so this looks up entities via the primary chunks' PARENT segments,
-    exactly like expand_graph. The difference: what gets returned is
-    chunk-granular, not whole segments. For each segment expand_graph's own
-    logic would have surfaced, only ITS chunks whose OWN mentioned_entities
-    (Prompt 11) overlaps the bridging entity set are included — never a whole
-    related segment's worth of chunks indiscriminately. A related segment
-    where segment-level extraction found the shared entity but no individual
-    chunk's substring-tagging happened to catch it contributes nothing here
-    (fail-soft: no precise moment to point to beats guessing one)."""
-    if not primary_chunks:
-        return []
-
-    # Exclude both the session's visited-set AND the primary chunks' OWN
-    # parent segments — a primary chunk's segment trivially "shares" its
-    # own entities and must never bridge back to itself.
-    primary_segment_ids = {chunk.raw_segment_id for chunk in primary_chunks}
-    exclude_ids = set(session_visited_set) | primary_segment_ids
-
-    async with AsyncSessionLocal() as db:
-        by_segment = await entity_store.get_entity_names_for_segments(
-            db, list(primary_segment_ids), group_id
-        )
-        entity_names = {name for names in by_segment.values() for name in names}
-        if not entity_names:
-            return []
-
-        scored = await entity_store.find_segments_mentioning_scored(
-            db,
-            entity_names=list(entity_names),
-            producer_id=group_id,
-            exclude_ids=list(exclude_ids),
-            limit=MAX_CANDIDATES * 4,  # headroom before the threshold+cap below
-        )
-
-    qualifying_segment_ids = [
-        c["segment_id"] for c in scored if c["shared_entity_count"] >= MIN_SHARED_ENTITY_COUNT
-    ]
-    if not qualifying_segment_ids:
-        return []
-
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(TranscriptChunk).where(TranscriptChunk.raw_segment_id.in_(qualifying_segment_ids))
-        )
-        chunks_by_segment: Dict[str, List[TranscriptChunk]] = {}
-        for chunk in result.scalars().all():
-            chunks_by_segment.setdefault(chunk.raw_segment_id, []).append(chunk)
-
-    entity_names_lower = {n.strip().lower() for n in entity_names}
-    related_chunks: List[TranscriptChunk] = []
-    # Preserve score-ranked segment order from `scored`; within a segment,
-    # only chunks that textually mention one of the bridging entities.
-    for sid in qualifying_segment_ids:
-        for chunk in chunks_by_segment.get(sid, []):
-            mentioned = {n.strip().lower() for n in (chunk.mentioned_entities or [])}
-            if mentioned & entity_names_lower:
-                related_chunks.append(chunk)
-
-    return related_chunks[:MAX_CANDIDATES]
-
-
-async def retrieve_chunks(
-    question: str, group_id: str, recording_language: str, session_id: str
-) -> List[TranscriptChunk]:
-    """Chunk-level parallel to retrieve() — orchestrates primary_match_chunks
-    + expand_graph_chunks for the video-clip mode. Unlike retrieve(), this
-    returns one flat, deduplicated list rather than a primary/candidates
-    split: per Prompt 13's own description ("for EACH matched chunk...
-    relevance verification"), every chunk gets the same per-candidate LLM
-    verification regardless of how it was found, unlike the avatar path
-    where primary segments proceed unconditionally and only expand_graph's
-    candidates get scored/filtered. Scoring (score_chunk_candidates) is
-    deliberately NOT applied here either — mirroring retrieve() itself,
-    which doesn't call score_candidates internally; that's the caller's
-    job (response_assembler.py today; Prompt 13's assembly step for this
-    mode)."""
-    primary_chunks = await primary_match_chunks(question, group_id, recording_language, session_id)
-    if not primary_chunks:
-        return []
-
-    visited = await cache_service.get_visited(session_id)
-    related_chunks = await expand_graph_chunks(primary_chunks, visited, group_id)
-
-    seen_ids = {chunk.id for chunk in primary_chunks}
-    combined = list(primary_chunks) + [c for c in related_chunks if c.id not in seen_ids]
-    return combined

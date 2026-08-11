@@ -304,9 +304,9 @@ Some names in the transcript are followed by a tag in square brackets naming WHI
 
 async def _load_archive(group_id: str) -> List[ArchiveSegment]:
     """Every 'ready' segment in this producer's archive (chronological by
-    created_at) with its chunks ordered by sequence_index. Same scoping
-    join retrieval_service._load_ready_chunks uses, just grouped/ordered
-    for a whole-archive read instead of a flat candidate list.
+    created_at) with its chunks ordered by sequence_index — the same
+    InterviewSession.user_id + status='ready' scoping join the segment-level
+    readers use, grouped/ordered for a whole-archive read.
 
     Deliberately UNCAPPED: the whole point of this mode is that the model
     reads the entire archive at once. ~1-2 hours of recording per producer
