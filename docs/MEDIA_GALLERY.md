@@ -810,6 +810,15 @@ a small timer drives the same motion. Clicking still opens the shared
 PhotoLightbox at the photo currently showing. TurnPhotoGallery only —
 the timeline period gallery (§4.4) keeps its thumbnail grid unchanged.
 
+Refined the same day, two producer requests: cards are 3:2 LANDSCAPE and
+larger (240×160 image area — the classic print proportion; the frame's
+shape is the polaroid's, never the file's), and the lightbox shows every
+photo inside a FIXED stage (object-contain letterboxing, constant-height
+caption band) so stepping through mixed portrait/landscape shots never
+moves the nav buttons. The stage fix lives in the shared PhotoLightbox,
+so the timeline gallery's viewer gets it too — its thumbnail grid is
+untouched.
+
 ---
 
 ## 9.5 2026-08-11 amendment — §4.1 and §3.1 updated for the tag-bubble timeline

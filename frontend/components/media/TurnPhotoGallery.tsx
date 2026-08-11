@@ -133,7 +133,9 @@ export function TurnPhotoGallery({
             ? `Open photos — showing: ${frontPhoto.caption}`
             : `Open photos (${n})`
         }
-        className="grid place-items-center p-3 overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 rounded-xl"
+        // p-4: a 256px-wide card tilted 3.5° overhangs its box by ~16px —
+        // any less and the pile's corners clip on the overflow-hidden edge.
+        className="grid place-items-center p-4 overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 rounded-xl"
       >
         {photos.map((photo, i) => {
           const depth = (i - front + n) % n
@@ -159,11 +161,15 @@ export function TurnPhotoGallery({
               }}
               className="relative bg-white p-2 pb-7 m-0"
             >
+              {/* 3:2 landscape — the classic photo-print proportion, which
+                  reads as a real print where a square read as a thumbnail.
+                  object-cover: the frame's shape is the polaroid's, never
+                  the file's. */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={photo.url}
                 alt={photo.caption ?? ''}
-                className="w-36 h-36 object-cover block"
+                className="w-60 h-40 object-cover block"
                 draggable={false}
               />
               {/* The polaroid's bottom margin is where a caption lives when

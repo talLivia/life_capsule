@@ -73,25 +73,32 @@ export function PhotoLightbox({
       {/* Stopping propagation keeps clicks on the photo and its chrome from
           reaching the backdrop's close handler. */}
       <figure
-        className="flex flex-col items-center gap-3 max-w-5xl"
+        className="flex flex-col items-center gap-3"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={photo.url}
-          alt={photo.caption ?? ''}
-          className="max-h-[78vh] max-w-full object-contain rounded-lg"
-        />
-        {(photo.caption || photo.taken_year) && (
-          <figcaption className="text-center">
-            {photo.caption && (
-              <p dir="auto" className="text-sm text-gray-200">{photo.caption}</p>
-            )}
-            {photo.taken_year && (
-              <p className="text-xs text-gray-500 mt-0.5">{photo.taken_year}</p>
-            )}
-          </figcaption>
-        )}
+        {/* A FIXED stage, whatever each photo's own dimensions: the photo
+            letterboxes/pillarboxes inside it (object-contain), so stepping
+            through a gallery of mixed portrait/landscape shots never
+            resizes the layout — which is what kept moving the nav buttons
+            out from under the pointer. */}
+        <div className="w-[min(86vw,56rem)] h-[68vh] flex items-center justify-center">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={photo.url}
+            alt={photo.caption ?? ''}
+            className="max-w-full max-h-full object-contain rounded-lg"
+          />
+        </div>
+        {/* Always rendered at a constant height — a caption appearing on one
+            photo and not the next must not shift the buttons either. */}
+        <figcaption className="text-center h-10">
+          {photo.caption && (
+            <p dir="auto" className="text-sm text-gray-200">{photo.caption}</p>
+          )}
+          {photo.taken_year && (
+            <p className="text-xs text-gray-500 mt-0.5">{photo.taken_year}</p>
+          )}
+        </figcaption>
       </figure>
 
       {photos.length > 1 && (
