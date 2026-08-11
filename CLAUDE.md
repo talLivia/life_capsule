@@ -139,9 +139,14 @@ multiple runs.
 
 ```bash
 python scripts/rebaseline_accuracy.py     # v2 accuracy as a MEAN over runs (use this)
-python scripts/compare_retrieval_modes.py # v1 vs v2, repeated-run consistency
 python scripts/seed_sweep.py              # single-run accuracy vs known-correct (IoU)
 ```
+
+`compare_retrieval_modes.py` (v1-vs-v2, repeated-run consistency) was
+deleted with the v1 mode (docs/V1_REMOVAL_PLAN.md §3.1); run-to-run
+stability is `prompt_regression.py`'s job now, and if a dedicated
+consistency number is ever wanted again the path is a `--repeat` flag
+there, not a revival.
 
 Quote accuracy as a **mean over runs**, not one figure. Current baseline:
 **v2 = 0.999 (stdev 0.000 over 5 runs, 7 scored questions)**. Note the scored
