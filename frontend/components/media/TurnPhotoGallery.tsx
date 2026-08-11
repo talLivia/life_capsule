@@ -122,7 +122,7 @@ export function TurnPhotoGallery({
   const frontPhoto = photos[front]
 
   return (
-    <>
+    <div className="flex justify-center w-full">
       <button
         type="button"
         onClick={() => setLightboxIndex(front)}
@@ -133,9 +133,9 @@ export function TurnPhotoGallery({
             ? `Open photos — showing: ${frontPhoto.caption}`
             : `Open photos (${n})`
         }
-        // p-4: a 256px-wide card tilted 3.5° overhangs its box by ~16px —
+        // p-6: a 328px-wide card tilted 3.5° overhangs its box by ~20px —
         // any less and the pile's corners clip on the overflow-hidden edge.
-        className="grid place-items-center p-4 overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 rounded-xl"
+        className="grid place-items-center p-6 overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 rounded-xl"
       >
         {photos.map((photo, i) => {
           const depth = (i - front + n) % n
@@ -169,7 +169,7 @@ export function TurnPhotoGallery({
               <img
                 src={photo.url}
                 alt={photo.caption ?? ''}
-                className="w-60 h-40 object-cover block"
+                className="w-[19.5rem] h-52 object-cover block"
                 draggable={false}
               />
               {/* The polaroid's bottom margin is where a caption lives when
@@ -196,6 +196,6 @@ export function TurnPhotoGallery({
           onClose={() => setLightboxIndex(null)}
         />
       )}
-    </>
+    </div>
   )
 }
