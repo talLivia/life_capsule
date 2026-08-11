@@ -1,4 +1,4 @@
-"""
+﻿"""
 Did a prompt edit change an answer it had nothing to do with?
 
 THE CHECK THAT CATCHES WHAT THE FEATURE'S OWN GATE CANNOT. A feature-specific
@@ -16,7 +16,7 @@ mechanism is that every instruction is in context for every question: the
 instruction text is English, the transcript is Hebrew, and concrete nouns in
 the instructions act as soft retrieval cues against it. Examples leak harder
 than rules, because examples are where the domain nouns live. Position matters
-too — the same clarify rule primed empty answers purely by sitting last.
+too â€” the same clarify rule primed empty answers purely by sitting last.
 
 So: run BEFORE the edit, run AFTER, diff the selected units. That is the whole
 idea, and it is worth more than any amount of reading the prompt carefully.
@@ -25,20 +25,20 @@ idea, and it is worth more than any amount of reading the prompt carefully.
 
     python scripts/prompt_regression.py --save     # BEFORE you edit the prompt
     ...edit the prompt...
-    python scripts/prompt_regression.py            # AFTER — diffs against it
+    python scripts/prompt_regression.py            # AFTER â€” diffs against it
 
 Exit code is non-zero when anything drifted, so it can gate a commit.
 
 ## Three things this harness does that a naive one would not
 
 **It hard-fails on a failed archive read.** This checks
-`UnitSelection.read_failed`, NOT just an exception — and the difference is the
+`UnitSelection.read_failed`, NOT just an exception â€” and the difference is the
 whole lesson. The earlier version only raised from a retry wrapper, which
 `_read_archive_for_ranges` swallowed, so the safety net was decorative: an
 outage still arrived here as "this question now returns nothing".
 
-`_read_archive_for_ranges` stays fail-soft — a live turn should get a sentence,
-not a stack trace — but it now REPORTS the failure instead of returning an
+`_read_archive_for_ranges` stays fail-soft â€” a live turn should get a sentence,
+not a stack trace â€” but it now REPORTS the failure instead of returning an
 empty selection that looks identical to a real one. Both of the broken
 measurements taken while building the same-name feature were outages that read
 as clean results, and so, most likely, was one live bug report. PROJECT_STATUS
@@ -48,7 +48,7 @@ enforced rather than warned about.
 **It refuses to compare across a changed archive.** The baseline records the
 archive fingerprint. Unit ids are positional across the whole archive, so
 re-recording one segment renumbers everything after it and every stored id
-becomes a lie. `seed_sweep.py`'s references died exactly this way — they name
+becomes a lie. `seed_sweep.py`'s references died exactly this way â€” they name
 segment uuids that no longer exist, and the questions they score are silently
 unscoreable.
 
@@ -61,7 +61,7 @@ means anything; drift anywhere else is a finding.
 ## The panel
 
 Every question from the comparison harness, plus MARGINAL ones added by hand.
-Marginal questions are where leakage lands — not at random. `school` asks what
+Marginal questions are where leakage lands â€” not at random. `school` asks what
 he STUDIED while the units say WHERE he studied; that stretch is a close call
 the model can go either way on, so any perturbation flips it. The set of
 leakage-vulnerable questions is approximately the set of already-unstable
@@ -92,7 +92,7 @@ if sys.platform == "win32":
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import compare_retrieval_modes as crm  # noqa: E402
+import eval_common as crm  # noqa: E402
 from app.services import full_archive_retrieval as ar  # noqa: E402
 from app.services import retrieval_service  # noqa: E402
 from app.services.llm import llm_service  # noqa: E402
@@ -100,17 +100,17 @@ from app.services.llm import llm_service  # noqa: E402
 BASELINE = Path(__file__).resolve().parent / "prompt_regression_baseline.json"
 
 #: Questions found to flip on an edit that had nothing to do with them. Not a
-#: guess — each one earned its place by actually moving. Keep the reason.
+#: guess â€” each one earned its place by actually moving. Keep the reason.
 MARGINAL: Dict[str, str] = {
     # Asks what he STUDIED; the units say WHERE he studied. Flipped 8 -> 0 on
     # three separate unrelated edits.
-    "school": "answered by a stretch — 'what did you study' vs units naming schools",
+    "school": "answered by a stretch â€” 'what did you study' vs units naming schools",
     # Narrow role question sitting next to units about army friends. Broadened
     # 2 -> 4 when an unrelated instruction mentioned "my friend from the army".
     "army-narrow": "narrow question adjacent to broader material in the same recording",
     # Both documented in CLAUDE.md as varying run to run on peripheral units.
-    "family": "broad — CLAUDE.md documents +/-1-2 peripheral units",
-    "army-broad": "broad — CLAUDE.md documents +/-1-2 peripheral units",
+    "family": "broad â€” CLAUDE.md documents +/-1-2 peripheral units",
+    "army-broad": "broad â€” CLAUDE.md documents +/-1-2 peripheral units",
     # Broad question about a person; how much context travels with the
     # name-bearing units is exactly the judgement under test here.
     "about-a-person": "broad question about a person named in only one unit per recording",
@@ -118,7 +118,7 @@ MARGINAL: Dict[str, str] = {
 
 #: The archive fingerprint the `uncle-then-more` fixture was derived from.
 #: Unit ids are positional across the whole archive, so these lists are void
-#: the moment anything is re-recorded — the builder REFUSES to run rather
+#: the moment anything is re-recorded â€” the builder REFUSES to run rather
 #: than silently testing different words (how seed_sweep.py's references
 #: died, twice).
 _UNCLE_STATE_ARCHIVE_VERSION = (
@@ -129,10 +129,10 @@ _UNCLE_STATE_ARCHIVE_VERSION = (
 
 #: The live session's per-assistant-turn unit lists (2026-08-09, session
 #: 90992fb3), oldest first, up to and including the answer to
-#: "מי הדודים שלך?". VERBATIM, not abstracted: the reproduction is
-#: state-sensitive enough that plausible simplifications of this list — the
+#: "×ž×™ ×”×“×•×“×™× ×©×œ×š?". VERBATIM, not abstracted: the reproduction is
+#: state-sensitive enough that plausible simplifications of this list â€” the
 #: uncle's whole segment as one turn, or "everything except the friend's
-#: recordings" — measured 0/2 where this exact state measured 5/5 and 2/2.
+#: recordings" â€” measured 0/2 where this exact state measured 5/5 and 2/2.
 _UNCLE_STATE_TURNS: List[List[str]] = [
     [f"u{i}" for i in range(4, 11)] + ["u23", "u24", "u25", "u65", "u66", "u67"],
     [f"u{i}" for i in range(26, 41)]
@@ -148,14 +148,14 @@ _UNCLE_STATE_TURNS: List[List[str]] = [
 #: played (turns 1-2), three unrelated family turns, a clarify (persisted
 #: assistant row, no units), then the uncle resolved and fully played. The
 #: distinguishing feature vs _UNCLE_STATE_TURNS: BOTH same-named people are
-#: exhausted when the "עוד" question lands.
+#: exhausted when the "×¢×•×“" question lands.
 _UNCLE_EXHAUSTED_TURNS: List[List[str]] = [
     [f"u{i}" for i in range(11, 15)],
     [f"u{i}" for i in range(15, 23)],
     [f"u{i}" for i in range(4, 11)],
     ["u23", "u24", "u25"],
     [f"u{i}" for i in range(26, 31)],
-    [],  # the clarify reply "לאיזה אמנון התכוונת?"
+    [],  # the clarify reply "×œ××™×–×” ××ž× ×•×Ÿ ×”×ª×›×•×•× ×ª?"
     ["u74", "u75", "u76", "u77", "u78"],
 ]
 
@@ -166,7 +166,7 @@ async def _verified_uncle_state(
     """Shared guards for the state-bearing fixtures, so they go stale LOUDLY.
 
     Checks the archive fingerprint, that the last turn's units all belong to
-    the uncle's recording, and that everything about him is shown — the facts
+    the uncle's recording, and that everything about him is shown â€” the facts
     the reproductions actually rest on. `friend_exhausted` additionally
     asserts every unit of the friend's recordings is shown, which is what
     separates the two cases."""
@@ -234,7 +234,7 @@ async def _uncle_exhausted_state(group_id: str) -> List[List[str]]:
 #: marginal judgement. (label, question, history, shown_turns)
 #:
 #: `shown_turns` is None, or an async builder (group_id) -> per-turn unit-id
-#: lists, oldest first — the last list is what the previous assistant turn
+#: lists, oldest first â€” the last list is what the previous assistant turn
 #: played. It exists because the comparison set runs every question against an
 #: EMPTY session, and one live regression was invisible in exactly that state:
 #: the answer only went wrong once the subject's units were ALREADY SHOWN.
@@ -245,37 +245,37 @@ EXTRA: List[Tuple[str, str, List[dict], Optional[object]]] = [
     # question is here because it was reported live and reproduced 4/4.
     (
         "about-a-person",
-        "ספר לי  על אמנון — אמנון, חבר שלי מהצבא ומהלימודים",
-        [{"role": "assistant", "content": "לאיזה אמנון אתה מתכוון?"},
-         {"role": "user", "content": "ספר לי  על אמנון — אמנון, חבר שלי מהצבא ומהלימודים"}],
+        "×¡×¤×¨ ×œ×™  ×¢×œ ××ž× ×•×Ÿ â€” ××ž× ×•×Ÿ, ×—×‘×¨ ×©×œ×™ ×ž×”×¦×‘× ×•×ž×”×œ×™×ž×•×“×™×",
+        [{"role": "assistant", "content": "×œ××™×–×” ××ž× ×•×Ÿ ××ª×” ×ž×ª×›×•×•×Ÿ?"},
+         {"role": "user", "content": "×¡×¤×¨ ×œ×™  ×¢×œ ××ž× ×•×Ÿ â€” ××ž× ×•×Ÿ, ×—×‘×¨ ×©×œ×™ ×ž×”×¦×‘× ×•×ž×”×œ×™×ž×•×“×™×"}],
         None,
     ),
     # THE STATE-BEARING CASE. Live 2026-08-09: with the uncle just discussed
-    # and all of his units already shown, "יש עוד סיפור על אמנון?" answered
-    # with the OTHER אמנון — the army friend's passages — 5/5 in faithful
+    # and all of his units already shown, "×™×© ×¢×•×“ ×¡×™×¤×•×¨ ×¢×œ ××ž× ×•×Ÿ?" answered
+    # with the OTHER ××ž× ×•×Ÿ â€” the army friend's passages â€” 5/5 in faithful
     # replay. Correct behaviour is an empty selection (everything about the
     # uncle has played; the friend is a different person), which the no-story
     # path then names. The edit that caused it (the backward-passage bullet,
     # 323f88d) passed this panel clean, because every other case runs with an
     # empty session: the bug needs ALREADY SHOWN marks on the subject's units
-    # to exist at all. NOT in MARGINAL — it reproduced 5/5 and its correct
+    # to exist at all. NOT in MARGINAL â€” it reproduced 5/5 and its correct
     # form held 3/3, so any drift here is a finding, not noise.
     (
         "uncle-then-more",
-        "יש עוד סיפור על אמנון?",
+        "×™×© ×¢×•×“ ×¡×™×¤×•×¨ ×¢×œ ××ž× ×•×Ÿ?",
         [{"role": "assistant",
-          "content": "יש לי גם דוד מצד אבא שקוראים לו אמנון ויש לו שתי ילדים בר ודור"},
-         {"role": "user", "content": "יש עוד סיפור על אמנון?"}],
+          "content": "×™×© ×œ×™ ×’× ×“×•×“ ×ž×¦×“ ××‘× ×©×§×•×¨××™× ×œ×• ××ž× ×•×Ÿ ×•×™×© ×œ×• ×©×ª×™ ×™×œ×“×™× ×‘×¨ ×•×“×•×¨"},
+         {"role": "user", "content": "×™×© ×¢×•×“ ×¡×™×¤×•×¨ ×¢×œ ××ž× ×•×Ÿ?"}],
         _uncle_conversation_state,
     ),
     # THE NEIGHBOURING STATE, failed live 2026-08-09 23:28 UTC (session
-    # 70305082, turn 8) and DELIBERATELY LEFT UNFIXED — a documented known
+    # 70305082, turn 8) and DELIBERATELY LEFT UNFIXED â€” a documented known
     # gap, see PROJECT_STATUS. Same question, same uncle-just-discussed
     # history, but BOTH same-named people are exhausted. The model switched
     # to the friend and replayed him in full; the correct output is an empty
-    # selection with about naming the uncle ("זה כל מה שיש לי על אמנון נחום").
+    # selection with about naming the uncle ("×–×” ×›×œ ×ž×” ×©×™×© ×œ×™ ×¢×œ ××ž× ×•×Ÿ × ×—×•×").
     #
-    # ⚠️ NO BASELINE ENTRY EXISTS YET (added while Gemini credits were
+    # âš ï¸ NO BASELINE ENTRY EXISTS YET (added while Gemini credits were
     # exhausted), and the LIVE behaviour on this state is the bug. The first
     # --save will therefore pin CURRENT behaviour, whatever it is: read the
     # recorded variant as "the gap, pinned for drift-detection", never as
@@ -283,10 +283,10 @@ EXTRA: List[Tuple[str, str, List[dict], Optional[object]]] = [
     # intended outcome. NOT in MARGINAL for the same reason as its sibling.
     (
         "uncle-then-more-exhausted",
-        "יש עוד סיפור על אמנון?",
+        "×™×© ×¢×•×“ ×¡×™×¤×•×¨ ×¢×œ ××ž× ×•×Ÿ?",
         [{"role": "assistant",
-          "content": "יש לי גם דוד מצד אבא שקוראים לו אמנון ויש לו שתי ילדים בר ודור"},
-         {"role": "user", "content": "יש עוד סיפור על אמנון?"}],
+          "content": "×™×© ×œ×™ ×’× ×“×•×“ ×ž×¦×“ ××‘× ×©×§×•×¨××™× ×œ×• ××ž× ×•×Ÿ ×•×™×© ×œ×• ×©×ª×™ ×™×œ×“×™× ×‘×¨ ×•×“×•×¨"},
+         {"role": "user", "content": "×™×© ×¢×•×“ ×¡×™×¤×•×¨ ×¢×œ ××ž× ×•×Ÿ?"}],
         _uncle_exhausted_state,
     ),
 ]
@@ -307,7 +307,7 @@ def _install_hard_failing_llm(retries: int = 6) -> None:
                     messages=messages, system_prompt=system_prompt,
                     thinking=thinking, temperature=temperature, **kw
                 )
-            except Exception as e:  # noqa: BLE001 — re-raised below
+            except Exception as e:  # noqa: BLE001 â€” re-raised below
                 last = e
                 await asyncio.sleep(4 * (attempt + 1))
         raise ExhaustedAPI(f"{retries} attempts failed; last: {last}")
@@ -336,7 +336,7 @@ async def _run_once(
     if shown_turns is not None:
         # A faithful shown-state, the way production stores it: per-turn unit
         # records carrying REAL texts. An approximate window reproduces
-        # nothing — that lesson is paid for three times over in
+        # nothing â€” that lesson is paid for three times over in
         # PROJECT_STATUS; empty texts here made the live bug vanish.
         _archive, _em, units, _tags = await ar._archive_bundle(group_id)
         by_id = {u.unit_id: u for u in units}
@@ -402,7 +402,7 @@ async def measure(group_id: str, runs: int) -> dict:
 
 def compare(before: dict, after: dict) -> int:
     if before["archive_version"] != after["archive_version"]:
-        print("\nBASELINE IS VOID — the archive changed since it was saved.")
+        print("\nBASELINE IS VOID â€” the archive changed since it was saved.")
         print(f"  saved: {before['archive_version']}")
         print(f"  now  : {after['archive_version']}")
         print(
@@ -429,7 +429,7 @@ def compare(before: dict, after: dict) -> int:
             print(f"  {label:24} same")
             continue
         drifted.append(label)
-        flag = "DRIFT (known-marginal — re-run with more N before acting)" if label in MARGINAL else "DRIFT"
+        flag = "DRIFT (known-marginal â€” re-run with more N before acting)" if label in MARGINAL else "DRIFT"
         print(f"  {label:24} {flag}{note}")
         only_before = sorted(set().union(*b_units) - set().union(*a_units)) if b_units else []
         only_after = sorted(set().union(*a_units) - set().union(*b_units)) if a_units else []
@@ -442,7 +442,7 @@ def compare(before: dict, after: dict) -> int:
 
     print("\n" + "=" * 74)
     if not drifted:
-        print("NO DRIFT — the edit changed nothing on this panel.")
+        print("NO DRIFT â€” the edit changed nothing on this panel.")
         return 0
     unexpected = [d for d in drifted if d not in MARGINAL]
     print(f"{len(drifted)} question(s) drifted: {drifted}")
@@ -454,7 +454,7 @@ def compare(before: dict, after: dict) -> int:
         )
     print(
         "\nIf a question drifted that is not in MARGINAL, add it there with the\n"
-        "reason once you understand it — the panel is only useful if it grows\n"
+        "reason once you understand it â€” the panel is only useful if it grows\n"
         "from real findings."
     )
     return 1
@@ -475,11 +475,11 @@ async def main() -> int:
     try:
         current = await measure(args.group_id, args.runs)
     except ExhaustedAPI as e:
-        print(f"\nABORTED — {e}")
+        print(f"\nABORTED â€” {e}")
         print(
             "Deliberately not reported as a result. The archive read is\n"
             "fail-soft, so an outage would otherwise look like 'this question\n"
-            "now returns nothing' — which is how two measurements were misread\n"
+            "now returns nothing' â€” which is how two measurements were misread\n"
             "while building the same-name feature."
         )
         return 3

@@ -1,14 +1,14 @@
-"""
-Before/after for the same-name clarification feature (docs/ENTITY_DISAMBIGUATION.md §6).
+﻿"""
+Before/after for the same-name clarification feature (docs/ENTITY_DISAMBIGUATION.md Â§6).
 
 Two arms over the SAME live archive, differing in one thing only:
 
-  OFF — `_build_name_tags_for` forced to {}, which is exactly the pre-feature
+  OFF â€” `_build_name_tags_for` forced to {}, which is exactly the pre-feature
         state: no tags in the transcript, no disambiguation instruction in the
         prompt, `clarify` ignored even if the model invents it. Byte-identical
         to the prompt this archive got before the feature existed (asserted
         separately in tests).
-  ON  — the real thing.
+  ON  â€” the real thing.
 
 THE GATE COMES FIRST, and it is about NOT clarifying. A model taught to ask
 "which one?" that starts asking when the answer was obvious is worse than the
@@ -17,20 +17,20 @@ over-asking affects every question. So:
 
     Clarification rate on the existing unambiguous questions must be 0.
 
-A note on "19". ENTITY_DISAMBIGUATION.md §6.3 says 19 existing questions (7
-scored + 12 comparison). Those are not disjoint — the 7 scored are a SUBSET of
-the 12 in compare_retrieval_modes.QUESTION_SET, so the real gate is 12
+A note on "19". ENTITY_DISAMBIGUATION.md Â§6.3 says 19 existing questions (7
+scored + 12 comparison). Those are not disjoint â€” the 7 scored are a SUBSET of
+the 12 in eval_common.QUESTION_SET, so the real gate is 12
 DISTINCT questions. Reported honestly as 12 rather than inflated to 19.
 
 The gate is necessary and not sufficient. Tags change the transcript of 3 of
 14 recordings, so this also diffs the SELECTED UNITS per question between the
-arms — an answer about the army silently shifting because a tag was added
+arms â€” an answer about the army silently shifting because a tag was added
 three lines away is the quieter version of the same failure.
 
 Every arm runs REPEAT times (CLAUDE.md: the archive-read call is
 non-deterministic on marginal units, so n=1 measures nothing). Known-unstable
 questions are marked in the output rather than silently averaged: `family` and
-`army-broad` vary ±1-2 peripheral units run to run, independently of anything
+`army-broad` vary Â±1-2 peripheral units run to run, independently of anything
 here.
 
 Usage: python scripts/eval_name_disambiguation.py [group_id]
@@ -57,14 +57,14 @@ if sys.platform == "win32":
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import compare_retrieval_modes as crm  # noqa: E402
+import eval_common as crm  # noqa: E402
 from app.services import full_archive_retrieval as ar  # noqa: E402
 from app.services import retrieval_service  # noqa: E402
 
 REPEAT = int(os.environ.get("EVAL_REPEAT", "3"))
 
 #: The ambiguous-name cases. Every one of them is about the SAME two people:
-#: אמנון the army friend and אמנון נחום the uncle. Three of the five are about
+#: ××ž× ×•×Ÿ the army friend and ××ž× ×•×Ÿ × ×—×•× the uncle. Three of the five are about
 #: NOT clarifying, which is the ratio the risk deserves.
 #:
 #: (label, question, history, expectation)
@@ -72,20 +72,20 @@ REPEAT = int(os.environ.get("EVAL_REPEAT", "3"))
 #:   "friend"   -> must answer from the friend's recordings ONLY
 #:   "uncle"    -> must answer from the uncle's recording ONLY
 NEW_CASES: List[Tuple[str, str, List[dict], str]] = [
-    ("ambiguous", "ספר לי על אמנון", [], "clarify"),
-    ("specific-by-name", "ספר לי על אמנון נחום", [], "uncle"),
-    ("specific-by-role", "ספר לי על הדוד שלך אמנון", [], "uncle"),
-    # NOT "what did אמנון DO in the army" — measured, and the archive does not
+    ("ambiguous", "×¡×¤×¨ ×œ×™ ×¢×œ ××ž× ×•×Ÿ", [], "clarify"),
+    ("specific-by-name", "×¡×¤×¨ ×œ×™ ×¢×œ ××ž× ×•×Ÿ × ×—×•×", [], "uncle"),
+    ("specific-by-role", "×¡×¤×¨ ×œ×™ ×¢×œ ×”×“×•×“ ×©×œ×š ××ž× ×•×Ÿ", [], "uncle"),
+    # NOT "what did ××ž× ×•×Ÿ DO in the army" â€” measured, and the archive does not
     # answer it: the recording says the speaker was in the air force, served
-    # three years, and has a friend אמנון from there. Nothing says what אמנון
+    # three years, and has a friend ××ž× ×•×Ÿ from there. Nothing says what ××ž× ×•×Ÿ
     # did. A case whose expected answer is not in the archive measures the
     # model's willingness to over-reach, not its disambiguation.
-    ("resolved-by-context", "ספר לי על אמנון מהצבא", [], "friend"),
+    ("resolved-by-context", "×¡×¤×¨ ×œ×™ ×¢×œ ××ž× ×•×Ÿ ×ž×”×¦×‘×", [], "friend"),
     (
         "resolved-by-history",
-        "ומה עוד?",
+        "×•×ž×” ×¢×•×“?",
         [
-            {"role": "user", "content": "ספר לי על אמנון החבר שלך מהצבא"},
+            {"role": "user", "content": "×¡×¤×¨ ×œ×™ ×¢×œ ××ž× ×•×Ÿ ×”×—×‘×¨ ×©×œ×š ×ž×”×¦×‘×"},
             {"role": "assistant", "content": "http://localhost:8000/uploads/x.mp4"},
         ],
         "friend",
@@ -188,7 +188,7 @@ async def main() -> None:
     print(f"Archive {group_id}")
     print(f"Confusable recordings: {[(s[:8], r) for s, r in roles.items()]}")
     if not roles:
-        print("\nNo two people share a name in this archive — nothing to measure.")
+        print("\nNo two people share a name in this archive â€” nothing to measure.")
         return
 
     unambiguous = [(label, q, h) for label, q, h in crm.QUESTION_SET]
@@ -203,9 +203,9 @@ async def main() -> None:
     off_new = await _arm("OFF", group_id, new_cases, tags_on=False)
     on_new = await _arm("ON ", group_id, new_cases, tags_on=True)
 
-    # ── THE GATE ────────────────────────────────────────────────────────────
+    # â”€â”€ THE GATE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print("\n" + "=" * 78)
-    print("GATE — clarification rate on unambiguous questions (must be 0)")
+    print("GATE â€” clarification rate on unambiguous questions (must be 0)")
     print("=" * 78)
     total = failures = 0
     for label, runs in on_gate.items():
@@ -222,7 +222,7 @@ async def main() -> None:
         f"-> {'PASS' if total == 0 else 'FAIL'}"
     )
 
-    # ── Did tagging perturb answers it has nothing to do with? ──────────────
+    # â”€â”€ Did tagging perturb answers it has nothing to do with? â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print("\n" + "=" * 78)
     print("SELECTION DRIFT on unambiguous questions (OFF vs ON)")
     print("=" * 78)
@@ -242,7 +242,7 @@ async def main() -> None:
                 f"      only ON : {only_on}"
             )
 
-    # ── The cases the feature exists for ────────────────────────────────────
+    # â”€â”€ The cases the feature exists for â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print("\n" + "=" * 78)
     print("SAME-NAME CASES")
     print("=" * 78)

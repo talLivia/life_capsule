@@ -1,11 +1,11 @@
-"""Re-baseline v2's accuracy as a MEAN OVER RUNS, not a single number.
+﻿"""Re-baseline v2's accuracy as a MEAN OVER RUNS, not a single number.
 
 The archive-read call is knowingly non-deterministic on marginal unit choices
-(a thinking model's reasoning path isn't seed-controlled — see llm.py's
+(a thinking model's reasoning path isn't seed-controlled â€” see llm.py's
 _DETERMINISTIC_SEED note), so quoting one run's figure overstates precision.
 This runs the scored question set N times and reports mean / stdev / min / max
 per question and overall, plus how many DISTINCT answers each question
-produced — which is the honest picture of the variance we accepted.
+produced â€” which is the honest picture of the variance we accepted.
 
 Usage: python scripts/rebaseline_accuracy.py            (N=5)
        REBASELINE_RUNS=10 python scripts/rebaseline_accuracy.py
@@ -29,7 +29,7 @@ if sys.platform == "win32":
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import compare_retrieval_modes as crm  # noqa: E402
+import eval_common as crm  # noqa: E402
 import seed_sweep as ss  # noqa: E402
 from app.services import retrieval_service  # noqa: E402
 
@@ -42,7 +42,7 @@ async def main() -> None:
 
     scored = [(label, q, h) for label, q, h in crm.QUESTION_SET if label in ss.REFERENCES]
     print(f"Re-baselining v2 over {RUNS} runs on {len(scored)} scored questions")
-    print("(mean, not a single figure — this call is non-deterministic on marginal units)")
+    print("(mean, not a single figure â€” this call is non-deterministic on marginal units)")
     print("=" * 96)
 
     per_q: Dict[str, List[float]] = {label: [] for label, _, _ in scored}

@@ -24,14 +24,16 @@ seed VALUES settle on different (each still stable) answers — so we choose
 the value that is both stable AND most accurate against known-correct
 answers, not just the first one tried.
 
-Reuses the comparison harness's mode helpers (compare_retrieval_modes),
-sweeps seeds by patching app.services.llm._DETERMINISTIC_SEED (read at call
-time, so reassigning the module global takes effect), runs the full
-question set through both modes per seed, and scores accuracy by IoU
+Reuses the eval fleet's shared helpers (eval_common — the surviving half
+of the retired comparison harness, docs/V1_REMOVAL_PLAN.md), sweeps seeds
+by patching app.services.llm._DETERMINISTIC_SEED (read at call time, so
+reassigning the module global takes effect), runs the full question set
+through the v2 range decision per seed, and scores accuracy by IoU
 (intersection-over-union of the returned time range vs the known-correct
 range) on the questions where we have a confirmed answer. "brothers" (the
 tight siblings range) is the primary benchmark — see REFERENCES for its
-current range, and do not quote a range from this docstring.
+current range, and do not quote a range from this docstring. (The v1 arm
+this script once also swept was removed with the mode.)
 
 Usage: python scripts/seed_sweep.py
 """
@@ -49,11 +51,11 @@ sys.stdout.reconfigure(encoding="utf-8")
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # for compare_retrieval_modes
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # for eval_common
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # for app.*
 
 import app.services.llm as llm_mod  # noqa: E402
-import compare_retrieval_modes as crm  # noqa: E402
+import eval_common as crm  # noqa: E402
 from app.services import retrieval_service  # noqa: E402
 from app.services.video_clip_assembler import ExpandedClip  # noqa: E402
 
@@ -150,48 +152,43 @@ async def main() -> None:
     print(f"Seed sweep over {SEEDS} — accuracy = IoU vs known-correct (brothers is primary)")
     print("=" * 100)
 
-    # seed -> {"v1": mean_acc, "v2": mean_acc, "brothers_v1": str, "brothers_v2": str}
+    # seed -> {"v2": mean_acc, "brothers_v2": str}
     summary: dict[int, dict] = {}
 
     for seed in SEEDS:
         llm_mod._DETERMINISTIC_SEED = seed
         print(f"\n### seed = {seed}")
-        v1_scores: List[float] = []
         v2_scores: List[float] = []
-        brothers = {"v1": "", "v2": ""}
+        brothers_v2 = ""
         for label, question, history in crm.QUESTION_SET:
-            v1c = await _ranges(crm._v1_ranges, question, group_id, lang, history)
             v2c = await _ranges(crm._v2_ranges, question, group_id, lang, history)
             ref = REFERENCES.get(label, "unscored")
             if ref != "unscored":
-                s1, s2 = _score(v1c, ref), _score(v2c, ref)
-                v1_scores.append(s1)
+                s2 = _score(v2c, ref)
                 v2_scores.append(s2)
-                mark = f"  [v1 IoU={s1:.2f} | v2 IoU={s2:.2f}]"
+                mark = f"  [v2 IoU={s2:.2f}]"
             else:
                 mark = "  [unscored]"
             if label == "brothers":
-                brothers = {"v1": _fmt(v1c), "v2": _fmt(v2c)}
-            print(f"  {label:24s} v1: {_fmt(v1c):40s} v2: {_fmt(v2c):28s}{mark}")
+                brothers_v2 = _fmt(v2c)
+            print(f"  {label:24s} v2: {_fmt(v2c):40s}{mark}")
 
-        v1_acc = sum(v1_scores) / len(v1_scores)
         v2_acc = sum(v2_scores) / len(v2_scores)
-        summary[seed] = {"v1": v1_acc, "v2": v2_acc, **{f"brothers_{k}": v for k, v in brothers.items()}}
-        print(f"  --> mean accuracy: v1={v1_acc:.3f}  v2={v2_acc:.3f}")
+        summary[seed] = {"v2": v2_acc, "brothers_v2": brothers_v2}
+        print(f"  --> mean accuracy: v2={v2_acc:.3f}")
 
     print("\n" + "=" * 100)
-    print(f"{'seed':>6} | {'v1 acc':>7} | {'v2 acc':>7} | {'combined':>8} | brothers v2 (target 502fb283:3.3-12.3)")
+    print(f"{'seed':>6} | {'v2 acc':>7} | brothers v2 (target 502fb283:3.3-12.3)")
     print("-" * 100)
-    best_seed, best_combined = None, -1.0
+    best_seed, best_acc = None, -1.0
     for seed in SEEDS:
         s = summary[seed]
-        combined = (s["v1"] + s["v2"]) / 2
-        if combined > best_combined:
-            best_combined, best_seed = combined, seed
-        print(f"{seed:>6} | {s['v1']:>7.3f} | {s['v2']:>7.3f} | {combined:>8.3f} | {s['brothers_v2']}")
+        if s["v2"] > best_acc:
+            best_acc, best_seed = s["v2"], seed
+        print(f"{seed:>6} | {s['v2']:>7.3f} | {s['brothers_v2']}")
 
     print("-" * 100)
-    print(f"Best combined accuracy: seed={best_seed} (combined={best_combined:.3f})")
+    print(f"Best accuracy: seed={best_seed} (v2={best_acc:.3f})")
     print("Pick the seed that is both accurate AND stable; stability is confirmed separately")
     print("(the fixed-seed mechanism itself was already shown 8/8 stable at seed=7).")
 

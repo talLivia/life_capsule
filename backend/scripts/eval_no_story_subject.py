@@ -1,10 +1,10 @@
-"""
+﻿"""
 Does the tailored no-story line name the right subject, and stay quiet
 when there isn't one?
 
 THE RISK IS ASYMMETRIC, so this measures the negative case harder than the
-positive one. "I don't have another story about אמנון" is a small win when
-right. "I don't have another story about תל אביב" in answer to "what pets did
+positive one. "I don't have another story about ××ž× ×•×Ÿ" is a small win when
+right. "I don't have another story about ×ª×œ ××‘×™×‘" in answer to "what pets did
 you have?" is a confident wrong claim about the archive, and it would read as
 the system inventing a subject. The generic line is a perfectly good answer
 for a question about nobody in particular.
@@ -14,7 +14,7 @@ which have NO subject at all and must come back with the generic text
 untouched, plus the follow-up case this was built for.
 
 Hard-fails on an exhausted retry: the archive read is fail-soft, so an outage
-returns an empty selection AND no subject — which is indistinguishable from
+returns an empty selection AND no subject â€” which is indistinguishable from
 "correctly declined to name one". Both of the broken measurements taken while
 building the same-name feature were exactly this.
 
@@ -39,7 +39,7 @@ if sys.platform == "win32":
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import compare_retrieval_modes as crm  # noqa: E402
+import eval_common as crm  # noqa: E402
 from app.services import full_archive_retrieval as ar  # noqa: E402
 from app.services import retrieval_service  # noqa: E402
 from app.services.llm import llm_service  # noqa: E402
@@ -50,7 +50,7 @@ async def _seed_session_with_shown(group_id: str, segment_prefixes: List[str]) -
     """A session that has ALREADY played this person's recordings.
 
     THE CASE ONLY EXISTS ONCE THE MATERIAL IS SPENT. "What else did you do
-    together?" is only a no-story question when there is nothing left — and
+    together?" is only a no-story question when there is nothing left â€” and
     "already shown" lives in the assistant Message's metadata, keyed by
     session, not in the conversation TEXT. Patching `_recent_turns` alone (the
     obvious way to inject history) leaves the shown-unit record empty, so the
@@ -100,37 +100,37 @@ async def _drop_session(session_id: str) -> None:
 #:   "<name>"  -> must name exactly this entity
 #:   "answer"  -> not a no-story question at all; must still play something
 CASES: List[Tuple[str, str, List[dict], str]] = [
-    # THE CASE THIS WAS BUILT FOR. The question names nobody — the subject has
+    # THE CASE THIS WAS BUILT FOR. The question names nobody â€” the subject has
     # to be resolved from the previous turn, which is the whole reason a
     # lexical match on the question text could not do this.
     (
-        "followup-about-amnon", "מה עוד עשיתם ביחד?",
+        "followup-about-amnon", "×ž×” ×¢×•×“ ×¢×©×™×ª× ×‘×™×—×“?",
         # The assistant turn carries the CLIP'S SPOKEN TEXT, because that is
         # what _persist_message stores for v2 ("spoken_text or video_url").
-        # It used to be a bare URL here, which is what v1 stores — and with a
+        # It used to be a bare URL here, which is what v1 stores â€” and with a
         # URL as the only antecedent the subject cannot be resolved, so this
         # case failed for a reason that exists nowhere in production. Second
         # time this fixture has misrepresented a real session; the first was
         # not seeding shown_units at all.
-        [{"role": "user", "content": "ספר לי על אמנון החבר שלך מהצבא"},
+        [{"role": "user", "content": "×¡×¤×¨ ×œ×™ ×¢×œ ××ž× ×•×Ÿ ×”×—×‘×¨ ×©×œ×š ×ž×”×¦×‘×"},
          {"role": "assistant",
-          "content": "הייתי הולך למכללת עמק הירדן ביחד עם חבר שלי אמנון"}],
-        "אמנון",
-    ),  # runs against a session where BOTH of אמנון's recordings are spent
+          "content": "×”×™×™×ª×™ ×”×•×œ×š ×œ×ž×›×œ×œ×ª ×¢×ž×§ ×”×™×¨×“×Ÿ ×‘×™×—×“ ×¢× ×—×‘×¨ ×©×œ×™ ××ž× ×•×Ÿ"}],
+        "××ž× ×•×Ÿ",
+    ),  # runs against a session where BOTH of ××ž× ×•×Ÿ's recordings are spent
     # The three existing no-story questions. None has a subject; all three
     # must be left exactly as they are today.
-    ("no-answer", "איזה חיות מחמד היו לך?", [], "generic"),
-    ("montreal", "מה לך ולעיר מונטריאול?", [], "generic"),
-    ("influence-1", "מי הדמות הכי משפיעה בילדות שלך?", [], "generic"),
+    ("no-answer", "××™×–×” ×—×™×•×ª ×ž×—×ž×“ ×”×™×• ×œ×š?", [], "generic"),
+    ("montreal", "×ž×” ×œ×š ×•×œ×¢×™×¨ ×ž×•× ×˜×¨×™××•×œ?", [], "generic"),
+    ("influence-1", "×ž×™ ×”×“×ž×•×ª ×”×›×™ ×ž×©×¤×™×¢×” ×‘×™×œ×“×•×ª ×©×œ×š?", [], "generic"),
     (
-        "influence-2 (followup)", "הוא עדיין בחיים?",
-        [{"role": "user", "content": "מי הדמות הכי משפיעה בילדות שלך?"},
+        "influence-2 (followup)", "×”×•× ×¢×“×™×™×Ÿ ×‘×—×™×™×?",
+        [{"role": "user", "content": "×ž×™ ×”×“×ž×•×ª ×”×›×™ ×ž×©×¤×™×¢×” ×‘×™×œ×“×•×ª ×©×œ×š?"},
          {"role": "assistant", "content": "http://localhost:8000/uploads/x.mp4"}],
         "generic",
     ),
     # A control: a question that HAS an answer must be unaffected. If naming a
     # subject started suppressing answers, that would show up here first.
-    ("brothers (control)", "מי האחים שלך?", [], "answer"),
+    ("brothers (control)", "×ž×™ ×”××—×™× ×©×œ×š?", [], "answer"),
 ]
 
 
@@ -158,7 +158,7 @@ def _install_hard_failing_llm(retries: int = 6) -> None:
 async def run(question: str, group_id: str, history: List[dict], session_id: Optional[str] = None):
     # PRODUCTION'S WINDOW, not an approximation of it. `_recent_turns` runs
     # AFTER the user's question is persisted and takes the last
-    # COREFERENCE_HISTORY_TURNS *message rows* — so the real window is the
+    # COREFERENCE_HISTORY_TURNS *message rows* â€” so the real window is the
     # previous assistant reply plus the question being asked, never the
     # previous exchange. Fixtures that got this wrong have now produced one
     # false negative and one false positive in this file alone.
@@ -179,7 +179,7 @@ async def run(question: str, group_id: str, history: List[dict], session_id: Opt
         retrieval_service._recent_turns = original
     if result.read_failed:
         # NOT a result. Checked on the flag rather than on an exception,
-        # because _read_archive_for_ranges catches everything — the retry
+        # because _read_archive_for_ranges catches everything â€” the retry
         # wrapper's raise never reached this harness, so the "hard fail" was
         # decorative until ArchiveRead.failed existed.
         raise ExhaustedAPI("the archive read failed; not recording it as an answer")
@@ -229,7 +229,7 @@ async def main() -> int:
             for t in distinct:
                 print(f"        {t}")
     except ExhaustedAPI as e:
-        print(f"\nABORTED — {e}")
+        print(f"\nABORTED â€” {e}")
         print("Not reported as a result: fail-soft makes an outage look exactly "
               "like 'correctly declined to name a subject'.")
         return 3

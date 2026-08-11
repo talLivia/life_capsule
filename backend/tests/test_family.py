@@ -283,13 +283,13 @@ async def test_talk_availability_reflects_producer_video_clip_mode(
     """Prompt 14: the setting is producer-level — /talk-availability must
     hand back whichever mode the LINKED PRODUCER chose, not a default,
     since the family account never has its own copy of this setting."""
-    test_user.chat_mode = "video_clips"
+    test_user.chat_mode = "video_clips_v2"
     db_session.add(test_user)
     await db_session.commit()
 
     resp = await client.get("/api/v1/family/talk-availability", headers=family_user_auth_headers)
     assert resp.status_code == 200
-    assert resp.json()["chat_mode"] == "video_clips"
+    assert resp.json()["chat_mode"] == "video_clips_v2"
 
 
 # ── talk-availability ────────────────────────────────────────────────────────

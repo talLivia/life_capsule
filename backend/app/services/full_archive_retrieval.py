@@ -1,18 +1,19 @@
 """
-Full-archive reading — an EXPERIMENTAL third chat mode (Prompt 15,
-"video_clips_v2"), built ALONGSIDE the two existing modes (avatar,
-video_clips), not replacing either. It is a straight A/B alternative to
-the Prompt 11-14 chunk-retrieval video-clip pipeline: same input
-(question + producer archive + conversation), same output shape (a single
-assembled clip URL, or NO_STORY_FALLBACK), but a completely different
-"which ranges answer this question" decision.
+Full-archive reading — THE video-clip chat mode (Prompt 15,
+"video_clips_v2"). Born as an A/B alternative to the Prompt 11-14
+chunk-retrieval pipeline (v1 `video_clips`), which it then replaced
+outright: the A/B settled it and v1 was removed on 2026-08-12
+(docs/V1_REMOVAL_PLAN.md; tag `pre-v1-removal` holds the last tree with
+both). Same input (question + producer archive + conversation), same
+output shape (a single assembled clip URL, or NO_STORY_FALLBACK).
 
-Where video_clip_assembler.py runs a multi-step retrieval chain
-(coreference resolution -> perspective normalization -> three-signal chunk
-matching -> leniency retry -> per-candidate verify/pinpoint), THIS mode
-replaces all of it with ONE LLM call that READS the entire annotated
-archive transcript (plus an entity map and the recent conversation) and
-directly returns which parts answer the question.
+Where v1 ran a multi-step retrieval chain (coreference resolution ->
+perspective normalization -> three-signal chunk matching -> leniency
+retry -> per-candidate verify/pinpoint), THIS mode replaces all of it
+with ONE LLM call that READS the entire annotated archive transcript
+(plus an entity map and the recent conversation) and directly returns
+which parts answer the question. The ffmpeg assembly downstream lives in
+video_clip_assembler.py, shared then and now.
 
 SELECTION IS BY UTTERANCE UNIT, NOT BY TIME. The transcript is first split
 into utterance units — uninterrupted stretches of speech cut at the pauses

@@ -4,7 +4,7 @@ full-archive-reading mode). Graphiti/LLM/DB side dependencies are mocked;
 this suite verifies the module's own logic — transcript formatting,
 deterministic range validation + word-boundary snapping, empty-archive and
 no-answer handling, and the orchestrator's reuse of the existing
-assembly/caching. Existing avatar and video_clips tests are unaffected
+assembly/caching. Existing avatar-path tests are unaffected
 (this module is purely additive and imports the v1 assembly code without
 modifying it).
 """
