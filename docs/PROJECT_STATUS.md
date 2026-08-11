@@ -1495,10 +1495,24 @@ new photo becomes the face via `make_primary`) used by the extraction
 panel and the tree's person card; the photo swaps into the tree node's
 existing small SVG circle, same size and position; and a persistent
 per-CATEGORY photo zone below the recording area uploading
-category-owned photos. Suite at 900; frontend tsc/eslint/build clean.
-⚠️ Not yet exercised live in a browser — worth a pass on the next live
-session (upload from all three surfaces, HEIC rejection message, the
-two-click remove).
+category-owned photos. Verified live by the producer 2026-08-11.
+
+**Phases 4 and 5 SHIPPED 2026-08-11.** Phase 4 was CLOSED as satisfied
+by Phase 3, decision by the producer: §3.1's "entity list
+(`/api/v1/entities`)" surface was never built — no such endpoint exists
+and nothing renders an entity list (verified against the router and the
+frontend) — and the timeline face had already moved into Phase 5's
+gallery per §9.5. Phase 5 (MEDIA_GALLERY.md §4.4): the period photo
+gallery in the timeline's side panel — hover a period card to surface
+its CATEGORY's gallery, click a bubble to pin it, one gallery per
+category never per bubble/entity — plus `PhotoLightbox` (shared, built
+for Phase 8 reuse) and the §5 "Add photos" period entry point. Frontend
+only; the gallery reads the existing `GET /media?category=`. Suite at
+900; tsc/eslint/build clean. Phase 5 not yet exercised live in a
+browser. Remaining: Phase 6 (merge-tool repoint rule — no merge script
+exists yet to carry it), Phase 7 (year attribution, blocked on
+TIMELINE_YEAR_ATTRIBUTION.md decisions), Phase 8 (/talk surfacing,
+approved, after 1–6).
 
 ## Known gaps / tech debt
 

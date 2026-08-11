@@ -1,10 +1,13 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
-import { CalendarRange, ChevronLeft, ChevronRight, Clock, Film, Loader2, Play } from 'lucide-react'
-import { api } from '@/lib/api'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { CalendarRange, ChevronLeft, ChevronRight, Clock, Film, Image as ImageIcon, ImagePlus, Loader2, Play } from 'lucide-react'
+import { toast } from 'react-hot-toast'
+import { api, uploadPhoto } from '@/lib/api'
+import { PhotoLightbox } from '@/components/media/PhotoLightbox'
 import type {
   ApiError,
+  MediaAsset,
   Timeline,
   TimelineGroup,
   TimelinePeriod,
@@ -49,6 +52,75 @@ interface RecordingSelection {
 
 /** A moment with no generated title yet (generation retries server-side). */
 const UNTITLED = 'Recorded moment'
+
+/**
+ * "Add photos" on a period (§5's second upload entry point) — the same
+ * presign → PUT → row flow as everywhere else, uploading CATEGORY-owned
+ * photos. Compact: an icon in the gallery header. Full: the affordance a
+ * deliberately opened, photo-less chapter shows.
+ */
+function AddPeriodPhotos({
+  category,
+  compact,
+  onUploaded,
+}: {
+  category: string
+  compact: boolean
+  onUploaded: () => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+
+  const handleFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    setUploading(true)
+    try {
+      for (const file of Array.from(files)) {
+        try {
+          await uploadPhoto({ category }, file)
+        } catch (e: unknown) {
+          const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+          toast.error(detail ?? `Couldn't upload ${file.name}`)
+        }
+      }
+      onUploaded()
+    } finally {
+      setUploading(false)
+      if (inputRef.current) inputRef.current.value = ''
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => !uploading && inputRef.current?.click()}
+        disabled={uploading}
+        className={
+          compact
+            ? 'ml-auto text-gray-500 hover:text-white transition-colors'
+            : 'btn-secondary self-start'
+        }
+        title="Add photos to this chapter"
+      >
+        {uploading ? (
+          <Loader2 size={compact ? 14 : 16} className="animate-spin" />
+        ) : (
+          <ImagePlus size={compact ? 14 : 16} />
+        )}
+        {!compact && 'Add photos'}
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        multiple
+        className="hidden"
+        onChange={(e) => void handleFiles(e.target.files)}
+      />
+    </>
+  )
+}
 
 function GroupBubble({
   group,
@@ -124,6 +196,7 @@ function Period({
   onBackToHighlights,
   playingSegmentId,
   onPlay,
+  onHover,
 }: {
   period: TimelinePeriod
   expansion: Expansion | null
@@ -132,6 +205,10 @@ function Period({
   onBackToHighlights: () => void
   playingSegmentId: string | null
   onPlay: (r: TimelineRecording) => void
+  /** Activates this period's photo gallery in the side panel (§9.2's hover
+   *  trigger). Bubbles sit inside the card, so hovering one hovers this too
+   *  — same gallery either way, which is the one-per-category rule. */
+  onHover: () => void
 }) {
   const group = expansion?.group ?? null
   const byId = new Map(period.recordings.map((r) => [r.segment_id, r]))
@@ -151,7 +228,7 @@ function Period({
       <span className="absolute left-[7px] top-2 bottom-0 w-px bg-white/10" aria-hidden />
       <span className="absolute left-0 top-1.5 w-3.5 h-3.5 rounded-full bg-primary-500/80 ring-4 ring-surface-900" aria-hidden />
 
-      <div className="glass-card p-4">
+      <div className="glass-card p-4" onPointerEnter={onHover}>
         {/* The collapsed shape: title, sentence, bubbles. Nothing else, at
             any archive size — the card itself is static. */}
         <h2 dir="auto" className="text-base font-bold text-white">
@@ -249,6 +326,42 @@ export function TimelinePanel() {
   const [expansion, setExpansion] = useState<Expansion | null>(null)
   const [playing, setPlaying] = useState<RecordingSelection | null>(null)
 
+  // ── The period gallery (MEDIA_GALLERY.md §4.1, corrected wording) ──────
+  // ONE gallery per CATEGORY, never per bubble or entity: photos attach to
+  // the period as a whole (§2.2), so every bubble in a period surfaces the
+  // same set. Hovering a period card activates its gallery (§9.2); clicking
+  // a bubble pins it. Hover-away does NOT clear — a gallery that vanishes
+  // while the pointer travels to the side panel can never be clicked.
+  const [hoveredCategory, setHoveredCategory] = useState<string | null>(null)
+  const [galleries, setGalleries] = useState<Record<string, MediaAsset[]>>({})
+  const [lightbox, setLightbox] = useState<{ photos: MediaAsset[]; index: number } | null>(null)
+
+  const galleryCategory = expansion?.category ?? hoveredCategory
+
+  useEffect(() => {
+    if (!galleryCategory || galleries[galleryCategory] !== undefined) return
+    let cancelled = false
+    api
+      .listMedia({ category: galleryCategory })
+      .then((photos: MediaAsset[]) => {
+        if (!cancelled) setGalleries((g) => ({ ...g, [galleryCategory]: photos }))
+      })
+      .catch(() => {
+        // Cache the miss as empty: photos are decoration here, and retrying
+        // on every hover would hammer a failing endpoint for nothing.
+        if (!cancelled) setGalleries((g) => ({ ...g, [galleryCategory]: [] }))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [galleryCategory, galleries])
+
+  const galleryPhotos = galleryCategory ? galleries[galleryCategory] : undefined
+
+  /** Drop a category from the cache; the fetch effect reloads it. */
+  const refreshGallery = (category: string) =>
+    setGalleries(({ [category]: _dropped, ...rest }) => rest)
+
   const load = useCallback(async () => {
     setError(null)
     try {
@@ -325,6 +438,7 @@ export function TimelinePanel() {
                 }
                 playingSegmentId={playing?.recording.segment_id ?? null}
                 onPlay={(recording) => setPlaying({ category: period.category, recording })}
+                onHover={() => setHoveredCategory(period.category)}
               />
             ))
           )}
@@ -380,8 +494,82 @@ export function TimelinePanel() {
               )}
             </div>
           )}
+
+          {/* ── The chapter's photo gallery (§4.1) ─────────────────────
+              One per CATEGORY, beside whatever the panel is doing —
+              photos accompany the clips, they never replace them. A
+              merely-hovered chapter without photos shows nothing (the
+              gallery is decoration, not a slot demanding content); a
+              deliberately OPENED one offers the §5 "Add photos" entry
+              point instead of silence. */}
+          {galleryCategory && galleryPhotos && galleryPhotos.length > 0 && (
+            <div className="glass-card p-4 mt-4 flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <ImageIcon size={14} className="text-primary-400" />
+                <h3 className="text-sm font-medium text-white">
+                  Photos from{' '}
+                  <span dir="auto">
+                    {timeline.periods.find((p) => p.category === galleryCategory)
+                      ?.category_label ?? 'this chapter'}
+                  </span>
+                </h3>
+                <AddPeriodPhotos
+                  category={galleryCategory}
+                  compact
+                  onUploaded={() => refreshGallery(galleryCategory)}
+                />
+              </div>
+              <ul className="grid grid-cols-3 gap-2">
+                {galleryPhotos.map((photo, i) => (
+                  <li key={photo.id}>
+                    <button
+                      type="button"
+                      onClick={() => setLightbox({ photos: galleryPhotos, index: i })}
+                      className="block w-full aspect-square rounded-lg overflow-hidden border border-white/10 hover:border-white/30 focus:outline-none focus:ring-2 focus:ring-primary-400"
+                      aria-label={photo.caption || 'Open photo'}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={photo.url}
+                        alt={photo.caption ?? ''}
+                        className="w-full h-full object-cover"
+                      />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* A chapter the producer deliberately opened, with no photos yet:
+              the one place the empty state earns its chrome. Hover alone
+              never shows this. */}
+          {expansion &&
+            galleryCategory === expansion.category &&
+            galleryPhotos !== undefined &&
+            galleryPhotos.length === 0 && (
+              <div className="glass-card p-4 mt-4 flex flex-col gap-2">
+                <p className="text-xs text-gray-500">
+                  No photos in this chapter yet — they&apos;ll show beside it here
+                  and in the family&apos;s view.
+                </p>
+                <AddPeriodPhotos
+                  category={expansion.category}
+                  compact={false}
+                  onUploaded={() => refreshGallery(expansion.category)}
+                />
+              </div>
+            )}
         </aside>
       </div>
+
+      {lightbox && (
+        <PhotoLightbox
+          photos={lightbox.photos}
+          initialIndex={lightbox.index}
+          onClose={() => setLightbox(null)}
+        />
+      )}
     </div>
   )
 }

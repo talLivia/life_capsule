@@ -593,6 +593,30 @@ the timeline itself**, per `timeline.py`'s existing rule: *"Years decorate a
 sub-bubble; they never move it."* A gallery ordering its own photos is not the
 timeline reordering itself.
 
+### ✅ 4.4 Phase 5 built — 2026-08-11
+
+Against the corrected §4.1 wording, in `TimelinePanel` plus one new shared
+component (`components/media/PhotoLightbox`, built for reuse by /talk's
+Phase 8 gallery). No backend changes — the gallery reads the existing
+`GET /media?category=`, whose ordering already implements §4.3.
+
+- **Trigger, as corrected:** hovering a period CARD activates its gallery
+  in the side panel (§9.2 — bubbles sit inside the card, so hovering a
+  bubble is hovering the card: same gallery, the one-per-category rule
+  made structural); clicking a bubble PINS it. Hover-away does not clear —
+  a gallery that vanishes while the pointer travels to the panel can
+  never be clicked. Galleries are cached per category for the page's life.
+- **The gallery accompanies the player, never replaces it** — a thumbnail
+  grid card under the video panel, headed by the period's label.
+- **Lightbox:** pinned photo deck (a hover elsewhere cannot swap it under
+  the viewer), caption + taken_year (open decision 3's caption rendering),
+  arrow-key and button navigation, Esc/backdrop close.
+- **Empty states follow §1.7's altitude rule:** a merely-hovered chapter
+  with no photos shows NOTHING; a deliberately opened one shows the §5
+  "Add photos" entry point (`AddPeriodPhotos`, the same presign→PUT→row
+  flow) instead of silence. The gallery card itself also carries a
+  compact add control.
+
 ---
 
 ## 5. The upload UI
@@ -625,8 +649,8 @@ Constraints worth setting before building rather than after:
 | **1** ✅ | G — recordings as sub-bubbles, people as a filter — DONE 2026-08-10, see §1.5 (superseded by §1.7–1.9) | No schema, no storage, fixes existing content, and is the surface E and F both hang from |
 | **2** ✅ | `media_assets` + presign/upload/delete endpoints — DONE 2026-08-11, see §2.5 | The shared foundation |
 | **3** ✅ | E — entity photo, primary only, on the extraction panel, the tree, and the recording screen (§3.3) — DONE 2026-08-11, see §3.4 | Smallest useful slice of the new table |
-| **4** | E everywhere else — entity list; timeline face per §3.1's 2026-08-11 note (no per-entity bubble on timeline anymore) | Pure rendering once the payload carries `photo_url` |
-| **5** | F — period galleries, tag-bubble-triggered side panel (§4.1, updated), and the lightbox | Needs 2, benefits from 3's upload UI |
+| **4** ✅ | E everywhere else — CLOSED 2026-08-11 as satisfied by Phase 3, decision by the producer: §3.1's "entity list (`/api/v1/entities`)" surface was never built (no such endpoint, nothing renders an entity list — verified), and the timeline face moved into Phase 5's gallery per §9.5. Every entity card that actually exists carries the photo. If a `GET /api/v1/entities` list is ever built, it carries `photo_url` from day one via `media_store.primary_photo_urls`. | Pure rendering once the payload carries `photo_url` |
+| **5** ✅ | F — period galleries, tag-bubble-triggered side panel (§4.1, updated), and the lightbox — DONE 2026-08-11, see §4.4 | Needs 2, benefits from 3's upload UI |
 | **6** | Merge-safety: repoint `media_assets` in the merge tooling | Must land before anyone merges entities that have photos |
 | **7** | Category year-range attribution (§1.4) | Depends on year-attribution rules being defined first — see §9.1 |
 | **8** | `/talk` photo surfacing (§9.4) — APPROVED, part of the plan | Waits on phases 1–6 (producer-side photos must exist before they can surface in chat), not on further sign-off |
