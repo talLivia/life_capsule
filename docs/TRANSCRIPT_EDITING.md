@@ -49,12 +49,13 @@ and two things make "leave the chunks entirely alone" better:
 - **There is no principled answer to WHICH chunk gained the words.** "אנחנו
   חמישה משפחה" may sit in one chunk, or straddle two. Inserting "יש לי" means
   choosing a chunk for words that were never spoken in any of them.
-- **Chunk text feeds chunk EMBEDDINGS**, which `retrieval_service` (v1
-  `video_clips`) and the avatar path rank on. Adding unspoken words there
-  makes a clip retrievable *because of words it does not contain* — a subtler
-  version of exactly the mismatch this whole design avoids. The current
-  producer is on `video_clips_v2`, which does not use those embeddings, so the
-  hazard is latent rather than live — which is the best time to close it.
+- **Chunk text feeds chunk EMBEDDINGS**, which the avatar path ranks on
+  (v1 `video_clips` also did, until its 2026-08-12 removal). Adding unspoken
+  words there makes a clip retrievable *because of words it does not
+  contain* — a subtler version of exactly the mismatch this whole design
+  avoids. The current producer is on `video_clips_v2`, which does not use
+  those embeddings, so the hazard is latent rather than live — which is the
+  best time to close it.
 
 Leaving chunks untouched keeps every chunk a faithful record of the audio, and
 confines the producer's rewording to the field that drives understanding.

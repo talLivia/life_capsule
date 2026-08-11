@@ -211,7 +211,7 @@ approached expecting it may not work, with the measurement built first.
 | 1 | Does `clarify` block the answer, or accompany a best guess? | Block. A guess plus a question is the conflation this exists to remove. |
 | 2 | Should the tree show the two אמנונs distinctly once split? | Yes, automatically — two rows are two nodes, no tree change needed. |
 | 3 | Repair the existing אמנון before or after step 1 ships? | After. The repair uses the same "distinguishing name" path, so build it once. |
-| 4 | v1 `video_clips`? | Untouched, as asked. It consumes entities directly (`find_segments_mentioning`) and would benefit for free from the split in step 1. |
+| 4 | v1 `video_clips`? | Untouched, as asked. It consumes entities directly (`find_segments_mentioning`) and would benefit for free from the split in step 1. *(Historical: v1 was later removed entirely, 2026-08-12 — docs/V1_REMOVAL_PLAN.md.)* |
 
 ---
 

@@ -12,12 +12,18 @@ The producer's `User.chat_mode` selects one mode for everyone talking to them:
 | mode | how an answer is produced |
 | --- | --- |
 | `avatar` | LLM reply → TTS → MuseTalk lip-sync (`ChatInterface`, `TalkInterface`) |
-| `video_clips` | Prompt 11-14 chunk retrieval → trimmed original clips |
 | `video_clips_v2` | Prompt 15 whole-archive read → trimmed original clips |
 
-Both video-clip modes share one WS contract and one frontend behaviour hook
-(`frontend/lib/useVideoClipChat.ts`); `/talk` and the producer's own chat
-screen wrap it in **different layouts** — share the logic, not the layout.
+A third mode, `video_clips` (v1, Prompt 11-14 chunk retrieval), was removed
+on 2026-08-12 after the A/B against v2 settled it — see
+docs/V1_REMOVAL_PLAN.md, and the `pre-v1-removal` tag for the last tree
+that had it. Measurements below that name v1 are that A/B's record, kept
+as the evidence they are.
+
+The clip mode's WS contract and frontend behaviour hook
+(`frontend/lib/useVideoClipChat.ts`) are shared by `/talk` and the
+producer's own chat screen, which wrap it in **different layouts** — share
+the logic, not the layout.
 
 ## video_clips_v2: selection is by utterance UNIT, not by time
 
@@ -95,9 +101,13 @@ gains/loses `u4`/`u16`, `army-broad` gains/loses `u10`.
 `montreal` were identical across ~96 calls, and the 7 scored eval questions
 show stdev **0.000** over 5 runs.
 
-Independently corroborated by the comparison harness (3 runs × 12 questions):
+Independently corroborated by the comparison harness (3 runs × 12
+questions, run while the v1 mode still existed as the comparison arm):
 v2 was **10/12 stable**, and the two that varied were exactly `family` and
-`army-broad` — both broad questions, and only those. v1 was 12/12.
+`army-broad` — both broad questions, and only those. v1 — deterministic
+multi-step retrieval, since removed — was 12/12, which is what makes the
+corroboration meaningful: the variance lives in the archive-read call,
+not the shared assembly.
 
 This is accepted deliberately — but the REASON has changed, and the old one
 here was measurably false by 2026-08-01. Corrected rather than deleted,
@@ -167,8 +177,9 @@ unit boundaries and are not comparable. See the header of `seed_sweep.py`.
   `small` garbles Hebrew badly enough to break retrieval. Loaded once at
   startup (`main.py`), not per question.
 - Model strength is a **per-call** decision (`generate_response(model=...)`).
-  Only the archive-read call is upgraded; the other 11 LLM call sites stay on
-  `LLM_MODEL`. v1's coreference call and ingestion entity extraction are the
-  next candidates if they ever matter.
+  Only the archive-read call is upgraded; every other LLM call site stays on
+  `LLM_MODEL`. The retrieval coreference call (shared machinery, used by the
+  avatar path) and ingestion entity extraction are the next candidates if
+  they ever matter.
 - Windows: `asyncio.create_subprocess_exec` is unavailable under the pinned
   event-loop policy — shell out via `asyncio.to_thread(subprocess.run, ...)`.

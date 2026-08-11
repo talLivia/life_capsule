@@ -1,7 +1,8 @@
 # Project status
 
-**Updated:** 2026-08-11 · **Branch:** `main` (all work commits directly to
-main and pushes; no feature branches unless asked)
+**Updated:** 2026-08-12 · **Branch:** `main` (all work commits directly to
+main and pushes; no feature branches unless asked — the v1 removal is the
+exception, on `remove-v1` pending review)
 
 Working-state snapshot. Standing rules and architecture invariants live in
 [CLAUDE.md](../CLAUDE.md); this file is "where we are right now" and should be
@@ -105,6 +106,10 @@ chat modes**, so this was not a v2-only change. All are now on Postgres:
 
 All seven reduced to two primitives, both plain joins on `entity_mentions`:
 "entity names for segment X" and "segments mentioning entity Y".
+
+> *(2026-08-12: the `retrieval_service ×4` row's mode — v1 `video_clips` —
+> has since been removed entirely; docs/V1_REMOVAL_PLAN.md. The row stays
+> as the record of what the migration moved.)*
 
 Two findings that made this smaller than it looked, both confirmed while doing it:
 - **`max_hops` was 1 at every call site**, making the Cypher `RELATES_TO*0..0`
@@ -723,9 +728,11 @@ Queued, in no fixed order — both are blocked on this work landing:
 
 **Chat modes** (producer-level `User.chat_mode`, migration `0011`)
 - `avatar` — LLM → TTS → MuseTalk.
-- `video_clips` (v1) — chunk retrieval, multi-step.
 - `video_clips_v2` — whole-archive read, single LLM call, utterance-unit
   selection. **This is the mode under active development.**
+- `video_clips` (v1, chunk retrieval, multi-step) was REMOVED 2026-08-12
+  after the A/B settled it — docs/V1_REMOVAL_PLAN.md; tag
+  `pre-v1-removal` holds the last tree that had it.
 
 **v2 capabilities**
 - Utterance-unit selection — mid-sentence cuts are structurally impossible.
@@ -749,6 +756,11 @@ Queued, in no fixed order — both are blocked on this work landing:
 ---
 
 ## Evidence: v1 vs v2
+
+> **Historical record (2026-07-25).** This A/B is what settled the v1
+> removal (2026-08-12, docs/V1_REMOVAL_PLAN.md) — the numbers stay as the
+> decision's evidence; the v1 arm and the harness that measured it no
+> longer exist in the tree.
 
 Retrieval-decision phase only (excludes the shared ffmpeg trim/concat + upload,
 which is identical code in both modes).
@@ -1016,10 +1028,11 @@ investigation:
 
 - **The entity map is not the family tree.** Different systems, different
   consumers.
-- In `video_clips` (v1) and `avatar` the merge IS load-bearing —
+- In `avatar` mode the merge IS load-bearing —
   `retrieval_service.find_segments_mentioning[_scored]` finds other recordings
   sharing an entity, and `relevance_scorer`/`response_assembler` use entity
-  names as a ranking signal. Only v2 is insensitive to it.
+  names as a ranking signal. Only v2 is insensitive to it. (This was also
+  true of v1 `video_clips` while it existed.)
 
 ## Two people with one name — SHIPPED 2026-08-08
 
@@ -1577,6 +1590,22 @@ The same hazard pattern (a service opening its module-level
 AsyncSessionLocal under tests that mock everything else) is worth
 checking when adding DB calls inside service success paths.
 
+## V1 (`video_clips`) REMOVED — 2026-08-12, on branch `remove-v1`
+
+Executed per [V1_REMOVAL_PLAN.md](V1_REMOVAL_PLAN.md), all eight steps,
+suite green after each; tag `pre-v1-removal` holds the last tree with it.
+What went: the chunk-retrieval orchestration in `video_clip_assembler`
+(the module is now purely the shared assembly layer), the chunk path in
+`retrieval_service` (avatar's segment-level `retrieve()` machinery is
+untouched), the `score_chunk_candidates` orphan, the mode string
+everywhere (validation now rejects it; zero rows held it), the
+`uncovered_clauses` contract field (consumed by nothing), and
+`compare_retrieval_modes.py` (prompt_regression.py is the stability
+instrument). The v1 e2e was rewritten against v2 rather than dropped —
+the proof it carries (a WS question becomes a genuinely trimmed clip) is
+mode-independent. Zero database changes. Suite 905 → 841, every deleted
+test belonging to deleted code.
+
 ## Known gaps / tech debt
 
 - 🚨 **KNOWN GAP, deliberately unfixed (2026-08-10): a "עוד" question can
@@ -1705,7 +1734,6 @@ python scripts/prompt_regression.py        # AFTER — diffs unrelated answers
 python scripts/eval_name_disambiguation.py # same-name clarification, both arms
 python scripts/eval_no_story_subject.py   # tailored no-story line, v2 only
 python scripts/rebaseline_accuracy.py      # ⚠️ references are STALE — see known gaps
-python scripts/compare_retrieval_modes.py  # v1 vs v2: consistency, latency, calls, tokens
 python scripts/seed_sweep.py               # single-run IoU vs known-correct
 python -m pytest -q                        # 905 tests
 ```
