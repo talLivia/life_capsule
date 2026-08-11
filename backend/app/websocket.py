@@ -893,7 +893,6 @@ class ConnectionManager:
                     # (MEDIA_GALLERY.md §9.4). A lookup made where the clips
                     # were chosen, never an inference here.
                     "photo_categories": result.photo_categories,
-                    "uncovered_clauses": result.uncovered_clauses,
                     # v2's optional "want to hear more about X?" offer. Chat
                     # text only — the client renders it as a message with
                     # Yes/No; Yes re-asks it through this same handler so the

@@ -85,7 +85,6 @@ export type WsMessage =
        *  photo gallery under the clip (MEDIA_GALLERY.md §9.4). A lookup made
        *  where the clips were chosen, never inferred client-side. */
       photo_categories?: string[]
-      uncovered_clauses: string[]
       follow_up?: { question: string } | null
     }
   // `follow_up` rides along here too: "nothing for that, but want to hear
