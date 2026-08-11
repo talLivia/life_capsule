@@ -5,6 +5,7 @@ import { X, Loader2, Sparkles, Tag, Scissors, FileText, Users, AlertTriangle, He
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
 import { EntityConfirmModal } from '@/components/record/EntityConfirmModal'
+import { EntityPortrait } from '@/components/media/EntityPortrait'
 import type { ApiError, SegmentExtraction } from '@/lib/types'
 
 /**
@@ -292,11 +293,28 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
                         key={e.name}
                         className="px-4 py-3 rounded-xl bg-surface-700/50 border border-white/10"
                       >
-                        <div className="flex items-baseline gap-2">
-                          <span dir="auto" className="text-sm text-white font-medium">{e.name}</span>
-                          {e.kind && (
-                            <span className="text-[11px] text-gray-500">{e.kind}</span>
+                        <div className="flex items-center gap-3">
+                          {/* The portrait, clickable to add or change the
+                              photo (MEDIA_GALLERY.md §3.3) — the same
+                              control the family tree's card uses. This
+                              panel stays read-only about what was SAID;
+                              a photo is producer-added context, not an
+                              edit of the extraction. */}
+                          {e.entity_id && (
+                            <EntityPortrait
+                              entityId={e.entity_id}
+                              name={e.name}
+                              photoUrl={e.photo_url}
+                              size={36}
+                              onChanged={refetch}
+                            />
                           )}
+                          <div className="flex items-baseline gap-2">
+                            <span dir="auto" className="text-sm text-white font-medium">{e.name}</span>
+                            {e.kind && (
+                              <span className="text-[11px] text-gray-500">{e.kind}</span>
+                            )}
+                          </div>
                         </div>
                         {e.summary && (
                           <p dir="auto" className="text-xs text-gray-400 mt-1">{e.summary}</p>

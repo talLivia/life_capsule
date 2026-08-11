@@ -612,7 +612,16 @@ async def test_extraction_returns_everything_the_panel_shows(
     # screen meant to show what the system ACTUALLY understood. It no longer
     # has to be invented.
     assert body["entities"] == [
-        {"name": "חיל האוויר", "summary": "חיל שבו שירת הדובר", "kind": "organisation"}
+        {
+            "name": "חיל האוויר",
+            "summary": "חיל שבו שירת הדובר",
+            "kind": "organisation",
+            # The id + photo travel too since the photo work: the panel's
+            # portrait upload needs a row to attach to (MEDIA_GALLERY.md
+            # Phase 3). No photo uploaded here, so the placeholder renders.
+            "entity_id": entity.id,
+            "photo_url": None,
+        }
     ]
     assert body["still_processing"] is False
     assert body["entities_unavailable"] is False

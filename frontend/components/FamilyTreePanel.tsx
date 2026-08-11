@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AlertTriangle, Loader2, Network, User as UserIcon, X } from 'lucide-react'
 import { FamilyTreeGraph } from '@/components/FamilyTreeGraph'
+import { EntityPortrait } from '@/components/media/EntityPortrait'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
 import type { ApiError, EntityMoment, FamilyTree, TreeEdge, TreePerson } from '@/lib/types'
@@ -400,15 +401,28 @@ function MomentsModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3 sticky top-0">
-          <div>
-            <h2 id="moments-title" dir="auto" className="text-lg font-bold text-white">
-              {person.name}
-            </h2>
-            {(years || person.is_self) && (
-              <p className="text-xs text-gray-500 mt-0.5">
-                {person.is_self ? 'You' : years}
-              </p>
-            )}
+          <div className="flex items-center gap-3">
+            {/* The card's upload affordance (§9.6): the same circle the tree
+                node shows, clickable — one flow shared with the extraction
+                panel, and the new photo becomes the face. onSaved refetches
+                the tree, so the node's circle updates with it. */}
+            <EntityPortrait
+              entityId={person.id}
+              name={person.name}
+              photoUrl={person.photo_url}
+              size={44}
+              onChanged={onSaved}
+            />
+            <div>
+              <h2 id="moments-title" dir="auto" className="text-lg font-bold text-white">
+                {person.name}
+              </h2>
+              {(years || person.is_self) && (
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {person.is_self ? 'You' : years}
+                </p>
+              )}
+            </div>
           </div>
           <button
             ref={closeRef}

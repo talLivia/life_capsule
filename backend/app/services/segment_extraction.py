@@ -27,7 +27,7 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Entity, InterviewSession, RawSegment, TranscriptChunk
-from app.services import entity_store
+from app.services import entity_store, media_store
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,12 @@ class ExtractedEntity:
     name: str
     summary: Optional[str] = None
     kind: Optional[str] = None
+    # The real row id, so the panel's portrait upload has an entity to attach
+    # to — a NAME is not a handle, two people can share one. None only for
+    # rows built before the photo work; current loads always carry it.
+    entity_id: Optional[str] = None
+    # Resolved serving URL of the primary photo; None renders the placeholder.
+    photo_url: Optional[str] = None
 
 
 @dataclass
@@ -267,9 +273,15 @@ async def _load_entities(
     show identical text — a visible improvement on exactly the screen whose
     job is revealing what the system understood about one recording.
     """
+    rows = await entity_store.get_segment_entities(db, segment_id, group_id)
+    photos = await media_store.primary_photo_urls(db, [r[0] for r in rows])
     return [
-        ExtractedEntity(name=name, kind=kind, summary=summary)
-        for name, kind, summary in await entity_store.get_segment_entities(
-            db, segment_id, group_id
+        ExtractedEntity(
+            name=name,
+            kind=kind,
+            summary=summary,
+            entity_id=entity_id,
+            photo_url=photos.get(entity_id),
         )
+        for entity_id, name, kind, summary in rows
     ]

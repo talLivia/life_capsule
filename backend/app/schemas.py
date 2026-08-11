@@ -296,6 +296,9 @@ class TreePerson(BaseModel):
     year_end: Optional[int] = None
     # None for anyone with no family path to the root — see TreeResponse.
     generation: Optional[int] = None
+    # Primary photo for the node's existing small circle (MEDIA_GALLERY.md
+    # §9.6); None renders the placeholder initial.
+    photo_url: Optional[str] = None
 
 
 class TreeGeneration(BaseModel):
@@ -370,6 +373,11 @@ class ExtractedEntityResponse(BaseModel):
     # field was present so typed entities could land without changing this
     # shape, and they have. See segment_extraction.py.
     kind: Optional[str] = None
+    # The row id + primary-photo URL for the panel's portrait upload
+    # (MEDIA_GALLERY.md Phase 3). Optional so older stored payload shapes
+    # keep deserialising.
+    entity_id: Optional[str] = None
+    photo_url: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -703,6 +711,11 @@ class MediaCreateRequest(BaseModel):
     # Bounds are a sanity check against typos, not a claim about history —
     # photography does not predate 1800, and 2100 catches a fat-fingered year.
     taken_year: Optional[int] = Field(None, ge=1800, le=2100)
+    # Entity photos only: make THIS upload the face, demoting the current
+    # primary. What clicking the portrait circle means (§9.6) — uploading a
+    # new portrait that stayed invisible would read as the upload failing.
+    # Ignored for category photos, which have no primary.
+    make_primary: bool = False
 
 
 class MediaAssetResponse(BaseModel):

@@ -521,8 +521,15 @@ async def test_segment_entities_carry_THIS_recordings_summary(
 
     first = await es.get_segment_entities(db_session, segments[0].id, test_user.id)
     second = await es.get_segment_entities(db_session, segments[1].id, test_user.id)
-    assert first == [("מונטריאול", "place", "לשם טס אחרי הצבא")]
-    assert second == [("מונטריאול", "place", "שם למד תכנות")]
+    assert [(name, type_, summary) for _, name, type_, summary in first] == [
+        ("מונטריאול", "place", "לשם טס אחרי הצבא")
+    ]
+    assert [(name, type_, summary) for _, name, type_, summary in second] == [
+        ("מונטריאול", "place", "שם למד תכנות")
+    ]
+    # Both takes carry the SAME entity id — one person, two mentions — and it
+    # is a real row id, which is what the photo upload attaches to.
+    assert first[0][0] == second[0][0]
 
 
 async def test_find_segments_mentioning_matches_on_the_merge_key(

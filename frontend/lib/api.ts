@@ -462,6 +462,39 @@ export const api = {
     return response.data
   },
 
+  // ── Photos on entities and periods (docs/MEDIA_GALLERY.md) ──────────────
+  // One flow everywhere: presign → PUT → create the row. `uploadPhoto` below
+  // composes the three; these exist separately so the pieces stay testable.
+
+  presignMediaUpload: async (owner: { entity_id?: string; category?: string }, contentType: string) => {
+    const response = await apiClient.post('/api/v1/media/presign', {
+      ...owner,
+      content_type: contentType,
+    })
+    return response.data
+  },
+
+  createMediaAsset: async (params: {
+    storage_key: string
+    caption?: string
+    taken_year?: number
+    /** Entity photos: make this upload the face, demoting the current one.
+     *  What clicking the portrait circle means. */
+    make_primary?: boolean
+  }) => {
+    const response = await apiClient.post('/api/v1/media', params)
+    return response.data
+  },
+
+  listMedia: async (owner: { entity_id?: string; category?: string }) => {
+    const response = await apiClient.get('/api/v1/media', { params: owner })
+    return response.data
+  },
+
+  deleteMediaAsset: async (mediaId: string) => {
+    await apiClient.delete(`/api/v1/media/${mediaId}`)
+  },
+
   getTalkAvailability: async () => {
     const response = await apiClient.get('/api/v1/family/talk-availability')
     return response.data
@@ -507,6 +540,30 @@ export function uploadSegmentBlob(
     }
     xhr.onerror = () => reject(new Error('Upload failed (network error)'))
     xhr.send(blob)
+  })
+}
+
+/**
+ * The whole photo upload, in order: presign → PUT the bytes → write the row.
+ * Reuses the segment upload's PUT mechanics (same presigned-vs-local-dev
+ * handling, same no-token-to-storage rule) — photos are not a second kind of
+ * upload any more than uploaded videos are a second kind of recording.
+ *
+ * The file's own MIME type travels as-is; the server is the authority on
+ * what is accepted and its rejections carry the message worth showing
+ * (HEIC gets told what to do, not just "unsupported").
+ */
+export async function uploadPhoto(
+  owner: { entity_id?: string; category?: string },
+  file: File,
+  options?: { makePrimary?: boolean },
+): Promise<import('./types').MediaAsset> {
+  const contentType = file.type || 'image/jpeg'
+  const presign = await api.presignMediaUpload(owner, contentType)
+  await uploadSegmentBlob(presign.upload_url, file, presign.content_type)
+  return api.createMediaAsset({
+    storage_key: presign.storage_key,
+    make_primary: options?.makePrimary,
   })
 }
 

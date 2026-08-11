@@ -40,6 +40,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Entity, EntityRelation, RelationType
+from app.services import media_store
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +180,9 @@ async def build_tree(db: AsyncSession, producer_id: str) -> Dict[str, Any]:
     """Nodes, edges and generation rows for one producer's family tree."""
     nodes = await _load_nodes(db, producer_id)
     edges = await _load_edges(db, producer_id)
+    # The face for each node's small circle — ONE bulk query, absent entries
+    # mean "render the placeholder" (MEDIA_GALLERY.md §9.6).
+    photos = await media_store.primary_photo_urls(db, [n.id for n in nodes])
 
     root = next((n for n in nodes if n.is_self), None)
     if root is None:
@@ -190,7 +194,7 @@ async def build_tree(db: AsyncSession, producer_id: str) -> Dict[str, Any]:
         return {
             "root_id": None,
             "generations": [],
-            "unplaced": [_node_view(n, None) for n in nodes],
+            "unplaced": [_node_view(n, None, photos.get(n.id)) for n in nodes],
             "edges": [],
             "contradictions": [],
             "missing_generation_delta": [],
@@ -204,7 +208,7 @@ async def build_tree(db: AsyncSession, producer_id: str) -> Dict[str, Any]:
     rows: Dict[int, List[Dict[str, Any]]] = {}
     for node in placed:
         rows.setdefault(generation[node.id], []).append(
-            _node_view(node, generation[node.id])
+            _node_view(node, generation[node.id], photos.get(node.id))
         )
 
     return {
@@ -216,7 +220,7 @@ async def build_tree(db: AsyncSession, producer_id: str) -> Dict[str, Any]:
         ],
         # Real people the producer talked about, with no family path to them.
         # Shown separately so nobody is dropped and nobody is misplaced.
-        "unplaced": [_node_view(n, None) for n in unplaced],
+        "unplaced": [_node_view(n, None, photos.get(n.id)) for n in unplaced],
         "edges": [
             {
                 # The row id travels too, so the page can point at ONE edge —
@@ -241,7 +245,9 @@ async def build_tree(db: AsyncSession, producer_id: str) -> Dict[str, Any]:
     }
 
 
-def _node_view(entity: Entity, generation: Optional[int]) -> Dict[str, Any]:
+def _node_view(
+    entity: Entity, generation: Optional[int], photo_url: Optional[str] = None
+) -> Dict[str, Any]:
     return {
         "id": entity.id,
         "name": entity.name,
@@ -249,6 +255,9 @@ def _node_view(entity: Entity, generation: Optional[int]) -> Dict[str, Any]:
         "year_start": entity.year_start,
         "year_end": entity.year_end,
         "generation": generation,
+        # The primary photo for the node's existing small circle; None means
+        # the placeholder initial, which is not an error state.
+        "photo_url": photo_url,
     }
 
 

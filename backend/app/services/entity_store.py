@@ -417,23 +417,27 @@ async def get_segment_entity_names(
 
 async def get_segment_entities(
     db: AsyncSession, segment_id: str, producer_id: str
-) -> List[Tuple[str, str, Optional[str]]]:
-    """(name, type, summary) for one segment — what the extraction panel shows.
+) -> List[Tuple[str, str, str, Optional[str]]]:
+    """(entity_id, name, type, summary) for one segment — the extraction panel.
 
     The summary is THIS recording's, which is the entire point of the panel:
     "ניר: אח של הדובר" shows not just that a name was picked up but what the
     system decided it MEANS, which is where a wrong-but-plausible extraction
     reveals itself. Under the graph this was the entity's single consolidated
     summary, so every recording mentioning it showed the same text.
+
+    The id rides along since the photo work (MEDIA_GALLERY.md Phase 3): the
+    panel's portrait upload needs a real entity to attach to, and a name is
+    not a handle — two people can share one.
     """
     rows = await db.execute(
-        select(Entity.name, Entity.type, EntityMention.summary)
+        select(Entity.id, Entity.name, Entity.type, EntityMention.summary)
         .join(EntityMention, EntityMention.entity_id == Entity.id)
         .where(EntityMention.raw_segment_id == segment_id)
         .where(Entity.producer_id == producer_id)
         .order_by(Entity.name)
     )
-    return [(name, type_, summary) for name, type_, summary in rows]
+    return [(id_, name, type_, summary) for id_, name, type_, summary in rows]
 
 
 async def find_segments_mentioning(

@@ -510,6 +510,38 @@ directly on the recording/review screen for a category, so a producer can
 attach photos in the same session as recording that category's answers, not
 only afterward from the timeline or extraction panel.
 
+### ✅ 3.4 Phase 3 built — 2026-08-11
+
+Built against §9.5's corrected wording and §9.6's placement decisions:
+
+- **`photo_url` rides on entity payloads** through one new seam,
+  `services/media_store.primary_photo_urls` — ONE bulk query however many
+  entities, resolved serving URLs, absent entry = render the placeholder.
+  Wired into the tree (`TreePerson.photo_url`) and the extraction panel
+  (`ExtractedEntityResponse`, which now also carries `entity_id`: the
+  portrait upload needs a row to attach to, and a NAME is not a handle —
+  two people can share one).
+- **One portrait control** (`components/media/EntityPortrait`): photo or
+  initials in a circle, click to upload, shared by the extraction panel
+  rows and the tree's person card — §9.6's never-a-second-mechanism rule,
+  enforced by there being one component. The tree NODE renders the photo
+  inside the existing 16px-radius SVG circle via a shared clipPath; same
+  size, same position, initials remain the placeholder.
+- **Uploading from the portrait makes the new photo the face**
+  (`make_primary` on the row-write, demoting the old primary in the same
+  transaction) — a portrait upload that stayed invisible would read as the
+  upload failing. First-photo auto-primary is unchanged.
+- **The recording screen's zone** (`components/media/CategoryPhotoZone`)
+  sits below the recording area, keyed by CATEGORY: thumbnails + add +
+  two-click remove, uploading category-owned photos (§2.2). Switching
+  questions inside a category neither moves nor reloads it.
+- The extraction panel stays read-only about what was SAID — a photo is
+  producer-added context, not an edit of the extraction.
+
+Phase 4's remainder is now just the entity list (`/api/v1/entities`)
+payload + rendering; the timeline face per §3.1's note arrives with the
+Phase 5 gallery work.
+
 ---
 
 ## 4. F — a gallery on a period
@@ -592,7 +624,7 @@ Constraints worth setting before building rather than after:
 | --- | --- | --- |
 | **1** ✅ | G — recordings as sub-bubbles, people as a filter — DONE 2026-08-10, see §1.5 (superseded by §1.7–1.9) | No schema, no storage, fixes existing content, and is the surface E and F both hang from |
 | **2** ✅ | `media_assets` + presign/upload/delete endpoints — DONE 2026-08-11, see §2.5 | The shared foundation |
-| **3** | E — entity photo, primary only, on the extraction panel, the tree, and the recording screen (§3.3) | Smallest useful slice of the new table |
+| **3** ✅ | E — entity photo, primary only, on the extraction panel, the tree, and the recording screen (§3.3) — DONE 2026-08-11, see §3.4 | Smallest useful slice of the new table |
 | **4** | E everywhere else — entity list; timeline face per §3.1's 2026-08-11 note (no per-entity bubble on timeline anymore) | Pure rendering once the payload carries `photo_url` |
 | **5** | F — period galleries, tag-bubble-triggered side panel (§4.1, updated), and the lightbox | Needs 2, benefits from 3's upload UI |
 | **6** | Merge-safety: repoint `media_assets` in the merge tooling | Must land before anyone merges entities that have photos |
@@ -744,3 +776,24 @@ separate 2026-08-11 update — an earlier draft of this closing note said
 approval landed; corrected.) This is a wording/consistency fix so Phase 3
 onward is built against the timeline as it actually exists today, not as
 it existed on 2026-08-10.
+
+## 9.6 Phase 3 UI placement — DECIDED 2026-08-11, before building
+
+Two calls the plan had left to "the natural first home" wording, settled
+by the producer before Phase 3 was built:
+
+**Recording screen (§3.3/§9.3): one persistent per-CATEGORY photo zone,**
+in a fixed area below the video-recording area. Not per-take, not
+per-question: whichever question in the category is being answered, the
+same zone with the same photos sits underneath the recording UI. The
+photos it uploads are CATEGORY-owned (`media_assets.category`, §2.2) —
+they belong to the period as a whole, which is exactly why the zone must
+not move or reset between questions.
+
+**Family tree (§3.1): the portrait is the EXISTING small circle on the
+node** — the one currently showing an initial/placeholder. A primary
+photo swaps in at the same size and position; no node redesign, no larger
+portrait treatment. Upload is reachable from the entity's box/card on the
+tree (clicking the circle or an obvious affordance on the card) and
+REUSES the one entity-photo flow and primary model shared with the
+extraction panel — never a second upload mechanism.

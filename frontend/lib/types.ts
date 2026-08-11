@@ -148,6 +148,25 @@ export interface ExtractedEntity {
   /** Always null today — the graph stores no person/place/organisation
    *  distinction. Present so typed entities can land without a shape change. */
   kind?: string | null
+  /** The row id the portrait upload attaches to — a name is not a handle,
+   *  two people can share one. */
+  entity_id?: string | null
+  /** Resolved serving URL of the primary photo; null renders the initials. */
+  photo_url?: string | null
+}
+
+/** A photo on an entity or a life period (docs/MEDIA_GALLERY.md). The client
+ *  never sees storage keys — `url` is a resolved serving URL, like video. */
+export interface MediaAsset {
+  id: string
+  kind: string
+  caption?: string | null
+  taken_year?: number | null
+  is_primary: boolean
+  entity_id?: string | null
+  category?: string | null
+  url: string
+  created_at?: string | null
 }
 
 /** What the system understood from one recording. Read-only. Says nothing
@@ -456,6 +475,8 @@ export interface TreePerson {
   year_end?: number | null
   /** null for anyone with no family path to the root — see `unplaced`. */
   generation?: number | null
+  /** Primary photo for the node's small circle; null renders the initials. */
+  photo_url?: string | null
 }
 
 export interface TreeGeneration {

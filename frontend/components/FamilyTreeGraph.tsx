@@ -199,6 +199,14 @@ export function FamilyTreeGraph({
               role="img"
               aria-label="Family tree"
             >
+              <defs>
+                {/* One shared clip for every node's portrait: userSpaceOnUse
+                    resolves inside each node's translated <g>, so the same
+                    local circle fits them all. */}
+                <clipPath id="tree-portrait-clip" clipPathUnits="userSpaceOnUse">
+                  <circle cx={NODE_H / 2} cy={NODE_H / 2} r={16} />
+                </clipPath>
+              </defs>
               {/* A side branch gets a heading and a divider, so "same
                   generation" and "same branch" stop being the same position. */}
               {bandHeadings.map((heading) => (
@@ -393,22 +401,36 @@ export function FamilyTreeGraph({
                         strokeWidth={1.5}
                       />
 
-                      {/* Initials stand in for a photo — none are stored. */}
+                      {/* The primary photo swaps into this same circle when
+                          one exists — same size, same position, the §9.6
+                          rule. Initials remain the placeholder. */}
                       <circle
                         cx={NODE_H / 2}
                         cy={NODE_H / 2}
                         r={16}
                         className={person.is_self ? 'fill-primary-500/30' : 'fill-white/8'}
                       />
-                      <text
-                        x={NODE_H / 2}
-                        y={NODE_H / 2}
-                        textAnchor="middle"
-                        dominantBaseline="central"
-                        className="fill-white text-[12px] font-semibold"
-                      >
-                        {initials(person.name)}
-                      </text>
+                      {person.photo_url ? (
+                        <image
+                          href={person.photo_url}
+                          x={NODE_H / 2 - 16}
+                          y={NODE_H / 2 - 16}
+                          width={32}
+                          height={32}
+                          preserveAspectRatio="xMidYMid slice"
+                          clipPath="url(#tree-portrait-clip)"
+                        />
+                      ) : (
+                        <text
+                          x={NODE_H / 2}
+                          y={NODE_H / 2}
+                          textAnchor="middle"
+                          dominantBaseline="central"
+                          className="fill-white text-[12px] font-semibold"
+                        >
+                          {initials(person.name)}
+                        </text>
+                      )}
 
                       <text
                         x={NODE_H - 4}

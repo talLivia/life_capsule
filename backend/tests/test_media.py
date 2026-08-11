@@ -316,6 +316,36 @@ async def test_first_entity_photo_becomes_primary_second_does_not(
 
 
 @pytest.mark.asyncio
+async def test_make_primary_swaps_the_face_in_one_transaction(
+    client: AsyncClient, auth_headers, db_session, test_user, storage_mocks
+):
+    """Clicking the portrait circle means 'this is the face now' (§9.6) — a
+    new portrait that stayed invisible would read as the upload failing."""
+    entity = _entity(test_user)
+    db_session.add(entity)
+    await db_session.commit()
+
+    first = await client.post(
+        "/api/v1/media",
+        json={"storage_key": f"photos/{test_user.id}/entity/{entity.id}/a.jpg"},
+        headers=auth_headers,
+    )
+    second = await client.post(
+        "/api/v1/media",
+        json={
+            "storage_key": f"photos/{test_user.id}/entity/{entity.id}/b.jpg",
+            "make_primary": True,
+        },
+        headers=auth_headers,
+    )
+    assert second.json()["is_primary"] is True
+
+    old = await db_session.get(MediaAsset, first.json()["id"])
+    await db_session.refresh(old)
+    assert old.is_primary is False
+
+
+@pytest.mark.asyncio
 async def test_category_photos_never_get_a_primary(
     client: AsyncClient, auth_headers, test_user, storage_mocks
 ):
@@ -583,3 +613,84 @@ async def test_family_accounts_cannot_upload_photos(
         headers=headers,
     )
     assert resp.status_code == 403
+
+
+# ── photo_url on the render surfaces (Phase 3) ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_tree_nodes_carry_the_primary_photo_url(
+    db_session, test_user, storage_mocks
+):
+    """The node's small circle shows the face when one exists and the
+    placeholder when none does — absence is not an error (§9.6)."""
+    from app.services import family_tree
+
+    root = _entity(test_user, name="Tal", normalized_name="tal", is_self=True)
+    uncle = _entity(test_user, name="אמנון", normalized_name="אמנון")
+    db_session.add_all([root, uncle])
+    await db_session.flush()
+    db_session.add(
+        MediaAsset(
+            producer_id=test_user.id,
+            storage_key=f"photos/{test_user.id}/entity/{uncle.id}/face.jpg",
+            entity_id=uncle.id,
+            is_primary=True,
+        )
+    )
+    await db_session.commit()
+
+    tree = await family_tree.build_tree(db_session, test_user.id)
+    by_id = {p["id"]: p for p in tree["unplaced"]}
+    by_id.update(
+        {p["id"]: p for g in tree["generations"] for p in g["people"]}
+    )
+    assert by_id[uncle.id]["photo_url"] == (
+        f"http://media/photos/{test_user.id}/entity/{uncle.id}/face.jpg"
+    )
+    assert by_id[root.id]["photo_url"] is None
+
+
+@pytest.mark.asyncio
+async def test_extraction_entities_carry_id_and_photo_url(
+    db_session, test_user, storage_mocks
+):
+    """The panel's portrait upload needs a real entity id to attach to — a
+    name is not a handle, two people can share one."""
+    from app.models import EntityMention, InterviewSession, RawSegment
+    from app.services.segment_extraction import _load_entities
+
+    session = InterviewSession(user_id=test_user.id, status="active")
+    db_session.add(session)
+    await db_session.flush()
+    segment = RawSegment(
+        interview_session_id=session.id,
+        question_asked="ספר לי על הדוד",
+        question_index=0,
+        status="ready",
+    )
+    entity = _entity(test_user)
+    db_session.add_all([segment, entity])
+    await db_session.flush()
+    db_session.add(
+        EntityMention(
+            entity_id=entity.id, raw_segment_id=segment.id, summary="דוד של הדובר"
+        )
+    )
+    db_session.add(
+        MediaAsset(
+            producer_id=test_user.id,
+            storage_key=f"photos/{test_user.id}/entity/{entity.id}/face.jpg",
+            entity_id=entity.id,
+            is_primary=True,
+        )
+    )
+    await db_session.commit()
+
+    loaded = await _load_entities(db_session, segment.id, test_user.id)
+    assert len(loaded) == 1
+    assert loaded[0].entity_id == entity.id
+    assert loaded[0].photo_url == (
+        f"http://media/photos/{test_user.id}/entity/{entity.id}/face.jpg"
+    )
+    assert loaded[0].summary == "דוד של הדובר"

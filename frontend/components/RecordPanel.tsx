@@ -17,6 +17,7 @@ import { GateStep } from '@/components/record/GateStep'
 import { InterviewAccordion } from '@/components/record/InterviewAccordion'
 import { ReadAloudButton } from '@/components/record/ReadAloudButton'
 import { RecordingList } from '@/components/record/RecordingList'
+import { CategoryPhotoZone } from '@/components/media/CategoryPhotoZone'
 import { SegmentUpload } from '@/components/record/SegmentUpload'
 import { VideoRecorder } from '@/components/record/VideoRecorder'
 import { api } from '@/lib/api'
@@ -356,6 +357,16 @@ export function RecordPanel() {
               </div>
             </>
           ) : null}
+
+          {/* ── Photos for the open chapter (MEDIA_GALLERY.md §9.6) ─────
+              One persistent zone per CATEGORY, in a fixed spot below the
+              recording area — the same zone whichever question in the
+              chapter is being answered, because the photos belong to the
+              chapter as a whole, never to a take. Keyed by category so
+              moving between its questions neither moves nor reloads it. */}
+          {openCategoryId && (
+            <CategoryPhotoZone key={openCategoryId} categoryId={openCategoryId} />
+          )}
 
           {/* ── What each control does ────────────────────────────────
               Always visible, never a tooltip or a first-run tour. The

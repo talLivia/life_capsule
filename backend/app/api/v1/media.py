@@ -270,13 +270,19 @@ async def create_media_asset(
         # tree and cards need ONE portrait (§3.2), and an entity with photos
         # but no primary would render faceless for no reason a producer
         # could see.
-        has_primary = await db.scalar(
-            select(MediaAsset.id).where(
+        current_primary = await db.scalar(
+            select(MediaAsset).where(
                 MediaAsset.entity_id == entity_id,
                 MediaAsset.is_primary,
             )
         )
-        is_primary = has_primary is None
+        is_primary = current_primary is None
+        if payload.make_primary and current_primary is not None:
+            # Same transaction as the insert: the partial unique index means
+            # there is never a moment with two faces, and a failed insert
+            # rolls the demotion back with it.
+            current_primary.is_primary = False
+            is_primary = True
 
     asset = MediaAsset(
         producer_id=user.id,

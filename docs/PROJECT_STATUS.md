@@ -1487,6 +1487,19 @@ merge-safety rule stands: any manual entity merge must repoint
 `media_assets.entity_id` before deleting the losing row, or the cascade
 destroys the photos.
 
+**Phase 3 SHIPPED the same day** (MEDIA_GALLERY.md §3.4, placement
+decided by the producer first — §9.6): `photo_url` on tree nodes and
+extraction-panel entities via the `media_store` seam (one bulk query);
+ONE shared portrait control (photo-or-initials circle, click to upload,
+new photo becomes the face via `make_primary`) used by the extraction
+panel and the tree's person card; the photo swaps into the tree node's
+existing small SVG circle, same size and position; and a persistent
+per-CATEGORY photo zone below the recording area uploading
+category-owned photos. Suite at 900; frontend tsc/eslint/build clean.
+⚠️ Not yet exercised live in a browser — worth a pass on the next live
+session (upload from all three surfaces, HEIC rejection message, the
+two-click remove).
+
 ## Known gaps / tech debt
 
 - 🚨 **KNOWN GAP, deliberately unfixed (2026-08-10): a "עוד" question can
@@ -1617,5 +1630,5 @@ python scripts/eval_no_story_subject.py   # tailored no-story line, v2 only
 python scripts/rebaseline_accuracy.py      # ⚠️ references are STALE — see known gaps
 python scripts/compare_retrieval_modes.py  # v1 vs v2: consistency, latency, calls, tokens
 python scripts/seed_sweep.py               # single-run IoU vs known-correct
-python -m pytest -q                        # 897 tests
+python -m pytest -q                        # 900 tests
 ```
