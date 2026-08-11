@@ -16,14 +16,6 @@ import { Camera, Loader2 } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { uploadPhoto } from '@/lib/api'
 
-/** Up to two initials — same rule as the tree's SVG nodes. */
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean)
-  if (parts.length === 0) return '?'
-  if (parts.length === 1) return parts[0].slice(0, 2)
-  return parts[0][0] + parts[1][0]
-}
-
 export function EntityPortrait({
   entityId,
   name,
@@ -87,27 +79,28 @@ export function EntityPortrait({
         // eslint-disable-next-line @next/next/no-img-element
         <img src={shown} alt={name} className="w-full h-full object-cover" />
       ) : (
-        <span className="w-full h-full flex items-center justify-center bg-white/8 text-white text-xs font-semibold">
-          {initials(name)}
+        /* No photo yet: the circle IS the empty-state upload control — a
+           centered camera filling it, replacing the initials outright (the
+           name sits right beside this control on every surface that mounts
+           it, so the initials carried no information the row lacks). A
+           corner-badge draft of this read as broken, not intentional. */
+        <span className="w-full h-full flex items-center justify-center bg-white/8">
+          <Camera
+            size={Math.max(14, Math.round(size * 0.45))}
+            className="text-white/75 group-hover:text-white transition-colors"
+          />
         </span>
       )}
-      {/* No photo yet: a PERMANENT camera cue in a bottom band, under the
-          initials — hover-only proved undiscoverable (this comment once
-          claimed "always visible" while both branches were hover-gated;
-          now the code does what it says). The band, not a full overlay, so
-          the initials stay readable at a glance. */}
-      {!shown && !uploading && (
-        <span
-          className="absolute inset-x-0 bottom-0 flex items-center justify-center bg-surface-950/55 pointer-events-none"
-          style={{ height: Math.round(size * 0.36) }}
-        >
-          <Camera size={Math.max(10, Math.round(size * 0.28))} className="text-white/90" />
-        </span>
-      )}
-      {/* On hover/focus (or mid-upload): the full overlay, both states. */}
+      {/* Hover/focus on an existing photo offers the change; mid-upload the
+          overlay holds regardless so the spinner cannot vanish when the
+          pointer drifts. */}
       <span
         className={`absolute inset-0 flex items-center justify-center bg-surface-950/60 transition-opacity ${
-          uploading ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus:opacity-100'
+          uploading
+            ? 'opacity-100'
+            : shown
+              ? 'opacity-0 group-hover:opacity-100 group-focus:opacity-100'
+              : 'opacity-0'
         }`}
       >
         {uploading ? (
