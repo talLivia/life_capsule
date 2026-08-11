@@ -91,12 +91,23 @@ export function EntityPortrait({
           {initials(name)}
         </span>
       )}
-      {/* The affordance: visible on hover/focus, never covering the face
-          otherwise. Always visible while there is no photo yet — an empty
-          circle explains nothing on its own. */}
+      {/* No photo yet: a PERMANENT camera cue in a bottom band, under the
+          initials — hover-only proved undiscoverable (this comment once
+          claimed "always visible" while both branches were hover-gated;
+          now the code does what it says). The band, not a full overlay, so
+          the initials stay readable at a glance. */}
+      {!shown && !uploading && (
+        <span
+          className="absolute inset-x-0 bottom-0 flex items-center justify-center bg-surface-950/55 pointer-events-none"
+          style={{ height: Math.round(size * 0.36) }}
+        >
+          <Camera size={Math.max(10, Math.round(size * 0.28))} className="text-white/90" />
+        </span>
+      )}
+      {/* On hover/focus (or mid-upload): the full overlay, both states. */}
       <span
         className={`absolute inset-0 flex items-center justify-center bg-surface-950/60 transition-opacity ${
-          shown ? 'opacity-0 group-hover:opacity-100 group-focus:opacity-100' : 'opacity-0 group-hover:opacity-100'
+          uploading ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus:opacity-100'
         }`}
       >
         {uploading ? (
