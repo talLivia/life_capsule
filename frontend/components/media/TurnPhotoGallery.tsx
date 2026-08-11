@@ -4,7 +4,17 @@
  * The photos under a /talk answer (docs/MEDIA_GALLERY.md §9.4): the union of
  * the galleries of every life period the clip's footage came from — one
  * gallery per category (§2.2), unioned when a turn drew on several, never
- * filtered further. Clicking opens the same PhotoLightbox the timeline uses.
+ * filtered further.
+ *
+ * Presented as a STACKED POLAROID DECK (producer decision 2026-08-11), after
+ * css-tricks.com/css-infinite-slider-flipping-through-polaroid-images: cards
+ * stacked via grid-area 1/1, thick white polaroid frames, soft drop shadow,
+ * and the front card sliding out to rejoin the back every few seconds so
+ * every photo is seen with no interaction. The reference's pure-CSS keyframes
+ * are per-N and ours is dynamic, so a small timer drives the same motion.
+ * Clicking the deck still opens the shared PhotoLightbox at the photo
+ * currently showing. Cycling pauses on hover, while the lightbox is open,
+ * and entirely under prefers-reduced-motion.
  *
  * Photos are decoration on the answer, not part of it: while loading or when
  * the periods have no photos this renders NOTHING — no spinner, no empty
@@ -30,24 +40,31 @@ function galleryFor(category: string): Promise<MediaAsset[]> {
   return cached
 }
 
+/** How long each photo holds the front before sliding to the back. */
+const CYCLE_MS = 3500
+/** The slide-out itself — must match the inline transition duration. */
+const SLIDE_MS = 700
+/** Static per-card tilts, repeating — what makes the stack read as a real
+ *  pile rather than perfectly registered prints. */
+const TILTS = [-3, 2.5, -1.5, 3.5, -2.5, 1.5]
+
 export function TurnPhotoGallery({
   categories,
   variant = 'calm',
 }: {
   categories: string[]
-  /** Which design system the thumbnails sit in: 'calm' for the family /talk
-   *  screen, 'app' for the producer's dark chat screen. The calm theme is
-   *  /talk-only by standing rule — this prop is what keeps that true while
-   *  both screens share the one gallery. */
+  /** Which design system the deck sits in: 'calm' for the family /talk
+   *  screen, 'app' for the producer's dark chat screen. The frames stay
+   *  white in both — that IS the polaroid — only the shadow adapts. */
   variant?: 'calm' | 'app'
 }) {
   const [photos, setPhotos] = useState<MediaAsset[]>([])
+  const [front, setFront] = useState(0)
+  // The card currently sliding out — kept on top while it travels, snapped
+  // (transition-less) to the back of the pile once `front` advances.
+  const [leaving, setLeaving] = useState<number | null>(null)
+  const [paused, setPaused] = useState(false)
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
-
-  const thumbBorder =
-    variant === 'calm'
-      ? 'border-calm-border dark:border-calm-borderDark focus:ring-calm-sage-500'
-      : 'border-white/10 hover:border-white/30 focus:ring-primary-400'
 
   useEffect(() => {
     let cancelled = false
@@ -67,35 +84,105 @@ export function TurnPhotoGallery({
         }
       }
       setPhotos(union)
+      setFront(0)
+      setLeaving(null)
     })
     return () => {
       cancelled = true
     }
   }, [categories])
 
+  // Hold each front card for CYCLE_MS, then start its slide. Restarts
+  // whenever the front settles or a pause condition lifts.
+  useEffect(() => {
+    if (photos.length < 2 || paused || lightboxIndex !== null || leaving !== null) return
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+    const hold = setTimeout(() => setLeaving(front), CYCLE_MS)
+    return () => clearTimeout(hold)
+  }, [photos.length, front, paused, lightboxIndex, leaving])
+
+  // When the slide finishes, the traveller becomes the back card and the
+  // next photo takes the front.
+  useEffect(() => {
+    if (leaving === null) return
+    const slide = setTimeout(() => {
+      setFront((leaving + 1) % photos.length)
+      setLeaving(null)
+    }, SLIDE_MS)
+    return () => clearTimeout(slide)
+  }, [leaving, photos.length])
+
   if (photos.length === 0) return null
+
+  const n = photos.length
+  const shadow =
+    variant === 'calm'
+      ? '0 6px 16px rgba(60, 50, 30, 0.25)'
+      : '0 6px 16px rgba(0, 0, 0, 0.45)'
+  const frontPhoto = photos[front]
 
   return (
     <>
-      <ul className="flex flex-wrap gap-1.5">
-        {photos.map((photo, i) => (
-          <li key={photo.id}>
-            <button
-              type="button"
-              onClick={() => setLightboxIndex(i)}
-              aria-label={photo.caption || 'Open photo'}
-              className={`block w-16 h-16 rounded-lg overflow-hidden border hover:opacity-90 focus:outline-none focus:ring-2 ${thumbBorder}`}
+      <button
+        type="button"
+        onClick={() => setLightboxIndex(front)}
+        onPointerEnter={() => setPaused(true)}
+        onPointerLeave={() => setPaused(false)}
+        aria-label={
+          frontPhoto.caption
+            ? `Open photos — showing: ${frontPhoto.caption}`
+            : `Open photos (${n})`
+        }
+        className="grid place-items-center p-3 overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 rounded-xl"
+      >
+        {photos.map((photo, i) => {
+          const depth = (i - front + n) % n
+          const isLeaving = leaving === i
+          return (
+            <figure
+              key={photo.id}
+              style={{
+                gridArea: '1 / 1',
+                // The traveller rides ABOVE the stack while it slides, then
+                // re-sorts to the bottom the instant `front` advances — with
+                // no transition on that snap, and opacity 0 at that moment,
+                // so the jump to the back is never seen.
+                zIndex: isLeaving ? n + 1 : n - depth,
+                transform: isLeaving
+                  ? 'translateX(130%) rotate(14deg)'
+                  : `rotate(${TILTS[i % TILTS.length]}deg)`,
+                opacity: isLeaving ? 0 : 1,
+                transition: isLeaving
+                  ? `transform ${SLIDE_MS}ms ease-in, opacity ${SLIDE_MS}ms ease-in`
+                  : 'none',
+                boxShadow: shadow,
+              }}
+              className="relative bg-white p-2 pb-7 m-0"
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={photo.url}
                 alt={photo.caption ?? ''}
-                className="w-full h-full object-cover"
+                className="w-36 h-36 object-cover block"
+                draggable={false}
               />
-            </button>
-          </li>
-        ))}
-      </ul>
+              {/* The polaroid's bottom margin is where a caption lives when
+                  one exists — absolutely positioned INSIDE that margin so a
+                  captioned card is exactly the height of an uncaptioned one
+                  and the pile stays registered. leading-7 centers the line
+                  in the pb-7 band. */}
+              {photo.caption && (
+                <figcaption
+                  dir="auto"
+                  className="absolute bottom-0 left-2 right-2 text-center text-[10px] leading-7 text-gray-500 truncate"
+                >
+                  {photo.caption}
+                </figcaption>
+              )}
+            </figure>
+          )
+        })}
+      </button>
       {lightboxIndex !== null && (
         <PhotoLightbox
           photos={photos}

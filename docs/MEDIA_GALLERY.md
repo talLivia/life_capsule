@@ -798,6 +798,18 @@ was arriving and nothing rendered it. Now both layouts mount the ONE
 the standing rule): the producer screen shows it under its single video
 panel, tracking the clip the panel plays.
 
+**Presentation: an auto-cycling polaroid deck — producer decision
+2026-08-11**, replacing the original thumbnail row (after css-tricks'
+infinite polaroid slider: cards stacked via grid-area 1/1, thick white
+frames, soft shadow). The front card slides out and rejoins the back
+every ~3.5s so every photo is seen with no interaction; a caption, when
+one exists, sits in the polaroid's bottom margin. Cycling pauses on
+hover, while the lightbox is open, and under prefers-reduced-motion; the
+reference's pure-CSS per-N keyframes don't fit a dynamic photo count, so
+a small timer drives the same motion. Clicking still opens the shared
+PhotoLightbox at the photo currently showing. TurnPhotoGallery only —
+the timeline period gallery (§4.4) keeps its thumbnail grid unchanged.
+
 ---
 
 ## 9.5 2026-08-11 amendment — §4.1 and §3.1 updated for the tag-bubble timeline
