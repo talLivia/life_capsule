@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import {
   Send, Mic, MicOff, Film, MessageCircle, Sparkles, Wand2, Video, Loader2,
 } from 'lucide-react'
+import { TurnPhotoGallery } from '@/components/media/TurnPhotoGallery'
 import { useVideoClipChat } from '@/lib/useVideoClipChat'
 
 interface ProducerVideoClipChatProps {
@@ -119,6 +120,20 @@ export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) 
                 </div>
               )}
             </div>
+
+            {/* Photos from the life period(s) the current clip's footage
+                came from (MEDIA_GALLERY.md §9.4, extended to this screen by
+                a producer decision 2026-08-11) — under the panel, tracking
+                the clip the panel shows. Renders nothing when those periods
+                have no photos. */}
+            {latestClip?.photoCategories && latestClip.photoCategories.length > 0 && (
+              <div className="mt-4 px-1">
+                <TurnPhotoGallery
+                  categories={latestClip.photoCategories}
+                  variant="app"
+                />
+              </div>
+            )}
 
             {/* Status bar */}
             <div className="flex items-center justify-between mt-4 px-1">

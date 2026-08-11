@@ -1525,6 +1525,20 @@ accounts scoped by the same `producer_id` linkage sessions.py checks —
 confirmed against the existing model, no new one. Suite at 905;
 tsc/eslint/build clean.
 
+**RESOLVED, second round of the same report: the test was running on the
+producer's own chat screen, where the gallery was deliberately not
+mounted.** The failing sessions all belonged to the producer account
+(`Tal3`), which cannot even reach the family /talk layout (the redeem
+gate) — so the surface Phase 8 built was never on screen, while
+`photoCategories` arrived unrendered in the shared hook's view-model. A
+byte-exact comparison also closed the string-mismatch theory for good
+(stored and resolved both `'childhood'`, hex-identical). Fixed by
+producer decision: both layouts now mount the one `TurnPhotoGallery`
+(a `variant` prop keeps the calm theme /talk-only). Lesson worth keeping:
+"two layouts, one behaviour" means a feature scoped to one layout is
+INVISIBLE from the other while the shared hook carries its data — say
+which screen a surface lands on, and test on that screen.
+
 **Live-debugged 2026-08-11 after a "gallery never appears" report — no
 code defect at any layer.** Verified against the RUNNING servers, not the
 repo: category resolution matches the stored photos exactly (`childhood`

@@ -788,8 +788,15 @@ UI: `TurnPhotoGallery` renders a thumbnail row under each answer's player
 and text in the /talk layout, opening the shared `PhotoLightbox` (§4.4).
 While loading, or when the turn's periods hold no photos, it renders
 NOTHING — the clip is the answer; photos accompany it when they exist.
-/talk only, per the §9.4 wording; the producer's own chat screen shares
-the hook, not the layout.
+
+**Extended to the producer's own chat screen — producer decision
+2026-08-11.** The first live test ran on that screen, where the gallery
+was deliberately absent per this section's "/talk" wording — the two
+screens share the behaviour hook, not the layout, so `photoCategories`
+was arriving and nothing rendered it. Now both layouts mount the ONE
+`TurnPhotoGallery` (a `variant` prop keeps the calm theme /talk-only, per
+the standing rule): the producer screen shows it under its single video
+panel, tracking the clip the panel plays.
 
 ---
 

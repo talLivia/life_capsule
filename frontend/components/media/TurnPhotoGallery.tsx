@@ -30,9 +30,24 @@ function galleryFor(category: string): Promise<MediaAsset[]> {
   return cached
 }
 
-export function TurnPhotoGallery({ categories }: { categories: string[] }) {
+export function TurnPhotoGallery({
+  categories,
+  variant = 'calm',
+}: {
+  categories: string[]
+  /** Which design system the thumbnails sit in: 'calm' for the family /talk
+   *  screen, 'app' for the producer's dark chat screen. The calm theme is
+   *  /talk-only by standing rule — this prop is what keeps that true while
+   *  both screens share the one gallery. */
+  variant?: 'calm' | 'app'
+}) {
   const [photos, setPhotos] = useState<MediaAsset[]>([])
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
+
+  const thumbBorder =
+    variant === 'calm'
+      ? 'border-calm-border dark:border-calm-borderDark focus:ring-calm-sage-500'
+      : 'border-white/10 hover:border-white/30 focus:ring-primary-400'
 
   useEffect(() => {
     let cancelled = false
@@ -69,7 +84,7 @@ export function TurnPhotoGallery({ categories }: { categories: string[] }) {
               type="button"
               onClick={() => setLightboxIndex(i)}
               aria-label={photo.caption || 'Open photo'}
-              className="block w-16 h-16 rounded-lg overflow-hidden border border-calm-border dark:border-calm-borderDark hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-calm-sage-500"
+              className={`block w-16 h-16 rounded-lg overflow-hidden border hover:opacity-90 focus:outline-none focus:ring-2 ${thumbBorder}`}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
