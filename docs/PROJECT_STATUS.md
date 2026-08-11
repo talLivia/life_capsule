@@ -1523,7 +1523,34 @@ player via the existing `GET /media?category=` and opens the shared
 PhotoLightbox. Access: `GET /media` (list ONLY) now accepts family
 accounts scoped by the same `producer_id` linkage sessions.py checks —
 confirmed against the existing model, no new one. Suite at 905;
-tsc/eslint/build clean. Not yet exercised live.
+tsc/eslint/build clean.
+
+**Live-debugged 2026-08-11 after a "gallery never appears" report — no
+code defect at any layer.** Verified against the RUNNING servers, not the
+repo: category resolution matches the stored photos exactly (`childhood`
+both sides); a real family-account WS session showed the raw
+`video_clip_response` carrying `photo_categories`; `GET
+/media?category=childhood` with a family token returned all 4 photos
+(200); the dev server had compiled `TurnPhotoGallery`. The failing turns
+decomposed into (a) turns sent BEFORE the 19:54 backend restart, against
+a pre-Phase-8 process that never sent the field, and (b) a /talk browser
+tab whose loaded bundle predated Phase 8 — a "fresh session" in the SPA
+mints a new conversation WITHOUT reloading the page's JS, so the old hook
+dropped the new field silently. Hard-refresh the tab after deploying
+frontend changes before concluding anything.
+
+⚠️ A shape that will read as this bug again, and is not one: a clip's
+gallery follows the RECORDING the footage came from, not what the answer
+sounds like. Live probe: "מה אהבת לעשות כשהיית ילד?" plays footage whose
+words are about childhood but which lives in the adolescence recording
+(the producer opened their teenage-hobbies answer with "כשהייתי ילד…"),
+so the turn resolves to `adolescence_highschool` — which has no photos —
+and no gallery renders while childhood's photos sit unshown. That is
+§9.4's sourcing rule working as approved (the clip's category, a lookup,
+never an inference from content). If it grates, the alternative —
+inferring categories from answer TEXT — is a classification with the
+misattribution risks this project keeps declining; decide deliberately
+if ever.
 
 ⚠️ Found while landing it: `test_full_archive_retrieval.py`'s tests were
 quietly running `_recent_turns` (and anything else off
