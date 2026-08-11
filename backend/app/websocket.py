@@ -607,7 +607,7 @@ class ConnectionManager:
             # way, just a different destination. Run directly (we're already
             # inside the tracked task).
             chat_mode = self.session_data.get(session_id, {}).get("producer_chat_mode", "avatar")
-            if chat_mode in ("video_clips", "video_clips_v2"):
+            if chat_mode == "video_clips_v2":
                 await self._handle_video_clip_question_inner(session_id, text)
             else:
                 await self._handle_text_input_inner(session_id, text)
@@ -750,24 +750,18 @@ class ConnectionManager:
         self._spawn_turn(session_id, self._handle_video_clip_question_inner(session_id, text))
 
     async def _handle_video_clip_question_inner(self, session_id: str, text: str):
-        from app.services import full_archive_retrieval, video_clip_assembler
+        from app.services import full_archive_retrieval
 
         started_at = datetime.now(timezone.utc)
         data = self.session_data.get(session_id, {})
         data["last_activity"] = started_at
         group_id = data.get("producer_id")
         recording_language = data.get("producer_recording_language", "en")
-        # Both video-clip modes share this handler and an identical response
-        # contract (a clip URL or the no-story fallback); only the range-
-        # decision backend differs. Prompt 15's experimental full-archive
-        # reader ("video_clips_v2") is selected here, otherwise the Prompt
-        # 11-14 chunk-retrieval assembler.
-        chat_mode = data.get("producer_chat_mode", "avatar")
-        assembler = (
-            full_archive_retrieval.assemble_video_clip_response_v2
-            if chat_mode == "video_clips_v2"
-            else video_clip_assembler.assemble_video_clip_response
-        )
+        # ONE clip assembler since the v1 (video_clips) mode was removed —
+        # Prompt 15's full-archive reader is the only range-decision backend.
+        # The response contract (a clip URL or the no-story fallback) is
+        # unchanged from when two modes shared it.
+        assembler = full_archive_retrieval.assemble_video_clip_response_v2
 
         # The try below must wrap EVERYTHING from here, not just the
         # assemble_video_clip_response call — _persist_message/

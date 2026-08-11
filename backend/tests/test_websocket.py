@@ -277,18 +277,18 @@ async def test_audio_routes_to_avatar_pipeline_by_default(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_audio_routes_to_video_clip_pipeline_when_producer_opted_in(monkeypatch):
-    """When the linked producer's chat_mode is "video_clips", transcribed
-    audio must feed the video-clip turn instead of the avatar turn — same
-    STT step, different destination, per the producer's own Settings
-    toggle (never the family viewer's own preference)."""
+async def test_audio_routes_unknown_modes_to_the_avatar_path(monkeypatch):
+    """Only "video_clips_v2" reaches the clip turn since the v1 mode was
+    removed. A mode string the router doesn't know — including the retired
+    "video_clips", which validation no longer accepts — fails toward the
+    avatar text path, exactly as any unknown value always has."""
     import base64
 
     from app.services import stt as stt_module
 
     m = ConnectionManager()
     _wire_session(m)
-    m.session_data["s1"]["producer_chat_mode"] = "video_clips"
+    m.session_data["s1"]["producer_chat_mode"] = "video_clips"  # retired value
 
     async def fake_transcribe(audio, language="en"):
         return "tell me about your brothers"
@@ -302,14 +302,13 @@ async def test_audio_routes_to_video_clip_pipeline_when_producer_opted_in(monkey
 
     async def fake_video_clip_turn(session_id, text):
         calls["video_clip"] += 1
-        assert text == "tell me about your brothers"
 
     m._handle_text_input_inner = fake_text_turn  # type: ignore[assignment]
     m._handle_video_clip_question_inner = fake_video_clip_turn  # type: ignore[assignment]
 
     await m._handle_audio_inner("s1", base64.b64encode(b"x" * 2000).decode())
 
-    assert calls == {"text": 0, "video_clip": 1}
+    assert calls == {"text": 1, "video_clip": 0}
 
 
 @pytest.mark.asyncio
@@ -347,24 +346,20 @@ async def test_audio_routes_to_video_clip_pipeline_for_v2_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_video_clip_inner_selects_v2_assembler_for_v2_mode(monkeypatch):
-    """The shared video-clip handler must dispatch to full_archive_retrieval's v2
-    assembler when producer_chat_mode is "video_clips_v2", and to the v1
-    assembler otherwise — both have the identical response contract."""
-    from app.services import full_archive_retrieval, video_clip_assembler
+async def test_video_clip_inner_always_dispatches_to_the_v2_assembler(monkeypatch):
+    """Since the v1 (video_clips) mode was removed there is ONE clip
+    assembler: full_archive_retrieval's v2. The handler must use it
+    regardless of what producer_chat_mode says — reaching this handler at
+    all means the producer is on a clip mode, and only one exists."""
+    from app.services import full_archive_retrieval
     from app.services.video_clip_assembler import VideoClipResult
 
-    called = {"v1": 0, "v2": 0}
-
-    async def fake_v1(question, group_id, recording_language, session_id):
-        called["v1"] += 1
-        return VideoClipResult(video_url="http://x/v1.mp4")
+    called = {"v2": 0}
 
     async def fake_v2(question, group_id, recording_language, session_id):
         called["v2"] += 1
         return VideoClipResult(video_url="http://x/v2.mp4")
 
-    monkeypatch.setattr(video_clip_assembler, "assemble_video_clip_response", fake_v1)
     monkeypatch.setattr(full_archive_retrieval, "assemble_video_clip_response_v2", fake_v2)
 
     m = ConnectionManager()
@@ -374,37 +369,9 @@ async def test_video_clip_inner_selects_v2_assembler_for_v2_mode(monkeypatch):
 
     await m._handle_video_clip_question_inner("s1", "who is Ilana")
 
-    assert called == {"v1": 0, "v2": 1}
+    assert called == {"v2": 1}
     urls = [msg.get("video_url") for msg in ws.sent if msg["type"] == "video_clip_response"]
     assert urls == ["http://x/v2.mp4"]
-
-
-@pytest.mark.asyncio
-async def test_video_clip_inner_selects_v1_assembler_for_default_video_clips_mode(monkeypatch):
-    from app.services import full_archive_retrieval, video_clip_assembler
-    from app.services.video_clip_assembler import VideoClipResult
-
-    called = {"v1": 0, "v2": 0}
-
-    async def fake_v1(question, group_id, recording_language, session_id):
-        called["v1"] += 1
-        return VideoClipResult(video_url="http://x/v1.mp4")
-
-    async def fake_v2(question, group_id, recording_language, session_id):
-        called["v2"] += 1
-        return VideoClipResult(video_url="http://x/v2.mp4")
-
-    monkeypatch.setattr(video_clip_assembler, "assemble_video_clip_response", fake_v1)
-    monkeypatch.setattr(full_archive_retrieval, "assemble_video_clip_response_v2", fake_v2)
-
-    m = ConnectionManager()
-    _wire_session(m)
-    m.session_data["s1"]["producer_id"] = "producer-1"
-    m.session_data["s1"]["producer_chat_mode"] = "video_clips"
-
-    await m._handle_video_clip_question_inner("s1", "tell me about your family")
-
-    assert called == {"v1": 1, "v2": 0}
 
 
 @pytest.mark.asyncio
