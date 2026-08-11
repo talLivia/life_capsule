@@ -1,7 +1,8 @@
 # Photos on entities and periods, and what an entity-less period shows
 
-**Written 2026-08-06. Updated 2026-08-10 — see §9.** Three related gaps in what a timeline
-period or a tree entity can show beyond a name:
+**Written 2026-08-06. Updated 2026-08-10 — see §9. Updated 2026-08-11 — see §9.5.**
+Three related gaps in what a timeline period or a tree entity can show beyond
+a name:
 
 | | |
 | --- | --- |
@@ -137,6 +138,10 @@ asked-and-unknown split the `*_asked_at` columns use: 'other' is never
 re-sent, an unparseable label leaves NULL and retries. Group order:
 משפחה, אנשים, מקומות, מוסדות לימוד, צבא, עבודה, קהילה, עוד.
 
+> **Superseded by §1.8** — the subtype classification pass and this grouping
+> scheme were replaced by topic_tags-based bubbles the next day. Kept here
+> for history; do not implement this version.
+
 **One deviation from the approved wording, flagged at build time:**
 classification runs lazily at READ (the same seam as the summary refresh),
 not at ingest + a backfill script. Identical outcome and cost — the first
@@ -183,6 +188,10 @@ GENERAL principle, to hold for every category at every archive size:
 - **"All moments" one level deeper** (approved): the complete list plus the
   Phase 1 per-entity chips, so §1.2's reachability rule still holds and
   density is opt-in.
+
+  > **Superseded by §1.9** — "all moments" moved from bubble-scoped to
+  > period-scoped, then was removed entirely. Kept here for history.
+
 - **Moment titles** (migration `0023`, `raw_segments.moment_title` +
   language): a recording's only rendered name everywhere, including the
   player — generated once per recording by the same lazy/batched/stored
@@ -190,6 +199,10 @@ GENERAL principle, to hold for every category at every archive size:
   and retries; untranscribed segments wait for their transcript). The
   question text is model INPUT (it names unnamed referents — CLAUDE.md) but
   never renders. `question_asked` stays in the payload as data.
+
+  > **Superseded by §1.10** — title generation moved from read-time
+  > (watermarked) to save-time (single generation point). Kept here for
+  > history.
 
 **Costs this adds:** one titling call per ~20 recordings, once ever per
 recording; highlight selection is free at read. Summary/subtype costs
@@ -220,6 +233,10 @@ Two consequences, both deliberate:
 - **"All moments" is now PERIOD-wide, not bubble-wide.** A capped tag set
   covers less than everything, so reachability moved down one level: any
   open bubble's "all moments" lists the whole period. §1.2 still holds.
+
+  > **Superseded by §1.9** — the period-wide "all moments" screen was
+  > removed entirely the same day. Kept here for history.
+
 - **The generic רגעים bubble survives only as a fallback** for a period
   whose segments carry no tags at all (mid-processing, pre-topics archive)
   — with a static card, a period must never render without a way in.
@@ -405,6 +422,43 @@ video: *"No transaction spans Postgres and object storage."* A cascaded row
 leaves its file behind. Same accepted trade — an orphaned file costs storage,
 where a deleted-file-with-live-row costs a broken image.
 
+### ✅ 2.5 Phase 2 built — 2026-08-11
+
+Migration `0026`, `MediaAsset` in `models.py`, and `app/api/v1/media.py`
+(`POST /media/presign`, `PUT /media/upload-local/{key}` for dev,
+`POST /media`, `GET /media?entity_id=|category=`, `DELETE /media/{id}`).
+25 tests. Decisions the plan left open, settled while building:
+
+- **The row-write reads the owner from the STORAGE KEY, never from the
+  request body.** The key encodes `entity/{id}` or `period/{category}` at
+  presign, so "row claims a different owner than the upload it points at"
+  is structurally impossible rather than validated against.
+- **`is_primary` landed now, not in Phase 3** (schema shouldn't move
+  twice), with two pieces of bookkeeping so an entity with photos never
+  renders faceless: the FIRST photo of an entity becomes primary
+  automatically, and deleting the primary promotes the earliest survivor.
+  Category photos never get one — a period has no face.
+- **`GET /media` is included in the foundation** (the doc's Phase 2 named
+  only presign/upload/delete): every later phase reads through it, and
+  §9.4 already names it as /talk's read shape.
+- **Retired-only categories are valid photo owners.** They still render on
+  the timeline (FAMILY_TREE_TIMELINE.md §3 correction), so a photo must be
+  attachable there. `interview_config.is_valid_category` is the single
+  seam, live ∪ retired.
+- **The size cap (15MB, `MAX_PHOTO_UPLOAD_BYTES`) is enforced at the
+  local PUT and re-checked at the row-write via a HEAD on the object** —
+  in R2 mode the browser PUTs straight to storage, so the row-write check
+  is the only one that always holds. An oversized object is deleted when
+  the row is refused, not left parked in storage.
+- **HEIC is rejected with a message that names it** (open decision 2's
+  recommended first step) — a generic "unsupported type" on the format
+  every iPhone produces would read as the app being broken.
+- Deletion removes the row transactionally, then the file best-effort —
+  the §2.3 trade, orphaned file over broken image.
+
+No frontend yet — the upload UI is Phase 3's, where the first surface
+(extraction panel / recording screen) lands.
+
 ---
 
 ## 3. E — a photo on an entity
@@ -423,6 +477,13 @@ An entity card already exists in four places, and all four read the same shape:
 One `photo_url` on the entity payload feeds all four. It should be resolved
 server-side into a presigned URL, not a raw key — the client already never
 sees storage keys anywhere else.
+
+> **Note added 2026-08-11 (§9.5):** the "timeline sub-bubble" row above
+> describes the pre-§1.8 per-entity chip, which no longer exists on the
+> timeline (bubbles are now tag-partitioned, not per-entity — see §1.8/§1.9).
+> An entity's photo still applies wherever an entity card itself renders
+> (family tree, extraction panel, entity list); on the timeline it surfaces
+> through the period gallery (§4), not a per-entity bubble face.
 
 ### 3.2 One photo or many
 
@@ -459,26 +520,39 @@ Beside the timeline period, as the plan says: a strip or grid of thumbnails,
 opening a lightbox. Photos belong to the **category**, not to a recording, so
 they survive re-recording an answer.
 
-**Hover/select trigger (NEW, see §9.2).** Hovering or selecting an entity or
-place sub-bubble within a category should surface that category's gallery
-in the side panel — the same gallery described here, triggered by the same
-hover/select interaction the sub-bubble already uses, not a separate control.
+**Trigger, updated 2026-08-11 (§9.5) for the tag-bubble model.** The
+original wording below (2026-08-10) described hovering an "entity or place
+sub-bubble" — that surface no longer exists (§1.8/§1.9 replaced per-entity
+chips with tag-partitioned bubbles: משפחה, טבריה, מוסדות לימוד, עוד, etc.).
+The trigger is now: **hovering or clicking a period's tag bubble** (or the
+period card itself, for the period-wide gallery) surfaces that category's
+photo gallery in the side panel, alongside the curated highlight clips the
+bubble already shows. Same panel, same data source (`media_assets` filtered
+by `category`), no filtering by the bubble's specific tag — a category has
+one photo gallery, not one gallery per bubble, since photos attach to the
+category as a whole (§2.2), not to a tag or entity within it.
+
+> Original 2026-08-10 wording, superseded by the paragraph above: "Hovering
+> or selecting an entity or place sub-bubble within a category should
+> surface that category's gallery in the side panel — the same gallery
+> described here, triggered by the same hover/select interaction the
+> sub-bubble already uses, not a separate control."
 
 ### 4.2 The interaction the request describes
 
 > "Clicking a specific entity/place within that category shows its own video or
 > photos."
 
-This is the same filter §1.2 introduces, with a second tab. Selecting a person
-inside a period shows:
+This is the same filter §1.2 introduces, with a second tab.
 
-- **their recordings** — the moments in this period that mention them, which is
-  the §1.2 filter;
-- **their photos** — `media_assets` for that entity.
-
-So E and F converge on one panel rather than two: a period shows recordings and
-photos; selecting a person narrows both to that person. Nothing new is needed
-for the second half once E exists.
+> **Note added 2026-08-11 (§9.5):** as written, this described the
+> per-entity filter from Phase 1, which §1.9 removed in favor of tag
+> bubbles. The photo side of this interaction still holds at the category
+> level (§4.1) but no longer narrows to an individual entity/place inside a
+> bubble, since that filter no longer exists on the timeline. Entity-level
+> photo+video browsing (a specific person's own moments and photos) lives
+> on the family tree page, consistent with where entity-centric browsing
+> already moved in §1.9.
 
 ### 4.3 Ordering
 
@@ -516,14 +590,14 @@ Constraints worth setting before building rather than after:
 
 | Phase | Work | Why here |
 | --- | --- | --- |
-| **1** ✅ | G — recordings as sub-bubbles, people as a filter — DONE 2026-08-10, see §1.5 | No schema, no storage, fixes existing content, and is the surface E and F both hang from |
-| **2** | `media_assets` + presign/upload/delete endpoints | The shared foundation |
+| **1** ✅ | G — recordings as sub-bubbles, people as a filter — DONE 2026-08-10, see §1.5 (superseded by §1.7–1.9) | No schema, no storage, fixes existing content, and is the surface E and F both hang from |
+| **2** ✅ | `media_assets` + presign/upload/delete endpoints — DONE 2026-08-11, see §2.5 | The shared foundation |
 | **3** | E — entity photo, primary only, on the extraction panel, the tree, and the recording screen (§3.3) | Smallest useful slice of the new table |
-| **4** | E everywhere else — timeline bubbles, entity list | Pure rendering once the payload carries `photo_url` |
-| **5** | F — period galleries, hover-triggered side panel (§4.1), and the lightbox | Needs 2, benefits from 3's upload UI |
+| **4** | E everywhere else — entity list; timeline face per §3.1's 2026-08-11 note (no per-entity bubble on timeline anymore) | Pure rendering once the payload carries `photo_url` |
+| **5** | F — period galleries, tag-bubble-triggered side panel (§4.1, updated), and the lightbox | Needs 2, benefits from 3's upload UI |
 | **6** | Merge-safety: repoint `media_assets` in the merge tooling | Must land before anyone merges entities that have photos |
 | **7** | Category year-range attribution (§1.4) | Depends on year-attribution rules being defined first — see §9.1 |
-| **8** | `/talk` photo surfacing (§9.4) | Blocked on an explicit scope decision; do not start before sign-off |
+| **8** | `/talk` photo surfacing (§9.4) — APPROVED, part of the plan | Waits on phases 1–6 (producer-side photos must exist before they can surface in chat), not on further sign-off |
 
 Phase 1 is independently useful and worth landing on its own.
 
@@ -531,10 +605,10 @@ Phase 1 is independently useful and worth landing on its own.
 
 | # | Decision | Recommendation |
 | --- | --- | --- |
-| 1 | Do periods and entities share one gallery panel, or two? | One — §4.2. Selecting a person narrows the period's content; it does not open a different screen. |
+| 1 | Do periods and entities share one gallery panel, or two? | One — §4.2. Selecting a person narrows the period's content; it does not open a different screen. (Note: the "selecting a person" narrowing no longer exists per §9.5 — see §4.2's 2026-08-11 note. The one-panel answer still holds at the category level.) |
 | 2 | HEIC: convert or reject? | Reject with a clear message first; converting needs a codec in the image, which is a deploy change. |
 | 3 | Captions on photos? | Yes, optional, one line. A photo of four people is worth naming, and it costs one column already in the schema above. |
-| 4 | Can family accounts (`/talk`) see photos? | **Revisited in §9.4 — no longer purely deferred.** The 2026-08-10 request asks for this explicitly; needs sign-off before phase 8, see §9.4. |
+| 4 | Can family accounts (`/talk`) see photos? | **APPROVED 2026-08-11 — see §9.4.** Yes: `/talk` shows a photo gallery under the video panel, sourced from the category/categories of the clip(s) answering the current chat turn. Still sequenced as phase 8 — built after phases 1–6 are stable. |
 | 5 | Should a photo be attachable to a RECORDING as well? | No. A recording already has video. Entity and period are the two things that lack any imagery. |
 
 ## 8. Not in scope
@@ -544,7 +618,9 @@ Phase 1 is independently useful and worth landing on its own.
 - Editing or cropping in the browser.
 - Anything about years — see `docs/TIMELINE_YEAR_ATTRIBUTION.md`, except §1.4's
   category-range rule, which is in scope as of this update.
-- `/talk` photo surfacing, unless and until §9.4 is signed off.
+- `/talk` photo surfacing is now in scope (§9.4, approved) but sequenced as
+  Phase 8 — not to be started before Phases 1–6 land, since there would be
+  no photos yet to surface.
 
 ---
 
@@ -566,7 +642,8 @@ a dependency on `docs/TIMELINE_YEAR_ATTRIBUTION.md`, not yet resolved here.
 
 Clarifies that the gallery+filter panel from §4.2 should also appear on
 hover, not only on an explicit click/select — same panel, same data, an
-additional trigger.
+additional trigger. (See §9.5 for the 2026-08-11 update to what the trigger
+target actually is post-tag-bubbles.)
 
 ### 9.3 Upload from the recording screen (§3.3, §5)
 
@@ -574,31 +651,96 @@ Adds a second upload entry point: the per-category recording/review screen,
 alongside the entity portrait and period "Add photos" button already in the
 original plan. Same presign → PUT → ingest flow; no new storage path.
 
-### 9.4 `/talk` photo surfacing — scope decision needed, not yet approved
+### 9.4 `/talk` photo surfacing — APPROVED 2026-08-11, this is part of the plan
 
-While a family member is chatting in `/talk` and a clip plays, the request
-asks for the bottom video panel to also show photos from whichever
-categories the currently-playing clips belong to.
+**This is one of three surfaces this whole document exists to build, and all
+three are the plan, not just the producer-side ones:**
 
-**This conflicts with two things this document already decided**, and should
-not be built until explicitly resolved:
+1. **Recording screen** (§3.3, §9.3) — a producer can upload photos for a
+   category directly while recording/reviewing that category's answers.
+2. **Timeline** (§4, §9.5) — those photos show as a gallery beside the
+   category on the producer's own timeline.
+3. **`/talk` chat** (this section) — while a family member is chatting and a
+   clip plays, the video panel also shows a photo gallery underneath it,
+   sourced from whichever category(ies) the clip(s) that answered the
+   current chat turn belong to. If one answer pulled clips from multiple
+   categories (e.g. a chat response that drew on both "ילדות" and
+   "צבא/מחתרות"), the gallery shows photos from all of those categories,
+   not just one.
 
-- **Open decision #4** (original table) deferred family/`/talk` photo
-  visibility entirely, calling it *"a separate call about what the archive
-  exposes."* This request effectively answers that decision as "yes" — worth
-  making that an explicit, conscious sign-off rather than something that
-  slips in as a side effect of building phase 8.
-- **Open decision #5** confirmed photos attach to entities and periods, not
-  individual recordings. Surfacing "photos for the categories behind the
-  clips currently playing" is a new read path (category → photos, filtered
-  by what's currently on screen) that doesn't exist yet in the API and isn't
-  the same as the producer-side gallery in §4.
+This was previously recorded as an unresolved conflict with two earlier
+open decisions. Resolving both explicitly, now that this has been
+confirmed as the intended plan rather than a late addition:
 
-Before building: decide (a) whether family/`/talk` should see photos at all,
-(b) if yes, whether this needs a dedicated endpoint (e.g. "photos for the
-categories behind the currently-playing clip(s)") rather than reusing the
-producer-side gallery response, and (c) whether this should wait until
-phases 1–6 (producer-side photos) are stable, since it's a new
-consumer-facing surface built on top of a feature that doesn't exist yet.
+- **Open decision #4** ("can family accounts see photos?") is now **YES** —
+  not deferred. Family sees the same category-level photos a producer
+  uploaded, surfaced contextually during chat.
+- **Open decision #5** ("photo attach point") is unchanged: photos still
+  attach to entities and periods/categories (§2.2), never to an individual
+  recording. What's new here is a **read path**, not a new attach point —
+  `/talk` needs to know, for the clip(s) currently playing, which
+  category(ies) they belong to, then fetch that category's existing
+  `media_assets` gallery. No new storage shape.
 
-Tracked as phase 8 in §6, gated on this sign-off.
+**What this needs, mechanically:**
+
+- A clip already carries its `category` (it's a recording within a period).
+  Given the clip(s) driving the current chat turn, the categories are known
+  without new inference — it's a lookup, not a classification.
+- A dedicated read endpoint (e.g. `GET /media?category=X` reused across
+  producer-timeline and `/talk`, or a small `/talk`-specific wrapper that
+  takes the current turn's clip ids and returns the union of their
+  categories' galleries) rather than repurposing the producer-side gallery
+  response as-is, since `/talk` needs multiple categories unioned per turn,
+  not one category per request.
+- Family-side access control: confirm `/talk`'s existing auth/session model
+  extends cleanly to `media_assets` reads (same producer-scoping question
+  video already answers today for family viewing) — not a new access
+  model, just confirming the existing one covers photos too.
+
+**Sequencing, unchanged from the original recommendation:** this is still
+Phase 8 in §6 — built after phases 1–6 (producer-side upload, storage, and
+the timeline gallery) are stable, since `/talk` surfacing has nothing to
+show until photos exist to surface. The approval here is about **intent**
+(yes, build this), not about **jumping the queue** — Phase 2 (in progress)
+and Phases 3–6 still come first.
+
+---
+
+## 9.5 2026-08-11 amendment — §4.1 and §3.1 updated for the tag-bubble timeline
+
+Between the original 2026-08-10 photos plan and this update, Phase 1's
+timeline was substantially redesigned (§1.6–§1.10): per-entity chips and the
+period-wide "all moments" screen were removed entirely, replaced by
+tag-partitioned bubbles (משפחה, טבריה, מוסדות לימוד, עוד, etc.) as the sole
+navigation into a period's recordings.
+
+The original photos plan's wording in §3.1 and §4.1 predates that redesign
+and referred to "entity or place sub-bubbles," which no longer exist on the
+timeline. This amendment corrects those references without changing the
+underlying photo architecture (§2's storage/schema plan is unaffected):
+
+- **§3.1**: an entity's `photo_url` still renders on every surface where an
+  entity card itself exists (family tree, extraction panel, entity list). It
+  no longer has a "timeline sub-bubble" surface to render on, since
+  per-entity bubbles don't exist on the timeline anymore.
+- **§4.1**: the period gallery's trigger is now hovering/clicking a period's
+  tag bubble (or the period card, for the period-wide view) — not an
+  entity/place sub-bubble. The gallery itself is unchanged: one gallery per
+  category, sourced from `media_assets` filtered by `category`, not
+  filtered further by which bubble was hovered (photos attach to the
+  category as a whole, per §2.2 — they were never modeled per-entity or
+  per-tag).
+- **§4.2 / Open decision #1**: the "selecting a person narrows both
+  recordings and photos" interaction described here was Phase 1's
+  per-entity filter, removed in §1.9. The one-gallery-per-category answer
+  to decision #1 still holds; the person-level narrowing does not, and
+  person-centric browsing lives on the family tree page instead.
+
+No architectural decisions changed — §2's storage/schema plan is untouched,
+and phases 3–8 in §6 keep their order. (§9.4's approval is its own,
+separate 2026-08-11 update — an earlier draft of this closing note said
+§9.4 "remains unsigned-off", which contradicted the §9.4 header once the
+approval landed; corrected.) This is a wording/consistency fix so Phase 3
+onward is built against the timeline as it actually exists today, not as
+it existed on 2026-08-10.

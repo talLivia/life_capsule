@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -12,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import expression, func
@@ -726,4 +728,82 @@ class PeriodSummary(Base):
     source_segment_ids = Column(JSON, nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MediaAsset(Base):
+    """A photo the producer uploaded — attached to an entity OR a life period.
+
+    ONE table for both owners rather than entity_photos + category_photos: the
+    two would share every column and code path except the owning id, and "two
+    places hold one kind of fact" is the shape the schema argues against
+    elsewhere (relation_types). The CHECK constraint is what stops a row
+    claiming both owners, or neither. See docs/MEDIA_GALLERY.md §2.
+
+    `category` is a bare string, not an FK — categories live in
+    `interview_questions.json`, same reasoning as RawSegment.question_id and
+    PeriodSummary.category. The value is validated against interview_config at
+    the API, never trusted from the client.
+
+    `entity_id` cascades deliberately: the orphan sweep removing a person
+    nobody mentions any more takes their photos with them — a photo of nobody
+    is not worth keeping. The stored FILE lives outside the transaction (no
+    transaction spans Postgres and object storage); a cascaded row leaves an
+    orphaned file, which is the accepted direction of that trade.
+
+    ⚠️ Any MANUAL merge tool must repoint media_assets.entity_id before
+    deleting the losing row, exactly as it repoints entity_mentions —
+    otherwise the cascade destroys the photos (MEDIA_GALLERY.md §2.3).
+    """
+
+    __tablename__ = "media_assets"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    producer_id = Column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Object-storage key (photos/{producer_id}/...). Never sent to a client —
+    # responses carry a resolved serving URL instead, like video does.
+    storage_key = Column(String, nullable=False)
+    # 'photo' for now. A string rather than an Enum so a future kind is a
+    # migration, not a code deploy — same rule as entities.type.
+    kind = Column(String, nullable=False, default="photo", server_default="photo")
+    caption = Column(Text, nullable=True)
+    # Nullable everywhere: most photos won't have one, and guessing a year is
+    # worse than leaving it open (the year-attribution rule).
+    taken_year = Column(Integer, nullable=True)
+    # The face shown on tree nodes and entity cards — meaningful only for
+    # entity-owned photos. One per entity, enforced by a partial unique index
+    # (same pattern as entities.is_self). The first photo uploaded for an
+    # entity becomes primary automatically so an entity with photos always
+    # has a face.
+    is_primary = Column(
+        Boolean, nullable=False, default=False, server_default=expression.false()
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # EXACTLY ONE of these two is set — the CHECK below is the rule.
+    entity_id = Column(
+        String, ForeignKey("entities.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    category = Column(String, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(entity_id IS NOT NULL AND category IS NULL) OR "
+            "(entity_id IS NULL AND category IS NOT NULL)",
+            name="ck_media_one_owner",
+        ),
+        # One primary photo per entity. Declared with both dialects' partial-
+        # index syntax so the test database (SQLite) enforces it too — a
+        # constraint that only exists in production is untested exactly where
+        # it matters.
+        Index(
+            "uq_media_primary_per_entity",
+            "entity_id",
+            unique=True,
+            postgresql_where=text("is_primary"),
+            sqlite_where=text("is_primary"),
+        ),
+        Index("ix_media_assets_producer_category", "producer_id", "category"),
     )

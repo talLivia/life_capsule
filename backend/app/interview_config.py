@@ -341,6 +341,23 @@ def get_retired() -> List[Dict[str, Any]]:
     return list(_document().get("retired") or [])
 
 
+def is_valid_category(category_id: str) -> bool:
+    """Guards anything that stores a category id — a client cannot invent one.
+
+    True for live categories in ANY language (ids are language-independent,
+    only labels are translated) AND for categories that survive only through
+    retired questions: a retired-only category still renders on the timeline
+    (FAMILY_TREE_TIMELINE.md §3 correction), so things that attach to a
+    category — photos, for one — must be attachable there too.
+    """
+    if not category_id:
+        return False
+    for block in _document()["languages"].values():
+        if any(cat["id"] == category_id for cat in block["categories"]):
+            return True
+    return any(item["category"] == category_id for item in get_retired())
+
+
 def cache_clear() -> None:
     """Drop every memoised view of the file.
 

@@ -60,6 +60,18 @@ class LocalStorageService:
     async def delete_file(self, key: str):
         _local_path(key).unlink(missing_ok=True)
 
+    async def file_size(self, key: str) -> int:
+        """Size in bytes, raising FileNotFoundError if the object is absent.
+
+        Exists so a row-write can verify the upload it references actually
+        happened and respects the size cap — a presigned PUT carries no size
+        condition, so the check has to come after the fact.
+        """
+        p = _local_path(key)
+        if not p.exists():
+            raise FileNotFoundError(f"Local file not found: {key}")
+        return p.stat().st_size
+
     def get_url(self, key: str) -> str:
         return _local_url(key)
 
@@ -159,6 +171,17 @@ class S3StorageService:
     async def delete_file(self, key: str):
         async with self.session.client("s3") as s3:
             await s3.delete_object(Bucket=self.bucket_name, Key=key)
+
+    async def file_size(self, key: str) -> int:
+        """Size in bytes via HEAD, raising FileNotFoundError if absent."""
+        from botocore.exceptions import ClientError
+
+        async with self.session.client("s3") as s3:
+            try:
+                resp = await s3.head_object(Bucket=self.bucket_name, Key=key)
+            except ClientError as e:
+                raise FileNotFoundError(f"S3 object not found: {key}") from e
+        return int(resp["ContentLength"])
 
     def get_url(self, key: str) -> str:
         if self.cloudfront_domain:
@@ -284,6 +307,17 @@ class R2StorageService:
     async def delete_file(self, key: str):
         async with self.session.client("s3", **self._client_kwargs) as s3:
             await s3.delete_object(Bucket=self.bucket_name, Key=key)
+
+    async def file_size(self, key: str) -> int:
+        """Size in bytes via HEAD, raising FileNotFoundError if absent."""
+        from botocore.exceptions import ClientError
+
+        async with self.session.client("s3", **self._client_kwargs) as s3:
+            try:
+                resp = await s3.head_object(Bucket=self.bucket_name, Key=key)
+            except ClientError as e:
+                raise FileNotFoundError(f"R2 object not found: {key}") from e
+        return int(resp["ContentLength"])
 
     def get_url(self, key: str) -> str:
         if self.public_url:

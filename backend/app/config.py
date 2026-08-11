@@ -254,6 +254,14 @@ class Settings(BaseSettings):
     # picking a movie) rather than to ration real answers.
     MAX_SEGMENT_UPLOAD_BYTES: int = 524288000  # 500MB
 
+    # Photos on entities and periods (docs/MEDIA_GALLERY.md). 15MB clears any
+    # phone JPEG with room to spare; like the segment cap, the point is to
+    # reject a wrong-file mistake, not to ration real photos. Enforced at the
+    # local PUT and re-checked server-side when the row is written — in R2
+    # mode the PUT bypasses this backend and a presigned URL carries no size
+    # condition, so the row-write check is the one that always holds.
+    MAX_PHOTO_UPLOAD_BYTES: int = 15728640  # 15MB
+
     # Video Settings
     VIDEO_FPS: int = 25
     VIDEO_CODEC: str = "h264"

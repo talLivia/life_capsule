@@ -1,6 +1,6 @@
 # Project status
 
-**Updated:** 2026-08-08 · **Branch:** `main` (all work commits directly to
+**Updated:** 2026-08-11 · **Branch:** `main` (all work commits directly to
 main and pushes; no feature branches unless asked)
 
 Working-state snapshot. Standing rules and architecture invariants live in
@@ -1471,6 +1471,22 @@ extra line between X and Y" is now answered by a list, not a screenshot.
   both stems. If אירה is the children's mother, that is three saves in the
   editor, not a code change.
 
+## Photos: the media_assets foundation — SHIPPED 2026-08-11
+
+Phase 2 of [MEDIA_GALLERY.md](MEDIA_GALLERY.md) (§2.5 records the build
+decisions): migration `0026` (`media_assets`, one-owner CHECK, partial
+unique primary-per-entity index — all verified present on live Neon after
+`alembic upgrade`, 0 rows, existing tables untouched) and
+`app/api/v1/media.py` (presign → PUT → row-write, list, delete; same flow
+shape as segment video, no second storage path). 25 tests; suite at 897.
+
+§9.4 (`/talk` photo surfacing) is APPROVED and part of the plan, sequenced
+as Phase 8 after 1–6; §3.1/§4.1 were corrected for the tag-bubble timeline
+(§9.5) — Phase 3 onward builds against those corrections. Phase 6's
+merge-safety rule stands: any manual entity merge must repoint
+`media_assets.entity_id` before deleting the losing row, or the cascade
+destroys the photos.
+
 ## Known gaps / tech debt
 
 - 🚨 **KNOWN GAP, deliberately unfixed (2026-08-10): a "עוד" question can
@@ -1601,5 +1617,5 @@ python scripts/eval_no_story_subject.py   # tailored no-story line, v2 only
 python scripts/rebaseline_accuracy.py      # ⚠️ references are STALE — see known gaps
 python scripts/compare_retrieval_modes.py  # v1 vs v2: consistency, latency, calls, tokens
 python scripts/seed_sweep.py               # single-run IoU vs known-correct
-python -m pytest -q                        # 834 tests
+python -m pytest -q                        # 897 tests
 ```

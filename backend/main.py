@@ -30,6 +30,7 @@ from app.api.v1 import (
     family,
     gpu_internal,
     interview,
+    media,
     messages,
     sessions,
     users,
@@ -230,6 +231,7 @@ app.include_router(voices.router, prefix="/api/v1/voices", tags=["voices"])
 app.include_router(interview.router, prefix="/api/v1/interview", tags=["interview"])
 app.include_router(family.router, prefix="/api/v1/family", tags=["family"])
 app.include_router(entities.router, prefix="/api/v1/entities", tags=["entities"])
+app.include_router(media.router, prefix="/api/v1/media", tags=["media"])
 # Internal GPU-inference proxy target (Prompt 9) — shared-secret auth per
 # request (see gpu_internal._check_secret), not JWT; deliberately outside
 # /api/v1 to make clear this isn't a frontend-facing API surface.

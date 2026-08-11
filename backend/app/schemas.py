@@ -676,3 +676,44 @@ class GpuAnimateRequest(BaseModel):
 
 class GpuAnimateResponse(BaseModel):
     video_b64: str
+
+
+# ── Media assets (photos on entities and periods — docs/MEDIA_GALLERY.md) ────
+
+
+class MediaPresignRequest(BaseModel):
+    # EXACTLY ONE of these is the owner — mirrors ck_media_one_owner. The
+    # endpoint validates the pair; a schema validator would hide which side
+    # was wrong behind a generic 422.
+    entity_id: Optional[str] = None
+    category: Optional[str] = None
+    content_type: str = Field(default="image/jpeg", max_length=100)
+
+
+class MediaPresignResponse(BaseModel):
+    upload_url: str
+    storage_key: str
+    method: str = "PUT"
+    content_type: str
+
+
+class MediaCreateRequest(BaseModel):
+    storage_key: str = Field(..., min_length=1)
+    caption: Optional[str] = Field(None, max_length=500)
+    # Bounds are a sanity check against typos, not a claim about history —
+    # photography does not predate 1800, and 2100 catches a fat-fingered year.
+    taken_year: Optional[int] = Field(None, ge=1800, le=2100)
+
+
+class MediaAssetResponse(BaseModel):
+    id: str
+    kind: str
+    caption: Optional[str] = None
+    taken_year: Optional[int] = None
+    is_primary: bool
+    entity_id: Optional[str] = None
+    category: Optional[str] = None
+    # A resolved serving URL, never the storage key — same rule as video.
+    url: str
+    created_at: Optional[datetime] = None
+
