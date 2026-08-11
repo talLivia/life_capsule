@@ -10,8 +10,7 @@ import type { ApiError, ChatMode } from '@/lib/types'
 
 const CHAT_MODE_LABELS: Record<ChatMode, string> = {
   avatar: 'Avatar mode',
-  video_clips: 'Original video clips',
-  video_clips_v2: 'Original video clips (beta 2)',
+  video_clips_v2: 'Original video clips',
 }
 
 /** What has to be typed before the archive can be destroyed. A button
@@ -266,24 +265,6 @@ export function SettingsPanel() {
               </p>
             </button>
             <button
-              onClick={() => setChatMode('video_clips')}
-              disabled={savingChatMode}
-              aria-pressed={chatMode === 'video_clips'}
-              className={`text-left p-4 rounded-xl border transition-colors ${
-                chatMode === 'video_clips'
-                  ? 'border-primary-400 bg-primary-400/10'
-                  : 'border-white/10 hover:border-white/20'
-              }`}
-            >
-              <div className="flex items-center gap-2 mb-1">
-                <Film size={15} className="text-primary-400" />
-                <span className="font-semibold text-white">Original video clips</span>
-              </div>
-              <p className="text-xs text-gray-400">
-                Family members see the real recorded moment that answers their question.
-              </p>
-            </button>
-            <button
               onClick={() => setChatMode('video_clips_v2')}
               disabled={savingChatMode}
               aria-pressed={chatMode === 'video_clips_v2'}
@@ -295,10 +276,10 @@ export function SettingsPanel() {
             >
               <div className="flex items-center gap-2 mb-1">
                 <Film size={15} className="text-primary-400" />
-                <span className="font-semibold text-white">Original video clips (beta 2)</span>
+                <span className="font-semibold text-white">Original video clips</span>
               </div>
               <p className="text-xs text-gray-400">
-                Experimental: an alternative way of finding the answering clips. Same result format.
+                Family members see the real recorded moment that answers their question.
               </p>
             </button>
           </div>

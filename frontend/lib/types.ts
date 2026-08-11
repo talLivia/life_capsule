@@ -554,10 +554,11 @@ export interface FamilyInvite {
   redeemed_at?: string | null
 }
 
-// Producer-level /talk chat mode. "video_clips_v2" (Prompt 15) is an
-// experimental full-archive-reading alternative to "video_clips"; both use
-// the same VideoClipTalkInterface (identical response shape).
-export type ChatMode = 'avatar' | 'video_clips' | 'video_clips_v2'
+// Producer-level /talk chat mode. "video_clips_v2" (Prompt 15) is the
+// full-archive-reading clip mode; the original chunk-retrieval
+// "video_clips" (v1) was removed after the A/B settled it
+// (docs/V1_REMOVAL_PLAN.md).
+export type ChatMode = 'avatar' | 'video_clips_v2'
 
 export interface TalkAvailability {
   producer_id: string

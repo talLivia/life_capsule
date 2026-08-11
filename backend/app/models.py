@@ -56,11 +56,10 @@ class User(Base):
     # a viewer's preferred language differs.
     recording_language = Column(String, nullable=False, default="he", server_default="he")
     # Which chat mode /talk renders for anyone talking to THIS user's
-    # archive — "avatar" (TTS + MuseTalk, the original/default experience),
-    # "video_clips" (real recorded footage via chunk retrieval, Prompt
-    # 11-14), or "video_clips_v2" (Prompt 15's experimental full-archive-
-    # reading alternative, A/B'd against video_clips; same response shape,
-    # different range-decision backend). Producer-level only: a family
+    # archive — "avatar" (TTS + MuseTalk, the original/default experience)
+    # or "video_clips_v2" (Prompt 15's full-archive-reading clip mode; the
+    # original chunk-retrieval "video_clips" v1 was removed after the A/B
+    # settled it — docs/V1_REMOVAL_PLAN.md). Producer-level only: a family
     # account's own row never reads its own chat_mode, since /talk always
     # renders based on the linked PRODUCER's setting (see
     # TalkAvailabilityResponse) — all modes keep working independently,

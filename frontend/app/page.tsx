@@ -168,7 +168,7 @@ export default function Home() {
   // renders — mirrors /talk's routing. Video-clip modes must NOT use the
   // avatar-only ChatInterface (it can't handle video_clip_response).
   const isVideoClipMode =
-    user?.chat_mode === 'video_clips' || user?.chat_mode === 'video_clips_v2'
+    user?.chat_mode === 'video_clips_v2'
   useEffect(() => {
     if (isFamilyUser) router.replace('/talk')
   }, [isFamilyUser, router])

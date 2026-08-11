@@ -149,20 +149,25 @@ async def test_update_profile_defaults_chat_mode_to_avatar(
 
 
 @pytest.mark.asyncio
-async def test_update_profile_sets_chat_mode(client: AsyncClient, test_user, auth_headers):
+async def test_update_profile_rejects_the_retired_v1_chat_mode(
+    client: AsyncClient, test_user, auth_headers
+):
+    """"video_clips" (v1) was removed after the A/B settled it
+    (docs/V1_REMOVAL_PLAN.md) — the retired value is rejected exactly like
+    any other invalid mode, so no account can be steered onto a pipeline
+    that no longer exists."""
     response = await client.put(
         "/api/v1/users/me",
         headers=auth_headers,
         json={"chat_mode": "video_clips"},
     )
-    assert response.status_code == 200
-    assert response.json()["chat_mode"] == "video_clips"
+    assert response.status_code == 400
 
 
 @pytest.mark.asyncio
 async def test_update_profile_sets_chat_mode_v2(client: AsyncClient, test_user, auth_headers):
-    """Prompt 15: the experimental full-archive-reading mode is a valid,
-    persistable chat_mode value."""
+    """Prompt 15's full-archive-reading mode is a valid, persistable
+    chat_mode value — the only clip mode since v1's removal."""
     response = await client.put(
         "/api/v1/users/me",
         headers=auth_headers,

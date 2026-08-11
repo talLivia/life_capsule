@@ -12,8 +12,8 @@ interface ProducerVideoClipChatProps {
 }
 
 /**
- * The PRODUCER's in-app chat screen for the video-clip modes (video_clips /
- * video_clips_v2) — the producer previewing their own story archive.
+ * The PRODUCER's in-app chat screen for the video-clip mode
+ * (video_clips_v2) — the producer previewing their own story archive.
  *
  * Deliberately keeps the producer studio's ORIGINAL chat layout: a single
  * video panel on the left that updates in place, and a chat panel on the

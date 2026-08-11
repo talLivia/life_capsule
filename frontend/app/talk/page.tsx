@@ -189,10 +189,7 @@ function TalkPageInner() {
   // Prompt 14/15: the PRODUCER's own setting picks which chat component
   // renders here — every family member talking to this producer gets the
   // same mode, there is no per-viewer override (see TalkAvailability.chat_mode).
-  // Both video-clip modes (v1 chunk-retrieval and v2 full-archive reading)
-  // use the SAME component — the response shape is identical, only the
-  // backend range-decision differs.
-  if (availability.chat_mode === 'video_clips' || availability.chat_mode === 'video_clips_v2') {
+  if (availability.chat_mode === 'video_clips_v2') {
     return (
       <VideoClipTalkInterface
         avatarId={availability.avatar_id}

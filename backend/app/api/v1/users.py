@@ -22,9 +22,10 @@ router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/users/login", auto_error=False)
 
 # The mutually exclusive /talk chat modes — see User.chat_mode's docstring
-# in app/models.py. "video_clips_v2" is Prompt 15's experimental full-
-# archive-reading alternative to "video_clips", A/B'd against it.
-CHAT_MODES = {"avatar", "video_clips", "video_clips_v2"}
+# in app/models.py. "video_clips_v2" is Prompt 15's full-archive-reading
+# clip mode; the original chunk-retrieval "video_clips" (v1) was removed
+# after the A/B settled it (docs/V1_REMOVAL_PLAN.md).
+CHAT_MODES = {"avatar", "video_clips_v2"}
 
 # bcrypt only inspects the first 72 bytes of input and bcrypt>=4.1 raises
 # (rather than silently truncating) on longer input. We use the `bcrypt`
