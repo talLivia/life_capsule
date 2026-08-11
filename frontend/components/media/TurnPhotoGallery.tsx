@@ -54,8 +54,8 @@ export function TurnPhotoGallery({
 }: {
   categories: string[]
   /** Which design system the deck sits in: 'calm' for the family /talk
-   *  screen, 'app' for the producer's dark chat screen. The frames stay
-   *  white in both — that IS the polaroid — only the shadow adapts. */
+   *  screen, 'app' for the producer's dark chat screen. The frames keep the
+   *  same soft-gray polaroid color in both — only the shadow adapts. */
   variant?: 'calm' | 'app'
 }) {
   const [photos, setPhotos] = useState<MediaAsset[]>([])
@@ -159,7 +159,9 @@ export function TurnPhotoGallery({
                   : 'none',
                 boxShadow: shadow,
               }}
-              className="relative bg-white p-2 pb-7 m-0"
+              // #e0e0e0 (rgb 224 224 224) rather than pure white — the true-
+              // white frame read too harsh against both themes.
+              className="relative bg-[#e0e0e0] p-2 pb-7 m-0"
             >
               {/* 3:2 landscape — the classic photo-print proportion, which
                   reads as a real print where a square read as a thumbnail.
