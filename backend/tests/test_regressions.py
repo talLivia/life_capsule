@@ -7,7 +7,10 @@ Each test pins a specific production-facing failure:
     used to raise an FK violation (conversations.session_id had no cascade)
     and surface as HTTP 500 from the history panel's delete button.
   * Deleting an avatar that had ever been chatted with hit the same class
-    of bug via sessions.avatar_id.
+    of bug via sessions.avatar_id. (Its fix was a delete CASCADE; since the
+    producer-keyed sessions change the semantics are SET NULL instead —
+    conversation history must survive an avatar's deletion. The test below
+    pins the current behaviour.)
   * The rate limiter raised fastapi.HTTPException from inside
     BaseHTTPMiddleware, which FastAPI's exception handlers never see —
     clients got 500 "Internal server error" instead of 429.
@@ -79,21 +82,41 @@ async def test_delete_session_with_conversation_and_messages(
     assert convos == []
 
 
-async def test_delete_avatar_with_chat_history(
+async def test_delete_avatar_keeps_the_conversation_history(
     client: AsyncClient, db_session, test_user, auth_headers
 ):
-    """DELETE /avatars/{id} must cascade through sessions → messages/conversations."""
+    """DELETE /avatars/{id} must NOT destroy sessions or their messages —
+    avatar_id is nulled instead (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md
+    §3.1). Under the old CASCADE, deleting a photo nobody sees (v2 plays
+    real footage) erased the family's chats and the shown-unit memory in
+    their message metadata."""
     avatar, session = await _seed_full_session(db_session, test_user.id)
 
     resp = await client.delete(f"/api/v1/avatars/{avatar.id}", headers=auth_headers)
     assert resp.status_code == 204
 
-    remaining = (
-        (await db_session.execute(select(Session).where(Session.avatar_id == avatar.id)))
+    survivor = (
+        await db_session.execute(select(Session).where(Session.id == session.id))
+    ).scalar_one()
+    assert survivor.avatar_id is None
+    assert survivor.producer_id == test_user.id
+
+    msgs = (
+        (await db_session.execute(select(Message).where(Message.session_id == session.id)))
         .scalars()
         .all()
     )
-    assert remaining == []
+    convos = (
+        (
+            await db_session.execute(
+                select(Conversation).where(Conversation.session_id == session.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(msgs) == 2
+    assert len(convos) == 1
 
 
 async def test_rate_limit_returns_429_not_500():

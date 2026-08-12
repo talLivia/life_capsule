@@ -57,10 +57,8 @@ async def _seed_session_with_shown(group_id: str, segment_prefixes: List[str]) -
     archive still has unplayed material and correctly plays it. That is what
     made the first version of this case report `<played a clip>`.
     """
-    from sqlalchemy import select
-
     from app.database import AsyncSessionLocal
-    from app.models import Avatar, Message, Session
+    from app.models import Message, Session
 
     archive, _emap, units, _tags = await ar._archive_bundle(group_id)
     shown = [
@@ -72,12 +70,9 @@ async def _seed_session_with_shown(group_id: str, segment_prefixes: List[str]) -
         raise RuntimeError(f"no units found for {segment_prefixes}")
 
     async with AsyncSessionLocal() as db:
-        avatar_id = (
-            await db.execute(select(Avatar.id).where(Avatar.user_id == group_id).limit(1))
-        ).scalars().first()
-        if avatar_id is None:
-            raise RuntimeError("producer has no avatar row; cannot seed a session")
-        session = Session(user_id=group_id, producer_id=group_id, avatar_id=avatar_id, status="active")
+        # Sessions are producer-keyed; no avatar row is needed to seed one
+        # (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md).
+        session = Session(user_id=group_id, producer_id=group_id, status="active")
         db.add(session)
         await db.flush()
         db.add(Message(session_id=session.id, role="assistant",
