@@ -538,6 +538,74 @@ async def test_load_session_data_defaults_language_to_producer_recording_languag
 
 
 @pytest.mark.asyncio
+async def test_load_session_data_resolves_producer_without_any_avatar(
+    db_session, test_engine, monkeypatch
+):
+    """A v2 session carries no avatar at all (avatar_id NULL), and the
+    producer must still resolve — from the session's own producer_id, not
+    through an avatar row (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md §3.3).
+    Before that change this exact state left producer_id None, and every
+    clip question answered the no-pipeline fallback."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    import app.database as database_module
+    from app import websocket as wsmod
+    from app.models import User
+    from app.models import Session as SessionModel
+
+    producer = User(
+        email="clipsonly@example.com",
+        username="clipsonly",
+        hashed_password="x",
+        recording_language="he",
+        chat_mode="video_clips_v2",
+    )
+    db_session.add(producer)
+    await db_session.flush()
+    session = SessionModel(
+        id="sess-no-avatar",
+        user_id=producer.id,
+        producer_id=producer.id,
+        avatar_id=None,
+        status="active",
+    )
+    db_session.add(session)
+    await db_session.commit()
+
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(database_module, "AsyncSessionLocal", factory)
+
+    manager = wsmod.ConnectionManager()
+
+    async def fail_resolve_image(avatar):  # pragma: no cover - must not run
+        raise AssertionError("no avatar exists; nothing should resolve an image")
+
+    monkeypatch.setattr(manager, "_resolve_local_image", fail_resolve_image)
+    manager.session_data["sess-no-avatar"] = {
+        "messages": [],
+        "avatar_id": None,
+        "avatar_image_key": None,
+        "avatar_image_local": None,
+        "voice_wav": None,
+        "language": "en",
+        "user_id": producer.id,
+        "producer_id": None,
+        "producer_recording_language": "en",
+        "producer_chat_mode": "avatar",
+        "connected_at": None,
+        "last_activity": None,
+    }
+
+    await manager._load_session_data("sess-no-avatar")
+
+    data = manager.session_data["sess-no-avatar"]
+    assert data["producer_id"] == producer.id
+    assert data["producer_chat_mode"] == "video_clips_v2"
+    assert data["producer_recording_language"] == "he"
+    assert data["avatar_image_local"] is None
+
+
+@pytest.mark.asyncio
 async def test_a_no_story_reply_is_persisted_like_any_other_turn(monkeypatch):
     """It was not, and the gap silently broke follow-up resolution.
 

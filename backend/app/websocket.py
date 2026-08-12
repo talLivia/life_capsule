@@ -186,10 +186,10 @@ class ConnectionManager:
             "voice_wav": None,
             "language": "en",
             "user_id": user_id,
-            # Populated in _load_session_data from the avatar's owner — the
-            # storyteller whose archive response_assembler.py (Prompts 6-9)
-            # searches, which may differ from `user_id` (a family member
-            # chatting with someone else's avatar).
+            # Populated in _load_session_data from the session's own
+            # producer_id — the storyteller whose archive is searched, which
+            # may differ from `user_id` (a family member chatting with
+            # someone else's archive).
             "producer_id": None,
             "producer_recording_language": "en",
             # Prompt 14's follow-up: which pipeline a transcribed "audio"
@@ -251,6 +251,9 @@ class ConnectionManager:
                     ]
                     logger.info(f"Rehydrated {len(hist_rows)} message(s) for session {session_id}")
 
+                # Avatar-mode cargo only: the idle image and the cloned
+                # voice. A v2 session has avatar_id NULL and skips all of
+                # this — its clips carry the producer's real face and voice.
                 avatar = session.avatar
                 if avatar:
                     self.session_data[session_id]["avatar_image_key"] = avatar.s3_key
@@ -266,38 +269,40 @@ class ConnectionManager:
                             )
                     logger.info(f"Loaded avatar {avatar.id} for session {session_id}")
 
-                    # response_assembler.py needs the STORYTELLER's archive to
-                    # search (Prompt 6's group_id) and recording language —
-                    # the avatar's owner, not necessarily the chatting user
-                    # (a family member's session belongs to them, but the
-                    # avatar belongs to the producer whose stories they're
-                    # asking about; see sessions.py's create_session for the
-                    # access check that authorized this in the first place).
-                    producer_result = await db.execute(
-                        select(User).where(User.id == avatar.user_id)
-                    )
-                    producer = producer_result.scalar_one_or_none()
-                    if producer:
-                        self.session_data[session_id]["producer_id"] = producer.id
-                        self.session_data[session_id][
-                            "producer_recording_language"
-                        ] = producer.recording_language
-                        self.session_data[session_id]["producer_chat_mode"] = producer.chat_mode
-                        # "language" (used by both STT transcription and TTS
-                        # synthesis, see _handle_audio_inner/_animate_from_
-                        # queue) defaulted to "en" in connect() — but every
-                        # word this pipeline ever speaks or needs to
-                        # transcribe is in the STORYTELLER's own recording
-                        # language, never a generic English default. Confirmed
-                        # live: leaving this at "en" made Edge TTS try to
-                        # speak a Hebrew archive's verbatim text with an
-                        # English voice, which can't vocalize the Hebrew
-                        # words at all — only a literal digit like "14"
-                        # embedded in the sentence came through audible.
-                        # Still overridable via an explicit "set_language" WS
-                        # message (e.g. a family member who wants to ask
-                        # questions in a different language than the archive).
-                        self.session_data[session_id]["language"] = producer.recording_language
+                # The STORYTELLER whose archive this conversation searches
+                # (retrieval's group_id) and their recording language — read
+                # from the session's own producer_id, the anchor
+                # create_session wrote (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md
+                # §3.3; this used to be resolved THROUGH the avatar, which is
+                # why an avatar row was a prerequisite for every mode). Not
+                # necessarily the chatting user: a family member's session
+                # belongs to them, but the archive belongs to the producer
+                # they're asking about.
+                producer_result = await db.execute(
+                    select(User).where(User.id == session.producer_id)
+                )
+                producer = producer_result.scalar_one_or_none()
+                if producer:
+                    self.session_data[session_id]["producer_id"] = producer.id
+                    self.session_data[session_id][
+                        "producer_recording_language"
+                    ] = producer.recording_language
+                    self.session_data[session_id]["producer_chat_mode"] = producer.chat_mode
+                    # "language" (used by both STT transcription and TTS
+                    # synthesis, see _handle_audio_inner/_animate_from_
+                    # queue) defaulted to "en" in connect() — but every
+                    # word this pipeline ever speaks or needs to
+                    # transcribe is in the STORYTELLER's own recording
+                    # language, never a generic English default. Confirmed
+                    # live: leaving this at "en" made Edge TTS try to
+                    # speak a Hebrew archive's verbatim text with an
+                    # English voice, which can't vocalize the Hebrew
+                    # words at all — only a literal digit like "14"
+                    # embedded in the sentence came through audible.
+                    # Still overridable via an explicit "set_language" WS
+                    # message (e.g. a family member who wants to ask
+                    # questions in a different language than the archive).
+                    self.session_data[session_id]["language"] = producer.recording_language
 
         except Exception as e:
             logger.error(f"Failed to load session data for {session_id}: {e}")
