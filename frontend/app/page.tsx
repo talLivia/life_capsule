@@ -181,11 +181,11 @@ export default function Home() {
   const [resumeSessionId, setResumeSessionId] = useState<string | null>(null)
   const [view, setView] = useState<View>('home')
 
-  // Switching INTO a video-clip mode while parked on a now-hidden tab would
-  // leave a blank view — bounce to Chat.
-  useEffect(() => {
-    if (isVideoClipMode && (view === 'avatars' || view === 'voice')) setView('chat')
-  }, [isVideoClipMode, view])
+  // NOTE deliberately NOT bounced away: Avatar Studio stays reachable in
+  // video-clip mode (its nav tab is hidden, but Settings' avatar-mode card
+  // routes here to satisfy the activation gate — an avatar must be
+  // uploadable BEFORE avatar mode can turn on). Parking on the view renders
+  // a fully functional page either way.
 
   // Deep-link support for the old /record route (now redirects here with
   // ?view=record). Read post-mount from window.location to avoid a
@@ -520,7 +520,7 @@ export default function Home() {
 
         {/* ── SETTINGS VIEW ── */}
         {view === 'settings' && (
-          <SettingsPanel />
+          <SettingsPanel onOpenAvatarStudio={() => setView('avatars')} />
         )}
 
         {/* ── RECORD VIEW ── (was the standalone /record route) */}

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Save, Loader2, User, KeyRound, Trash2, Sparkles, Film, Compass } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
@@ -18,7 +18,13 @@ const CHAT_MODE_LABELS: Record<ChatMode, string> = {
  *  the word is the smallest thing that cannot happen by accident. */
 const RESET_PHRASE = 'DELETE'
 
-export function SettingsPanel() {
+interface SettingsPanelProps {
+  /** Navigate to Avatar Studio — avatar mode's setup surface, whose nav tab
+   *  is hidden while a video-clip mode is active. Wired by the shell. */
+  onOpenAvatarStudio?: () => void
+}
+
+export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
   const { user, setAuth, token, clearAuth } = useStore()
   const [fullName, setFullName] = useState(user?.full_name || '')
   const [username, setUsername] = useState(user?.username || '')
@@ -31,11 +37,27 @@ export function SettingsPanel() {
   const [savingFreeNav, setSavingFreeNav] = useState(false)
 
   const isGuest = token === 'guest' || user?.id === 'demo-user'
-  const chatMode = user?.chat_mode || 'avatar'
+  const chatMode = user?.chat_mode || 'video_clips_v2'
 
   const freeNavigation = Boolean(user?.free_navigation)
   const [resetPhrase, setResetPhrase] = useState('')
   const [resetting, setResetting] = useState(false)
+
+  // Whether avatar mode's activation gate is satisfied. null = not yet
+  // known (the card stays clickable and the server re-checks anyway — the
+  // gate is the 400 in update_profile, this is just honest UI around it).
+  const [hasReadyAvatar, setHasReadyAvatar] = useState<boolean | null>(null)
+  useEffect(() => {
+    if (isGuest || user?.role === 'family') return
+    let cancelled = false
+    api.getAvatars()
+      .then((avatars: { status: string }[]) => {
+        if (!cancelled) setHasReadyAvatar(avatars.some(a => a.status === 'ready'))
+      })
+      .catch(() => { /* unknown — leave null, the server still gates */ })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Mirrors setChatMode: same updateProfile path, same auth refresh, same
   // guest guard. See docs/INTERVIEW_RESTRUCTURE.md §7A for why this exists —
@@ -57,6 +79,13 @@ export function SettingsPanel() {
 
   const setChatMode = async (mode: ChatMode) => {
     if (isGuest || mode === chatMode) return
+    if (mode === 'avatar' && hasReadyAvatar === false) {
+      // The activation gate, known-unsatisfied: go set up an avatar instead
+      // of sending a request that will 400 with the same instruction.
+      toast('Avatar mode needs an avatar image first — set one up here', { icon: '📷' })
+      onOpenAvatarStudio?.()
+      return
+    }
     setSavingChatMode(true)
     try {
       const updated = await api.updateProfile({ chat_mode: mode })
@@ -247,24 +276,6 @@ export function SettingsPanel() {
           </p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <button
-              onClick={() => setChatMode('avatar')}
-              disabled={savingChatMode}
-              aria-pressed={chatMode === 'avatar'}
-              className={`text-left p-4 rounded-xl border transition-colors ${
-                chatMode === 'avatar'
-                  ? 'border-primary-400 bg-primary-400/10'
-                  : 'border-white/10 hover:border-white/20'
-              }`}
-            >
-              <div className="flex items-center gap-2 mb-1">
-                <Sparkles size={15} className="text-primary-400" />
-                <span className="font-semibold text-white">Avatar</span>
-              </div>
-              <p className="text-xs text-gray-400">
-                A talking-head avatar speaks your stories aloud (default).
-              </p>
-            </button>
-            <button
               onClick={() => setChatMode('video_clips_v2')}
               disabled={savingChatMode}
               aria-pressed={chatMode === 'video_clips_v2'}
@@ -279,7 +290,31 @@ export function SettingsPanel() {
                 <span className="font-semibold text-white">Original video clips</span>
               </div>
               <p className="text-xs text-gray-400">
-                Family members see the real recorded moment that answers their question.
+                Family members see the real recorded moment that answers their
+                question — your own face and voice (default).
+              </p>
+            </button>
+            <button
+              onClick={() => setChatMode('avatar')}
+              disabled={savingChatMode}
+              aria-pressed={chatMode === 'avatar'}
+              className={`text-left p-4 rounded-xl border transition-colors ${
+                chatMode === 'avatar'
+                  ? 'border-primary-400 bg-primary-400/10'
+                  : 'border-white/10 hover:border-white/20'
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <Sparkles size={15} className="text-primary-400" />
+                <span className="font-semibold text-white">Avatar</span>
+              </div>
+              <p className="text-xs text-gray-400">
+                A talking-head avatar speaks your stories aloud.
+                {hasReadyAvatar === false && (
+                  <span className="block mt-1 text-amber-400/90">
+                    Needs an avatar image — click to set one up in Avatar Studio.
+                  </span>
+                )}
               </p>
             </button>
           </div>

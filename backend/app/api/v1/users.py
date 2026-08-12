@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
-from app.models import User
+from app.models import Avatar, User
 from app.schemas import Token, UserCreate, UserResponse, UserUpdate
 from app.services import entity_store
 
@@ -283,6 +283,26 @@ async def update_current_user(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"chat_mode must be one of {sorted(CHAT_MODES)}",
                 )
+            # Avatar mode's activation gate
+            # (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md §3.6): the mode
+            # genuinely renders an avatar, so turning it on without one would
+            # only produce a /talk that reports "still preparing" with
+            # nothing in the UI saying why. This is the ONE place the app
+            # ever demands an avatar.
+            if update_data.chat_mode == "avatar":
+                ready = await db.execute(
+                    select(Avatar.id)
+                    .where(Avatar.user_id == user.id, Avatar.status == "ready")
+                    .limit(1)
+                )
+                if ready.scalar_one_or_none() is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            "Avatar mode needs an avatar to speak through — "
+                            "upload a photo in Avatar Studio first"
+                        ),
+                    )
             user.chat_mode = update_data.chat_mode
 
         # A plain boolean with no vocabulary to validate — unlike chat_mode,

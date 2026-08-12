@@ -166,6 +166,80 @@ async def test_update_profile_rejects_the_retired_v1_chat_mode(
 
 
 @pytest.mark.asyncio
+async def test_switching_to_avatar_mode_without_a_ready_avatar_is_a_400(
+    client: AsyncClient, test_user, auth_headers
+):
+    """The activation gate (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md §3.6):
+    avatar mode genuinely renders an avatar, so enabling it without one
+    would only produce a /talk stuck on "still preparing" with nothing
+    saying why. The 400 names what to do instead."""
+    response = await client.put(
+        "/api/v1/users/me",
+        headers=auth_headers,
+        json={"chat_mode": "avatar"},
+    )
+    assert response.status_code == 400
+    assert "Avatar Studio" in response.json()["detail"]
+
+    # And the mode was not half-applied.
+    me = await client.get("/api/v1/users/me", headers=auth_headers)
+    assert me.json()["chat_mode"] == "video_clips_v2"
+
+
+@pytest.mark.asyncio
+async def test_switching_to_avatar_mode_with_a_ready_avatar_succeeds(
+    client: AsyncClient, db_session, test_user, auth_headers
+):
+    from app.models import Avatar
+
+    db_session.add(
+        Avatar(
+            user_id=test_user.id,
+            name="Me",
+            image_url="http://x/i.jpg",
+            s3_key="avatars/x/image.jpg",
+            status="ready",
+        )
+    )
+    await db_session.commit()
+
+    response = await client.put(
+        "/api/v1/users/me",
+        headers=auth_headers,
+        json={"chat_mode": "avatar"},
+    )
+    assert response.status_code == 200
+    assert response.json()["chat_mode"] == "avatar"
+
+
+@pytest.mark.asyncio
+async def test_a_processing_avatar_does_not_satisfy_the_gate(
+    client: AsyncClient, db_session, test_user, auth_headers
+):
+    """Only a READY avatar can speak; a processing/failed one enabling the
+    mode would be the same broken state one step later."""
+    from app.models import Avatar
+
+    db_session.add(
+        Avatar(
+            user_id=test_user.id,
+            name="Me",
+            image_url="http://x/i.jpg",
+            s3_key="avatars/x/image.jpg",
+            status="processing",
+        )
+    )
+    await db_session.commit()
+
+    response = await client.put(
+        "/api/v1/users/me",
+        headers=auth_headers,
+        json={"chat_mode": "avatar"},
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_update_profile_sets_chat_mode_v2(client: AsyncClient, test_user, auth_headers):
     """Prompt 15's full-archive-reading mode is a valid, persistable
     chat_mode value — the only clip mode since v1's removal."""
