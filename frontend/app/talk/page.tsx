@@ -166,25 +166,28 @@ function TalkPageInner() {
     )
   }
 
-  if (!availability.available || !availability.avatar_id) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-calm-paper dark:bg-calm-paperDark px-6">
-        <div className="max-w-sm text-center flex flex-col items-center gap-4">
-          <Heart size={28} className="text-calm-sage-600 dark:text-calm-sage-300" />
-          <h1 className="text-lg font-semibold text-calm-ink dark:text-calm-inkDark">
-            {availability.producer_name} is still preparing their stories
-          </h1>
-          <p className="text-sm text-calm-inkmuted dark:text-calm-inkmutedDark">
-            Check back soon — you&apos;ll be able to talk with them here once they&apos;ve
-            recorded some memories.
-          </p>
-          <button onClick={loadAvailability} className="calm-btn-secondary">
-            Check again
-          </button>
-        </div>
+  const stillPreparing = (
+    <div className="min-h-screen flex items-center justify-center bg-calm-paper dark:bg-calm-paperDark px-6">
+      <div className="max-w-sm text-center flex flex-col items-center gap-4">
+        <Heart size={28} className="text-calm-sage-600 dark:text-calm-sage-300" />
+        <h1 className="text-lg font-semibold text-calm-ink dark:text-calm-inkDark">
+          {availability.producer_name} is still preparing their stories
+        </h1>
+        <p className="text-sm text-calm-inkmuted dark:text-calm-inkmutedDark">
+          Check back soon — you&apos;ll be able to talk with them here once they&apos;ve
+          recorded some memories.
+        </p>
+        <button onClick={loadAvailability} className="calm-btn-secondary">
+          Check again
+        </button>
       </div>
-    )
-  }
+    </div>
+  )
+
+  // `available` is mode-aware server-side: v2 needs only a ready recording;
+  // avatar mode also needs a ready avatar
+  // (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md §3.4).
+  if (!availability.available) return stillPreparing
 
   // Prompt 14/15: the PRODUCER's own setting picks which chat component
   // renders here — every family member talking to this producer gets the
@@ -194,6 +197,11 @@ function TalkPageInner() {
       <VideoClipTalkInterface producerName={availability.producer_name} />
     )
   }
+
+  // Avatar mode renders the avatar itself, so it genuinely needs one.
+  // `available` already implies it exists; this guard keeps an inconsistent
+  // response honest (same screen) instead of crashing on a null id.
+  if (!availability.avatar_id) return stillPreparing
 
   return (
     <TalkInterface

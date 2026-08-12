@@ -176,9 +176,12 @@ async def talk_availability(
     user: User = Depends(require_family),
 ):
     """Whether /talk should actually be usable yet: the linked producer must
-    have at least one 'ready' segment AND a ready avatar image for MuseTalk
-    to animate. Never exposes thresholds/scores from Prompts 6-8 — just a
-    plain yes/no plus enough to start a session."""
+    have at least one 'ready' segment — and, ONLY when their chat mode is
+    'avatar', a ready avatar image for MuseTalk to animate. v2 plays the
+    producer's real recorded footage and needs no avatar at all
+    (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md §3.4). Never exposes
+    thresholds/scores from Prompts 6-8 — just a plain yes/no plus enough to
+    start a session."""
     result = await db.execute(select(User).where(User.id == user.producer_id))
     producer = result.scalar_one_or_none()
     if not producer:
@@ -200,10 +203,13 @@ async def talk_availability(
     )
     avatar = avatar_result.scalar_one_or_none()
 
+    # An avatar gates availability only where one is actually rendered.
+    avatar_needed = producer.chat_mode == "avatar"
+
     return TalkAvailabilityResponse(
         producer_id=producer.id,
         producer_name=producer.full_name or producer.username,
-        available=ready_count > 0 and avatar is not None,
+        available=ready_count > 0 and (avatar is not None or not avatar_needed),
         ready_segment_count=ready_count,
         avatar_id=avatar.id if avatar else None,
         # Family accounts don't own this avatar, so avatars.py's own

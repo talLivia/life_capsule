@@ -277,6 +277,65 @@ async def test_talk_availability_true_with_ready_segment_and_avatar(
     assert body["chat_mode"] == "video_clips_v2"
 
 
+async def test_talk_availability_true_for_v2_with_zero_avatars(
+    client: AsyncClient, db_session, test_user, family_user_auth_headers
+):
+    """The inversion's family-facing half
+    (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md §3.4): a v2 producer with one
+    ready recording and NO avatars row anywhere is available to their
+    family. Before this, the unconditional avatar requirement showed
+    'still preparing their stories' over a fully recorded archive."""
+    session = InterviewSession(user_id=test_user.id, status="active")
+    db_session.add(session)
+    await db_session.flush()
+    db_session.add(
+        RawSegment(
+            interview_session_id=session.id,
+            question_asked="Q",
+            question_index=0,
+            transcript="A verbatim story.",
+            status="ready",
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.get("/api/v1/family/talk-availability", headers=family_user_auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is True
+    assert body["ready_segment_count"] == 1
+    assert body["avatar_id"] is None
+    assert body["avatar_image_url"] is None
+    assert body["chat_mode"] == "video_clips_v2"
+
+
+async def test_talk_availability_still_requires_an_avatar_in_avatar_mode(
+    client: AsyncClient, db_session, test_user, family_user_auth_headers
+):
+    """Avatar mode genuinely renders the avatar, so its availability keeps
+    the requirement — mode-aware, not dropped."""
+    test_user.chat_mode = "avatar"
+    session = InterviewSession(user_id=test_user.id, status="active")
+    db_session.add(session)
+    await db_session.flush()
+    db_session.add(
+        RawSegment(
+            interview_session_id=session.id,
+            question_asked="Q",
+            question_index=0,
+            transcript="A verbatim story.",
+            status="ready",
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.get("/api/v1/family/talk-availability", headers=family_user_auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is False
+    assert body["ready_segment_count"] == 1
+
+
 async def test_talk_availability_reflects_producer_video_clip_mode(
     client: AsyncClient, db_session, test_user, family_user_auth_headers
 ):
