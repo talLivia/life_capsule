@@ -58,6 +58,11 @@ async def create_session(
 
         session = Session(
             user_id=uid,
+            # The archive anchor. Derived from the avatar's owner here only
+            # because this endpoint still authorizes through the avatar —
+            # the authorization above proves avatar.user_id IS the producer
+            # this caller may talk to (self, or their linked producer).
+            producer_id=avatar.user_id,
             avatar_id=session_data.avatar_id,
             status="active",
             settings=session_data.settings or {},

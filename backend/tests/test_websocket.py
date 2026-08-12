@@ -496,7 +496,11 @@ async def test_load_session_data_defaults_language_to_producer_recording_languag
     db_session.add(avatar)
     await db_session.flush()
     session = SessionModel(
-        id="sess-lang", user_id=producer.id, avatar_id=avatar.id, status="active"
+        id="sess-lang",
+        user_id=producer.id,
+        producer_id=producer.id,
+        avatar_id=avatar.id,
+        status="active",
     )
     db_session.add(session)
     await db_session.commit()

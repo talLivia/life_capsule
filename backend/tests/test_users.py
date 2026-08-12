@@ -138,14 +138,15 @@ async def test_update_profile(client: AsyncClient, test_user, auth_headers):
 
 
 @pytest.mark.asyncio
-async def test_update_profile_defaults_chat_mode_to_avatar(
+async def test_a_new_account_defaults_to_video_clips_v2(
     client: AsyncClient, test_user, auth_headers
 ):
-    """Prompt 14: every existing/new account defaults to the unchanged
-    avatar experience until a producer explicitly opts into video clips."""
+    """v2 is the primary mode (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md §3.5):
+    a new producer starts on real recorded clips and never has to touch
+    avatar setup. Avatar mode is the explicit opt-in, not the default."""
     response = await client.get("/api/v1/users/me", headers=auth_headers)
     assert response.status_code == 200
-    assert response.json()["chat_mode"] == "avatar"
+    assert response.json()["chat_mode"] == "video_clips_v2"
 
 
 @pytest.mark.asyncio

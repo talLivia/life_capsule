@@ -89,7 +89,9 @@ async def chat_session_with_messages(db_session, test_user, retrieval_session_fa
     )
     db_session.add(avatar)
     await db_session.flush()
-    session = SessionModel(user_id=test_user.id, avatar_id=avatar.id, status="active")
+    session = SessionModel(
+        user_id=test_user.id, producer_id=test_user.id, avatar_id=avatar.id, status="active"
+    )
     db_session.add(session)
     await db_session.flush()
 

@@ -77,7 +77,7 @@ async def _seed_session_with_shown(group_id: str, segment_prefixes: List[str]) -
         ).scalars().first()
         if avatar_id is None:
             raise RuntimeError("producer has no avatar row; cannot seed a session")
-        session = Session(user_id=group_id, avatar_id=avatar_id, status="active")
+        session = Session(user_id=group_id, producer_id=group_id, avatar_id=avatar_id, status="active")
         db.add(session)
         await db.flush()
         db.add(Message(session_id=session.id, role="assistant",

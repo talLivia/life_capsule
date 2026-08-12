@@ -281,9 +281,10 @@ async def delete_avatar(
     if avatar.user_id != _user_id(current_user):
         raise HTTPException(status_code=403, detail="Not authorised to delete this avatar")
 
-    # Delete the DB row first (sessions/messages/conversations cascade), THEN
-    # the stored files — if the DB delete fails we haven't orphaned the row by
-    # removing its image out from under it.
+    # Delete the DB row first, THEN the stored files — if the DB delete fails
+    # we haven't orphaned the row by removing its image out from under it.
+    # Sessions survive the delete with avatar_id nulled (SET NULL): deleting
+    # a photo must never destroy conversation history.
     try:
         await db.delete(avatar)
         await db.commit()

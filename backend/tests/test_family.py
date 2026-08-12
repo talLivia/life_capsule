@@ -272,9 +272,9 @@ async def test_talk_availability_true_with_ready_segment_and_avatar(
     assert body["avatar_id"] is not None
     assert body["avatar_image_url"] == "http://x/i.jpg"
     assert body["producer_id"] == test_user.id
-    # Default chat_mode (Prompt 14) — no one's /talk experience changes
-    # until the producer opts into video-clip mode.
-    assert body["chat_mode"] == "avatar"
+    # Default chat_mode is v2 (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md §3.5)
+    # — avatar mode is the explicit opt-in.
+    assert body["chat_mode"] == "video_clips_v2"
 
 
 async def test_talk_availability_reflects_producer_video_clip_mode(

@@ -39,7 +39,7 @@ async def _seed_full_session(db_session, user_id: str):
     await db_session.commit()
     await db_session.refresh(avatar)
 
-    session = Session(user_id=user_id, avatar_id=avatar.id, status="active")
+    session = Session(user_id=user_id, producer_id=user_id, avatar_id=avatar.id, status="active")
     db_session.add(session)
     await db_session.commit()
     await db_session.refresh(session)

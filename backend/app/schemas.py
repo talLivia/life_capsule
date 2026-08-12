@@ -69,7 +69,10 @@ class SessionCreate(BaseModel):
 class SessionResponse(BaseModel):
     id: str
     user_id: str
-    avatar_id: str
+    producer_id: str
+    # None for v2 sessions (no avatar involved) and after an avatar is
+    # deleted (SET NULL).
+    avatar_id: Optional[str] = None
     status: str
     settings: Optional[Dict[str, Any]] = None
     started_at: datetime

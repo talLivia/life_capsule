@@ -56,15 +56,19 @@ class User(Base):
     # a viewer's preferred language differs.
     recording_language = Column(String, nullable=False, default="he", server_default="he")
     # Which chat mode /talk renders for anyone talking to THIS user's
-    # archive — "avatar" (TTS + MuseTalk, the original/default experience)
-    # or "video_clips_v2" (Prompt 15's full-archive-reading clip mode; the
-    # original chunk-retrieval "video_clips" v1 was removed after the A/B
-    # settled it — docs/V1_REMOVAL_PLAN.md). Producer-level only: a family
-    # account's own row never reads its own chat_mode, since /talk always
-    # renders based on the linked PRODUCER's setting (see
-    # TalkAvailabilityResponse) — all modes keep working independently,
-    # this just picks which one a given producer's viewers see.
-    chat_mode = Column(String, nullable=False, default="avatar", server_default="avatar")
+    # archive — "video_clips_v2" (the primary mode: real recorded clips,
+    # Prompt 15's full-archive reader) or "avatar" (TTS + MuseTalk, the
+    # original experience, now optional and gated on owning a ready avatar —
+    # docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md; the chunk-retrieval
+    # "video_clips" v1 was removed after the A/B settled it —
+    # docs/V1_REMOVAL_PLAN.md). Producer-level only: a family account's own
+    # row never reads its own chat_mode, since /talk always renders based on
+    # the linked PRODUCER's setting (see TalkAvailabilityResponse) — all
+    # modes keep working independently, this just picks which one a given
+    # producer's viewers see.
+    chat_mode = Column(
+        String, nullable=False, default="video_clips_v2", server_default="video_clips_v2"
+    )
     # /record's accordion is locked and sequential by default. Turning this on
     # makes every category openable regardless of progress, so the producer can
     # record or upload out of order — the escape hatch for rehoming footage and
@@ -78,7 +82,15 @@ class User(Base):
 
     # Relationships
     avatars = relationship("Avatar", back_populates="user", cascade="all, delete-orphan")
-    sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
+    # foreign_keys is required: sessions carries TWO FKs to users (user_id =
+    # who is chatting, producer_id = whose archive) and this relationship is
+    # about ownership, never about the archive.
+    sessions = relationship(
+        "Session",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="Session.user_id",
+    )
     interview_sessions = relationship(
         "InterviewSession", back_populates="user", cascade="all, delete-orphan"
     )
@@ -107,10 +119,13 @@ class Avatar(Base):
 
     # Relationships
     user = relationship("User", back_populates="avatars")
-    # Deleting an avatar deletes its sessions (and, transitively, their
-    # messages/conversations). Without the cascade, deleting an avatar that
-    # had ever been chatted with raised a NOT NULL/FK violation → HTTP 500.
-    sessions = relationship("Session", back_populates="avatar", cascade="all, delete-orphan")
+    # NO delete cascade, deliberately (it used to be delete-orphan): sessions
+    # are producer-keyed now, and the avatar is optional cargo on avatar-mode
+    # sessions only. Deleting an avatar must not destroy conversation history
+    # — the ORM nullifies sessions.avatar_id on delete, matching the DB-level
+    # ON DELETE SET NULL (migration 0027). The old cascade meant deleting a
+    # photo nobody sees (v2 plays real footage) erased the family's chats.
+    sessions = relationship("Session", back_populates="avatar")
 
     __table_args__ = (
         # `ORDER BY created_at DESC LIMIT N` is the list-avatars query —
@@ -124,16 +139,30 @@ class Session(Base):
 
     id = Column(String, primary_key=True, default=generate_uuid)
     user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Whose ARCHIVE this conversation is against — the anchor everything
+    # reads (WS producer resolution, retrieval's group_id). Authoritative and
+    # always written server-side; distinct from user_id, which is who is
+    # chatting (a family member's session has user_id=them, producer_id=the
+    # storyteller). docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md §3.1.
+    producer_id = Column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Optional cargo: which avatar an avatar-mode session speaks through.
+    # NULL for v2 sessions (clips carry the producer's real face) and after
+    # an avatar is deleted (SET NULL — deleting a photo must not delete
+    # conversations). Never read for identity; producer_id is the anchor.
     avatar_id = Column(
-        String, ForeignKey("avatars.id", ondelete="CASCADE"), nullable=False, index=True
+        String, ForeignKey("avatars.id", ondelete="SET NULL"), nullable=True, index=True
     )
     status = Column(String, default="active", index=True)  # active/paused/ended filters by this
     settings = Column(JSON, nullable=True)
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     ended_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Relationships
-    user = relationship("User", back_populates="sessions")
+    # Relationships (user = who is chatting; the producer side is a plain
+    # column — nothing traverses it as an object graph, the WS resolves the
+    # producer row by id)
+    user = relationship("User", back_populates="sessions", foreign_keys=[user_id])
     avatar = relationship("Avatar", back_populates="sessions")
     messages = relationship("Message", back_populates="session", cascade="all, delete-orphan")
     # Conversations hang off sessions too — without this cascade, deleting a

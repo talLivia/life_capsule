@@ -52,7 +52,9 @@ async def _seed(url: str) -> str:
         )
         db.add(avatar)
         await db.flush()
-        session = Session(id="sess-e2e", user_id="u1", avatar_id=avatar.id, status="active")
+        session = Session(
+            id="sess-e2e", user_id="u1", producer_id="u1", avatar_id=avatar.id, status="active"
+        )
         db.add(session)
         await db.commit()
     await eng.dispose()

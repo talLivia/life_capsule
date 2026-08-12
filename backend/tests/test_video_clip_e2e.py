@@ -135,7 +135,13 @@ async def _seed(url: str, video_key: str) -> str:
             ]
         )
 
-        session = Session(id="sess-video-clip-e2e", user_id="family-1", avatar_id="avatar-1", status="active")
+        session = Session(
+            id="sess-video-clip-e2e",
+            user_id="family-1",
+            producer_id="producer-1",
+            avatar_id="avatar-1",
+            status="active",
+        )
         db.add(session)
         await db.commit()
     await eng.dispose()
