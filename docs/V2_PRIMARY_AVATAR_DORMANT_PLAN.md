@@ -1,8 +1,11 @@
 # V2 as the primary path; avatar mode dormant — investigation and plan
 
 **Written 2026-08-13. Re-verified function-by-function the same day (§0
-addendum below) before execution; the corrections it produced are folded
-into the steps.**
+addendum below); the corrections it produced are folded into the steps.
+EXECUTED the same day on branch `avatar-dormant` (stacked on `remove-v1`),
+steps 1–8, suite green after each — see PROJECT_STATUS.md for the landing
+record. The live smoke test in step 8 is the one piece still pending a
+running stack.**
 Goal: a new producer's onboarding never touches avatar/photo/voice setup;
 `video_clips_v2` stands fully on its own with **zero rows in `avatars`**;
 avatar mode becomes an explicitly-enabled, self-contained optional feature.

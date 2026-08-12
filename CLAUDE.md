@@ -11,8 +11,17 @@ The producer's `User.chat_mode` selects one mode for everyone talking to them:
 
 | mode | how an answer is produced |
 | --- | --- |
-| `avatar` | LLM reply → TTS → MuseTalk lip-sync (`ChatInterface`, `TalkInterface`) |
-| `video_clips_v2` | Prompt 15 whole-archive read → trimmed original clips |
+| `video_clips_v2` | **the default.** Prompt 15 whole-archive read → trimmed original clips |
+| `avatar` | optional, off by default. LLM reply → TTS → MuseTalk lip-sync (`ChatInterface`, `TalkInterface`) |
+
+**v2 stands fully on its own — no avatars row exists for a producer who
+never enables avatar mode.** Sessions are producer-keyed
+(`sessions.producer_id`); `avatar_id` is optional avatar-mode cargo with
+ON DELETE SET NULL (deleting an avatar must never destroy conversation
+history). The ONE place the app demands an avatar is switching
+`chat_mode` to `avatar` in Settings, which 400s without a ready one.
+See docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md before re-coupling anything
+to an avatar's existence.
 
 A third mode, `video_clips` (v1, Prompt 11-14 chunk retrieval), was removed
 on 2026-08-12 after the A/B against v2 settled it — see

@@ -1,8 +1,9 @@
 # Project status
 
-**Updated:** 2026-08-12 · **Branch:** `main` (all work commits directly to
-main and pushes; no feature branches unless asked — the v1 removal is the
-exception, on `remove-v1` pending review)
+**Updated:** 2026-08-13 · **Branch:** `main` (all work commits directly to
+main and pushes; no feature branches unless asked — two exceptions pending
+review: the v1 removal on `remove-v1`, and the v2-primary/avatar-dormant
+inversion on `avatar-dormant`, which is stacked ON `remove-v1`)
 
 Working-state snapshot. Standing rules and architecture invariants live in
 [CLAUDE.md](../CLAUDE.md); this file is "where we are right now" and should be
@@ -727,9 +728,11 @@ Queued, in no fixed order — both are blocked on this work landing:
   through Graphiti until chunk 3 — **see NEXT UP above.**
 
 **Chat modes** (producer-level `User.chat_mode`, migration `0011`)
-- `avatar` — LLM → TTS → MuseTalk.
 - `video_clips_v2` — whole-archive read, single LLM call, utterance-unit
-  selection. **This is the mode under active development.**
+  selection. **The default and primary mode** (2026-08-13, migration
+  `0027`); needs no avatars row anywhere.
+- `avatar` — LLM → TTS → MuseTalk. Optional, off by default; enabling it
+  in Settings is the one place the app requires a ready avatar.
 - `video_clips` (v1, chunk retrieval, multi-step) was REMOVED 2026-08-12
   after the A/B settled it — docs/V1_REMOVAL_PLAN.md; tag
   `pre-v1-removal` holds the last tree that had it.
@@ -1605,6 +1608,38 @@ instrument). The v1 e2e was rewritten against v2 rather than dropped —
 the proof it carries (a WS question becomes a genuinely trimmed clip) is
 mode-independent. Zero database changes. Suite 905 → 841, every deleted
 test belonging to deleted code.
+
+## V2 primary, avatar dormant — 2026-08-13, on branch `avatar-dormant` (stacked on `remove-v1`)
+
+Executed per [V2_PRIMARY_AVATAR_DORMANT_PLAN.md](V2_PRIMARY_AVATAR_DORMANT_PLAN.md)
+(including its §0 re-verification addendum), seven commits, suite green
+after each. What changed: sessions are producer-keyed
+(`sessions.producer_id`, migration `0027`, backfilled from the avatar
+join); `avatar_id` is nullable avatar-mode cargo with ON DELETE SET NULL —
+**deleting an avatar no longer deletes conversations**, which the old
+CASCADE did; the WS resolves the producer from the session row, not
+through an avatar; `create_session` derives the archive from the caller
+and takes no avatar in v2; `talk-availability` requires an avatar only in
+avatar mode; `chat_mode` defaults to `video_clips_v2` (existing `avatar`
+rows flipped only where no ready avatar exists — i.e. where the mode was
+already non-functional); and switching to avatar mode in Settings is the
+single activation gate (400 without a ready avatar; the Settings card
+routes to Avatar Studio, which is no longer bounced away from in v2).
+Nothing avatar-mode-internal changed: `ChatInterface`/`TalkInterface`,
+voices, MuseTalk, animator, gpu_client are untouched and reachable once
+the mode is on.
+
+⚠️ **Deploy note:** `0027` runs automatically via `entrypoint.sh`. No
+secrets to unset, no ordering hazard — but verify after the first deploy:
+every `sessions` row has `producer_id`, and the one real producer's
+`chat_mode` is still `video_clips_v2` (it was already; the backfill's
+WHERE clause only touches accounts with no ready avatar).
+
+⚠️ **Not yet exercised live:** the defining smoke test — a freshly
+registered producer records, invites family, and family gets a clip
+answer with zero rows in `avatars` — needs a running stack and should be
+run before/at merge review. The suite covers every layer of it
+individually.
 
 ## Known gaps / tech debt
 
