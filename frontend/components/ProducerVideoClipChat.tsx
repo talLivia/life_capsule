@@ -7,10 +7,6 @@ import {
 import { TurnPhotoGallery } from '@/components/media/TurnPhotoGallery'
 import { useVideoClipChat } from '@/lib/useVideoClipChat'
 
-interface ProducerVideoClipChatProps {
-  avatarId: string
-}
-
 /**
  * The PRODUCER's in-app chat screen for the video-clip mode
  * (video_clips_v2) — the producer previewing their own story archive.
@@ -26,7 +22,7 @@ interface ProducerVideoClipChatProps {
  * producer's own chat_mode; the client contract is identical for both, so this
  * one component serves both video-clip modes.
  */
-export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) {
+export function ProducerVideoClipChat() {
   const {
     messages,
     inputText,
@@ -48,7 +44,7 @@ export function ProducerVideoClipChat({ avatarId }: ProducerVideoClipChatProps) 
     isListening,
     hearingSpeech,
     micLevel,
-  } = useVideoClipChat(avatarId)
+  } = useVideoClipChat()
 
   // The single video panel plays the MOST RECENT clip, updating in place as
   // new answers arrive (rather than stacking a player per answer like the

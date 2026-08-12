@@ -27,7 +27,9 @@ export interface ChatMessage {
 export interface SessionSummary {
   id: string
   user_id: string
-  avatar_id: string
+  producer_id: string
+  // null for v2 sessions (no avatar involved) and after an avatar is deleted
+  avatar_id: string | null
   status: 'active' | 'paused' | 'ended'
   started_at: string
   ended_at?: string | null

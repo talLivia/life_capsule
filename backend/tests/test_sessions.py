@@ -116,3 +116,104 @@ async def test_producer_can_still_chat_with_own_avatar(
         headers=auth_headers,
     )
     assert resp.status_code == 201
+
+
+# ── v2-primary: sessions without any avatar (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md §3.2)
+
+
+@pytest.mark.asyncio
+async def test_a_v2_producer_with_zero_avatars_creates_a_session(
+    client: AsyncClient, test_user, auth_headers
+):
+    """The defining case of the inversion: a producer who never opened
+    Avatar Studio (no avatars row anywhere) starts a conversation against
+    their own archive. chat_mode defaults to video_clips_v2."""
+    resp = await client.post("/api/v1/sessions/create", json={}, headers=auth_headers)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["producer_id"] == test_user.id
+    assert body["avatar_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_linked_family_creates_a_session_with_no_avatar_anywhere(
+    client: AsyncClient, test_user, linked_family_user, linked_family_headers
+):
+    """Family access is derived from the account linkage (User.producer_id),
+    not from an avatar's owner — so it works against a photo-less archive."""
+    resp = await client.post(
+        "/api/v1/sessions/create", json={}, headers=linked_family_headers
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["producer_id"] == test_user.id
+    assert body["user_id"] == linked_family_user.id
+    assert body["avatar_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_unlinked_family_cannot_create_a_session_at_all(
+    client: AsyncClient, unlinked_family_headers
+):
+    resp = await client.post(
+        "/api/v1/sessions/create", json={}, headers=unlinked_family_headers
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_avatar_mode_resolves_the_ready_avatar_server_side(
+    client: AsyncClient, db_session, test_user, ready_avatar, auth_headers
+):
+    """An avatar-mode create with no body avatar_id picks the producer's
+    newest ready avatar — replacing the frontend's old `?? avatars[0]`
+    guess, which could pick a non-ready avatar and fail obscurely."""
+    test_user.chat_mode = "avatar"
+    await db_session.commit()
+
+    resp = await client.post("/api/v1/sessions/create", json={}, headers=auth_headers)
+    assert resp.status_code == 201
+    assert resp.json()["avatar_id"] == ready_avatar.id
+
+
+@pytest.mark.asyncio
+async def test_avatar_mode_without_a_ready_avatar_is_a_400_that_names_it(
+    client: AsyncClient, db_session, test_user, auth_headers
+):
+    test_user.chat_mode = "avatar"
+    await db_session.commit()
+
+    resp = await client.post("/api/v1/sessions/create", json={}, headers=auth_headers)
+    assert resp.status_code == 400
+    assert "no avatar is ready" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_body_avatar_id_owned_by_someone_else_is_403(
+    client: AsyncClient, db_session, test_user, auth_headers
+):
+    """The body can name which of the producer's avatars speaks; it can
+    never widen access to another account's avatar."""
+    other = User(
+        email="other-producer@example.com",
+        username="otherproducer",
+        hashed_password=get_password_hash("testpassword123"),
+    )
+    db_session.add(other)
+    await db_session.flush()
+    foreign_avatar = Avatar(
+        user_id=other.id,
+        name="Foreign",
+        image_url="http://x/f.jpg",
+        s3_key="avatars/f/image.jpg",
+        status="ready",
+    )
+    db_session.add(foreign_avatar)
+    await db_session.commit()
+
+    resp = await client.post(
+        "/api/v1/sessions/create",
+        json={"avatar_id": foreign_avatar.id},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 403

@@ -143,10 +143,14 @@ export const api = {
   },
 
   // Sessions
-  createSession: async (avatarId: string) => {
-    const response = await apiClient.post('/api/v1/sessions/create', {
-      avatar_id: avatarId,
-    })
+  // avatarId is avatar-mode-only (naming which of the producer's avatars
+  // speaks). v2 sessions send nothing: the server derives the archive from
+  // the caller and involves no avatar at all.
+  createSession: async (avatarId?: string) => {
+    const response = await apiClient.post(
+      '/api/v1/sessions/create',
+      avatarId ? { avatar_id: avatarId } : {},
+    )
     return response.data
   },
 

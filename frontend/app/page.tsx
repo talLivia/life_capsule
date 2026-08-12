@@ -507,7 +507,7 @@ export default function Home() {
             a clip…" (ChatInterface, the avatar-only path, never handled
             video_clip_response). Avatar mode stays on ChatInterface. */}
         {view === 'chat' && selectedAvatar && isVideoClipMode && (
-          <ProducerVideoClipChat key={selectedAvatar} avatarId={selectedAvatar} />
+          <ProducerVideoClipChat />
         )}
 
         {view === 'chat' && selectedAvatar && !isVideoClipMode && (

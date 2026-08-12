@@ -62,7 +62,10 @@ class AvatarResponse(AvatarBase):
 
 # Session Schemas
 class SessionCreate(BaseModel):
-    avatar_id: str
+    # Optional: v2 sessions involve no avatar (the producer is derived from
+    # the caller server-side). Sent only by avatar-mode clients that picked
+    # a specific avatar; validated against the resolved producer either way.
+    avatar_id: Optional[str] = None
     settings: Optional[Dict[str, Any]] = None
 
 

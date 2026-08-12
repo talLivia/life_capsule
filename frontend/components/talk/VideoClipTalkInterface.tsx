@@ -6,7 +6,6 @@ import { TurnPhotoGallery } from '@/components/media/TurnPhotoGallery'
 import { useVideoClipChat } from '@/lib/useVideoClipChat'
 
 interface VideoClipTalkInterfaceProps {
-  avatarId: string
   producerName: string
 }
 
@@ -20,7 +19,7 @@ interface VideoClipTalkInterfaceProps {
  * behavior. Each answer renders as a normal <video controls> player rather
  * than an always-on avatar panel.
  */
-export function VideoClipTalkInterface({ avatarId, producerName }: VideoClipTalkInterfaceProps) {
+export function VideoClipTalkInterface({ producerName }: VideoClipTalkInterfaceProps) {
   const {
     messages,
     inputText,
@@ -41,7 +40,7 @@ export function VideoClipTalkInterface({ avatarId, producerName }: VideoClipTalk
     setMicMuted,
     isListening,
     hearingSpeech,
-  } = useVideoClipChat(avatarId)
+  } = useVideoClipChat()
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const scrollToBottom = useCallback(() => {

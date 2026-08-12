@@ -191,10 +191,7 @@ function TalkPageInner() {
   // same mode, there is no per-viewer override (see TalkAvailability.chat_mode).
   if (availability.chat_mode === 'video_clips_v2') {
     return (
-      <VideoClipTalkInterface
-        avatarId={availability.avatar_id}
-        producerName={availability.producer_name}
-      />
+      <VideoClipTalkInterface producerName={availability.producer_name} />
     )
   }
 

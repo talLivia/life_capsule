@@ -97,7 +97,7 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
     if (!query.trim()) return list
     const q = query.toLowerCase()
     return list.filter(s => {
-      const av = avatarMap[s.avatar_id]
+      const av = s.avatar_id ? avatarMap[s.avatar_id] : undefined
       const convo = convoBySession[s.id]
       const hay = `${av?.name || ''} ${convo?.title || ''} ${s.id}`.toLowerCase()
       return hay.includes(q)
@@ -245,7 +245,7 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
       ) : (
         <div className="space-y-3">
           {filtered.map((s) => {
-            const av = avatarMap[s.avatar_id]
+            const av = s.avatar_id ? avatarMap[s.avatar_id] : undefined
             const convo = convoBySession[s.id]
             const isExpanded = expandedId === s.id
             const msgs = messagesById[s.id]
@@ -360,9 +360,9 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
                     >
                       {loadingMessagesId === s.id ? <Loader2 size={13} className="animate-spin" /> : <MessageCircle size={13} />}
                     </button>
-                    {av && (
+                    {av && s.avatar_id && (
                       <button
-                        onClick={() => onResume(s.avatar_id, s.id)}
+                        onClick={() => onResume(s.avatar_id!, s.id)}
                         className="btn-primary text-xs px-3 py-1.5 rounded-lg"
                         title="Open in chat"
                       >

@@ -59,7 +59,7 @@ const CLIP_GRACE_MS = 3000
  * chat_mode, routes the text to this mode's turn (never something the client
  * decides).
  */
-export function useVideoClipChat(avatarId: string) {
+export function useVideoClipChat() {
   const [messages, setMessages] = useState<TalkMessage[]>([])
   const [inputText, setInputText] = useState('')
   const [isThinking, setIsThinking] = useState(false)
@@ -239,7 +239,7 @@ export function useVideoClipChat(avatarId: string) {
     const startNewSession = () => {
       const previousSessionId = sessionIdRef.current
       api
-        .createSession(avatarId)
+        .createSession()
         .then((session) => {
           if (cancelled) return
           if (previousSessionId) api.endSession(previousSessionId).catch(() => {})
@@ -260,7 +260,7 @@ export function useVideoClipChat(avatarId: string) {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [avatarId])
+  }, [])
 
   const sendText = useCallback(() => {
     const text = inputText.trim()

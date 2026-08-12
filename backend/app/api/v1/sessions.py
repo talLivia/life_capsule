@@ -27,43 +27,77 @@ async def create_session(
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user),
 ):
-    """Create a new conversation session for the current user."""
+    """Create a new conversation session for the current user.
+
+    The archive anchor (producer_id) is derived from the CALLER, never the
+    body: a producer talks to their own archive, a linked family account
+    talks to the producer they redeemed an invite for. An avatar is involved
+    only when the producer's chat mode actually renders one — v2 sessions
+    carry none at all (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md §3.2).
+    """
     try:
-        result = await db.execute(select(Avatar).where(Avatar.id == session_data.avatar_id))
-        avatar = result.scalar_one_or_none()
-
-        if not avatar:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Avatar not found")
-
-        if avatar.status != "ready":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="Avatar is not ready"
-            )
-
-        # Two ways to be allowed to start a session against this avatar:
-        # the producer talking to their own avatar (self-chat, base
-        # project's original behavior), or a family member whose account
-        # (Prompt 9's invite/redeem flow) is linked to the avatar's owner.
         uid = _user_id(current_user)
-        is_owner = avatar.user_id == uid
-        is_linked_family = (
-            current_user is not None
-            and current_user.role == "family"
-            and current_user.producer_id == avatar.user_id
-        )
-        if not (is_owner or is_linked_family):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Not authorised to use this avatar"
+        if current_user is not None and current_user.role == "family":
+            if not current_user.producer_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="This account is not linked to a storyteller's archive yet",
+                )
+            producer_id = current_user.producer_id
+        else:
+            # Producer role (or the DEBUG demo fallback): own archive.
+            producer_id = uid
+
+        producer_result = await db.execute(select(User).where(User.id == producer_id))
+        producer = producer_result.scalar_one_or_none()
+        # The demo fallback may have no User row; default to the v2 path,
+        # which needs nothing beyond the id.
+        chat_mode = producer.chat_mode if producer else "video_clips_v2"
+
+        avatar = None
+        if session_data.avatar_id:
+            # An avatar-mode client picked a specific avatar. Validate it
+            # against the resolved producer — the body can never widen
+            # access, only name which of the producer's avatars speaks.
+            result = await db.execute(
+                select(Avatar).where(Avatar.id == session_data.avatar_id)
             )
+            avatar = result.scalar_one_or_none()
+            if not avatar:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Avatar not found"
+                )
+            if avatar.user_id != producer_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorised to use this avatar",
+                )
+            if avatar.status != "ready":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail="Avatar is not ready"
+                )
+        elif chat_mode == "avatar":
+            # Avatar mode genuinely needs one to produce output. Resolve the
+            # newest ready avatar here rather than trusting a client guess —
+            # this replaces the frontend's old `?? avatars[0]`, which could
+            # pick a non-ready avatar and fail obscurely.
+            result = await db.execute(
+                select(Avatar)
+                .where(Avatar.user_id == producer_id, Avatar.status == "ready")
+                .order_by(Avatar.created_at.desc())
+                .limit(1)
+            )
+            avatar = result.scalar_one_or_none()
+            if avatar is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Avatar mode is enabled but no avatar is ready",
+                )
 
         session = Session(
             user_id=uid,
-            # The archive anchor. Derived from the avatar's owner here only
-            # because this endpoint still authorizes through the avatar —
-            # the authorization above proves avatar.user_id IS the producer
-            # this caller may talk to (self, or their linked producer).
-            producer_id=avatar.user_id,
-            avatar_id=session_data.avatar_id,
+            producer_id=producer_id,
+            avatar_id=avatar.id if avatar else None,
             status="active",
             settings=session_data.settings or {},
         )
