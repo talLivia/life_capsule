@@ -11,8 +11,9 @@ import { api } from '@/lib/api'
 import type { ChatMessage, SessionSummary, Avatar } from '@/lib/types'
 
 interface HistoryPanelProps {
-  /** Called when the user clicks "Open" — receives the avatar to resume against. */
-  onResume: (avatarId: string, sessionId: string) => void
+  /** Called when the user clicks "Open". avatarId is null for sessions
+   *  that involved no avatar (v2) or whose avatar was deleted. */
+  onResume: (avatarId: string | null, sessionId: string) => void
 }
 
 interface ConversationSummary {
@@ -360,9 +361,9 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
                     >
                       {loadingMessagesId === s.id ? <Loader2 size={13} className="animate-spin" /> : <MessageCircle size={13} />}
                     </button>
-                    {av && s.avatar_id && (
+                    {(
                       <button
-                        onClick={() => onResume(s.avatar_id!, s.id)}
+                        onClick={() => onResume(s.avatar_id, s.id)}
                         className="btn-primary text-xs px-3 py-1.5 rounded-lg"
                         title="Open in chat"
                       >

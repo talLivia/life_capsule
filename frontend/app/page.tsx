@@ -13,7 +13,6 @@ import { NotificationCenter } from '@/components/notifications/NotificationCente
 import { api } from '@/lib/api'
 import { toast } from 'react-hot-toast'
 import { useStore } from '@/store/useStore'
-import type { Avatar } from '@/lib/types'
 
 // Heavy panels (chat WebSocket pipeline, voice cloning recorder, history
 // list with TanStack queries, settings form) load on-demand instead of
@@ -174,10 +173,6 @@ export default function Home() {
   }, [isFamilyUser, router])
 
   const [selectedAvatar, setSelectedAvatar] = useState<string | null>(null)
-  // True while we're auto-resolving the producer's avatar for a video-clip
-  // mode (so the Chat view can show a loader instead of the "pick an avatar"
-  // redirect, which is meaningless when the Avatars tab is hidden).
-  const [avatarResolving, setAvatarResolving] = useState(false)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   // Session id to RESUME (set only when opening from history). Distinct from
   // activeSessionId (reported back after a session starts) so it can key the
@@ -185,24 +180,6 @@ export default function Home() {
   // arrives.
   const [resumeSessionId, setResumeSessionId] = useState<string | null>(null)
   const [view, setView] = useState<View>('home')
-
-  // In video-clip modes the producer never sees the Avatars tab, so silently
-  // resolve their existing avatar to satisfy the (avatar-bound) session that
-  // the chat still creates under the hood. The producer doesn't have to pick.
-  useEffect(() => {
-    if (!isVideoClipMode || selectedAvatar) return
-    let cancelled = false
-    setAvatarResolving(true)
-    api.getAvatars()
-      .then((avatars: Avatar[]) => {
-        if (cancelled) return
-        const ready = avatars.find((a) => a.status === 'ready') ?? avatars[0]
-        if (ready) setSelectedAvatar(ready.id)
-      })
-      .catch(() => { /* leave selectedAvatar null → chat view shows guidance */ })
-      .finally(() => { if (!cancelled) setAvatarResolving(false) })
-    return () => { cancelled = true }
-  }, [isVideoClipMode, selectedAvatar])
 
   // Switching INTO a video-clip mode while parked on a now-hidden tab would
   // leave a blank view — bounce to Chat.
@@ -244,7 +221,7 @@ export default function Home() {
     }
   }
 
-  const handleResumeFromHistory = (avatarId: string, sessionId: string) => {
+  const handleResumeFromHistory = (avatarId: string | null, sessionId: string) => {
     setSelectedAvatar(avatarId)
     setResumeSessionId(sessionId)  // resume this exact conversation
     setView('chat')
@@ -506,9 +483,9 @@ export default function Home() {
             useVideoClipChat hook — this is what fixes the old hang on "Finding
             a clip…" (ChatInterface, the avatar-only path, never handled
             video_clip_response). Avatar mode stays on ChatInterface. */}
-        {view === 'chat' && selectedAvatar && isVideoClipMode && (
-          <ProducerVideoClipChat />
-        )}
+        {/* v2 needs no avatar anywhere — the session is producer-keyed
+            (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md). */}
+        {view === 'chat' && isVideoClipMode && <ProducerVideoClipChat />}
 
         {view === 'chat' && selectedAvatar && !isVideoClipMode && (
           <div className="max-w-7xl mx-auto px-6 py-10 animate-fade-in">
@@ -522,31 +499,6 @@ export default function Home() {
               resumeSessionId={resumeSessionId ?? undefined}
               onSessionCreated={setActiveSessionId}
             />
-          </div>
-        )}
-
-        {/* Video-clip mode, avatar still resolving — brief loader (the Avatars
-            tab is hidden, so the "pick an avatar" redirect below never applies). */}
-        {view === 'chat' && !selectedAvatar && isVideoClipMode && avatarResolving && (
-          <div className="max-w-7xl mx-auto px-6 py-10 flex justify-center">
-            <PanelLoader label="Loading your stories…" />
-          </div>
-        )}
-
-        {/* Video-clip mode but the producer has no avatar at all — clips still
-            need one to anchor a session. Guide them rather than dead-end. */}
-        {view === 'chat' && !selectedAvatar && isVideoClipMode && !avatarResolving && (
-          <div className="max-w-lg mx-auto px-6 py-10 text-center">
-            <p className="text-gray-300 mb-2 font-medium">One quick setup step left</p>
-            <p className="text-gray-500 mb-4 text-sm">
-              Your story clips play under your own face, but a conversation still
-              needs one avatar image on file. Add a photo in Avatar mode, then
-              switch back — you won&apos;t have to pick it each time.
-            </p>
-            <button onClick={() => setView('settings')} className="btn-primary">
-              <Settings size={18} />
-              Open Settings
-            </button>
           </div>
         )}
 
