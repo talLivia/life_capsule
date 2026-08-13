@@ -49,6 +49,7 @@
     --page-glow-2: rgba(59, 130, 246, 0.06);
     --heading-from: #c084fc;
     --heading-to: #60a5fa;
+    --hero-glow: #a855f7;
   }
 
   /* Green/cream light theme — palette extracted from the reference page,
@@ -56,14 +57,17 @@
      primary ramp anchors on the CTA green #6B7D45, heading olive #4A5530;
      the accent ramp anchors on the nav sage #8A9A6B). */
   html.light {
-    --primary-50: 243 245 236; --primary-100: 229 234 213;
-    --primary-200: 205 214 176; --primary-300: 174 188 132;
-    --primary-400: 140 160 92; --primary-500: 107 125 69;
+    /* 100-400 are TEXT/ICON accent roles (dark theme uses light steps on
+       dark surfaces; here they must be DARK on cream — audited: no
+       background consumes steps below 400, so the inversion is safe). */
+    --primary-50: 243 245 236; --primary-100: 70 81 46;
+    --primary-200: 79 92 51; --primary-300: 89 105 57;
+    --primary-400: 94 112 56; --primary-500: 107 125 69;
     --primary-600: 94 112 56; --primary-700: 74 85 48;
     --primary-800: 60 69 42; --primary-900: 48 55 34;
-    --accent-50: 242 244 236; --accent-100: 228 233 218;
-    --accent-200: 203 212 185; --accent-300: 176 190 150;
-    --accent-400: 156 171 126; --accent-500: 138 154 107;
+    --accent-50: 242 244 236; --accent-100: 74 84 51;
+    --accent-200: 82 95 60; --accent-300: 92 107 68;
+    --accent-400: 100 114 75; --accent-500: 138 154 107;
     --accent-600: 120 136 91; --accent-700: 100 114 75;
     --accent-800: 81 92 61; --accent-900: 65 74 50;
     --surface-950: 233 229 216; --surface-900: 244 241 232; /* page cream */
@@ -92,6 +96,7 @@
     --page-glow-2: rgba(107, 125, 69, 0.06);
     --heading-from: #4a5530;
     --heading-to: #6b7d45;
+    --hero-glow: #6b7d45;
   }
 
   * {
@@ -199,7 +204,7 @@
 
   .card-glow {
     @apply glass-card p-6;
-    background: linear-gradient(135deg, rgba(168,85,247,0.08) 0%, rgba(59,130,246,0.04) 100%);
+    background: var(--card-gradient);
   }
 
   /* ── Inputs ── */
@@ -288,13 +293,27 @@
   .feature-card::before {
     content: '';
     @apply absolute inset-0 opacity-0 hover:opacity-100 transition-opacity duration-300;
-    background: radial-gradient(circle at 50% 0%, rgba(168,85,247,0.08) 0%, transparent 60%);
+    background: radial-gradient(circle at 50% 0%, var(--glow-primary-faint) 0%, transparent 60%);
+  }
+
+  /* The nav's active tab. Dark: the original primary→accent gradient.
+     Light: SOLID dark olive — a translucent green gradient on the sage bar
+     was barely distinguishable from it (reported live). This is the
+     light-mode active-state rule everywhere: tint background + dark olive
+     accent, or solid dark olive + white where it sits on colored chrome. */
+  .nav-active {
+    @apply text-white shadow-glow-sm;
+    background-image: linear-gradient(to right, rgb(var(--primary-600) / 0.8), rgb(var(--accent-600) / 0.8));
+  }
+  html.light .nav-active {
+    background-image: none;
+    background-color: rgb(var(--primary-800));
   }
 
   /* ── Scrollbar in message list ── */
   .messages-scroll {
     scrollbar-width: thin;
-    scrollbar-color: rgba(168,85,247,0.3) transparent;
+    scrollbar-color: rgb(var(--primary-500) / 0.35) transparent;
   }
 
   /* ── Voice level indicator ── */
@@ -306,7 +325,7 @@
   /* ── Neon border ── */
   .neon-border {
     @apply border border-primary-500/50;
-    box-shadow: 0 0 8px rgba(168,85,247,0.3), inset 0 0 8px rgba(168,85,247,0.05);
+    box-shadow: 0 0 8px var(--glow-primary-weak), inset 0 0 8px var(--glow-primary-faint);
   }
 
   /* ── Calm theme (family chat surfaces only) — quiet, warm, low-contrast;

@@ -91,7 +91,7 @@ function WaveformBars({ active }: { active: boolean }) {
           className="w-1 rounded-full"
           style={{
             height: active ? `${_WAVE_HEIGHTS[i]}px` : '4px',
-            background: 'linear-gradient(to top, #7c3aed, #3b82f6)',
+            background: 'linear-gradient(to top, rgb(var(--primary-600)), rgb(var(--accent-500)))',
             transition: 'height 0.15s ease',
             animation: active ? `waveform 1.2s ease-in-out ${i * 0.1}s infinite` : 'none',
           }}

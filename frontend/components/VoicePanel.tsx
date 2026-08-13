@@ -72,7 +72,7 @@ function WaveformBar({ active, height }: { active: boolean; height: number }) {
       className="w-1 rounded-full transition-all duration-100"
       style={{
         height: active ? `${height}px` : '4px',
-        background: 'linear-gradient(to top, #7c3aed, #3b82f6)',
+        background: 'linear-gradient(to top, rgb(var(--primary-600)), rgb(var(--accent-500)))',
         minHeight: '4px',
         maxHeight: '40px',
       }}

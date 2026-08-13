@@ -121,8 +121,8 @@ module.exports = {
           '50%': { transform: 'translateY(-20px)' },
         },
         glow: {
-          '0%': { boxShadow: '0 0 20px rgba(168,85,247,0.3)' },
-          '100%': { boxShadow: '0 0 40px rgba(168,85,247,0.8), 0 0 80px rgba(59,130,246,0.3)' },
+          '0%': { boxShadow: '0 0 20px var(--glow-primary-weak)' },
+          '100%': { boxShadow: '0 0 40px var(--glow-primary), 0 0 80px var(--glow-accent)' },
         },
         shimmer: {
           '0%': { backgroundPosition: '-1000px 0' },

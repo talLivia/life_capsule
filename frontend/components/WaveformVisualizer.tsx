@@ -27,6 +27,13 @@ export function WaveformVisualizer({
   const audioCtxRef = useRef<AudioContext | null>(null)
 
   useEffect(() => {
+    // Canvas gradients can't consume var() strings — resolve the theme's
+    // RGB triples once per (re)draw setup. Re-runs on remount; a mid-mount
+    // theme flip keeps the old colors until the next mount, accepted.
+    const rootStyle = getComputedStyle(document.documentElement)
+    const primaryRgb = rootStyle.getPropertyValue('--primary-500').trim() || '168 85 247'
+    const accentRgb = rootStyle.getPropertyValue('--accent-500').trim() || '59 130 246'
+
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
@@ -61,8 +68,8 @@ export function WaveformVisualizer({
           const y = (H - barH) / 2
 
           const grad = ctx.createLinearGradient(0, y, 0, y + barH)
-          grad.addColorStop(0, 'rgba(168,85,247,0.9)')
-          grad.addColorStop(1, 'rgba(59,130,246,0.7)')
+          grad.addColorStop(0, `rgb(${primaryRgb} / 0.9)`)
+          grad.addColorStop(1, `rgb(${accentRgb} / 0.7)`)
           ctx.fillStyle = grad
           ctx.beginPath()
           ctx.roundRect(x, y, barW, barH, 2)
@@ -96,8 +103,8 @@ export function WaveformVisualizer({
 
           const alpha = active ? 0.7 + amp * 0.3 : 0.2
           const grad = ctx.createLinearGradient(0, y, 0, y + barH)
-          grad.addColorStop(0, `rgba(168,85,247,${alpha})`)
-          grad.addColorStop(1, `rgba(59,130,246,${alpha * 0.7})`)
+          grad.addColorStop(0, `rgb(${primaryRgb} / ${alpha})`)
+          grad.addColorStop(1, `rgb(${accentRgb} / ${alpha * 0.7})`)
           ctx.fillStyle = grad
           ctx.beginPath()
           ctx.roundRect(x, y, barW, barH, 2)
@@ -136,7 +143,7 @@ export function InlineWaveform({ active }: { active: boolean }) {
           key={i}
           className="w-1 rounded-full"
           style={{
-            background: 'linear-gradient(to top, #7c3aed, #3b82f6)',
+            background: 'linear-gradient(to top, rgb(var(--primary-600)), rgb(var(--accent-500)))',
             height: active ? undefined : '4px',
             minHeight: '4px',
             animation: active ? `waveform 1.2s ease-in-out ${i * 0.1}s infinite` : 'none',

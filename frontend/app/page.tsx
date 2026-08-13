@@ -359,7 +359,7 @@ export default function Home() {
                 aria-current={view === id ? 'page' : undefined}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 flex-shrink-0
                   ${view === id
-                    ? 'bg-gradient-to-r from-primary-600/80 to-accent-600/80 text-white shadow-glow-sm'
+                    ? 'nav-active'
                     : 'text-navfg hover:text-navfg-strong hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed'
                   }`}
               >
@@ -409,7 +409,7 @@ export default function Home() {
                 <div className="absolute -top-20 -right-40 w-80 h-80 bg-accent-600/15 rounded-full blur-3xl animate-float" style={{ animationDelay: '2s' }} />
                 <div className="absolute bottom-20 left-1/4 w-72 h-72 bg-primary-800/20 rounded-full blur-3xl animate-float" style={{ animationDelay: '4s' }} />
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full opacity-5"
-                  style={{ background: 'radial-gradient(circle, #a855f7 0%, transparent 70%)' }} />
+                  style={{ background: 'radial-gradient(circle, var(--hero-glow) 0%, transparent 70%)' }} />
               </div>
 
               {/* Badge */}
