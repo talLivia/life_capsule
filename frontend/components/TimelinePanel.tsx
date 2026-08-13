@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { CalendarRange, ChevronLeft, ChevronRight, Clock, Film, Image as ImageIcon, ImagePlus, Loader2, Play } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api, uploadPhoto } from '@/lib/api'
+import { useStore } from '@/store/useStore'
 import { PhotoLightbox } from '@/components/media/PhotoLightbox'
 import type {
   ApiError,
@@ -320,6 +321,10 @@ function Period({
 }
 
 export function TimelinePanel() {
+  // Family accounts view the timeline read-only (FAMILY_UNIFIED_SHELL_PLAN
+  // §2.4): galleries render, the add controls do not. Presentation only —
+  // the photo writes are producer-scoped server-side regardless.
+  const readOnly = useStore((s) => s.user?.role === 'family')
   const [timeline, setTimeline] = useState<Timeline | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -513,11 +518,13 @@ export function TimelinePanel() {
                       ?.category_label ?? 'this chapter'}
                   </span>
                 </h3>
-                <AddPeriodPhotos
-                  category={galleryCategory}
-                  compact
-                  onUploaded={() => refreshGallery(galleryCategory)}
-                />
+                {!readOnly && (
+                  <AddPeriodPhotos
+                    category={galleryCategory}
+                    compact
+                    onUploaded={() => refreshGallery(galleryCategory)}
+                  />
+                )}
               </div>
               <ul className="grid grid-cols-3 gap-2">
                 {galleryPhotos.map((photo, i) => (
@@ -543,8 +550,11 @@ export function TimelinePanel() {
 
           {/* A chapter the producer deliberately opened, with no photos yet:
               the one place the empty state earns its chrome. Hover alone
-              never shows this. */}
-          {expansion &&
+              never shows this. Producer-only outright — its copy and its
+              control both exist to invite an upload a family viewer cannot
+              make. */}
+          {!readOnly &&
+            expansion &&
             galleryCategory === expansion.category &&
             galleryPhotos !== undefined &&
             galleryPhotos.length === 0 && (

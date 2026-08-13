@@ -8,6 +8,7 @@ import { EntityPortrait } from '@/components/media/EntityPortrait'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
 import type { ApiError, EntityMoment, FamilyTree, TreeEdge, TreePerson } from '@/lib/types'
+import { useStore } from '@/store/useStore'
 
 /**
  * The producer's family tree — read-only, and the whole page.
@@ -268,11 +269,13 @@ function RelationList({
   people,
   edges,
   onRemoved,
+  readOnly = false,
 }: {
   person: TreePerson
   people: TreePerson[]
   edges: TreeEdge[]
   onRemoved: () => void
+  readOnly?: boolean
 }) {
   const [confirming, setConfirming] = useState<string | null>(null)
   const [removing, setRemoving] = useState(false)
@@ -322,20 +325,22 @@ function RelationList({
                 {edge.source_segment_id ? ' · from a recording' : ' · added by hand'}
               </span>
             </span>
-            <button
-              type="button"
-              disabled={removing}
-              onClick={() =>
-                confirming === edge.id ? remove(edge) : setConfirming(edge.id)
-              }
-              className={`shrink-0 px-2 py-1 rounded-md border text-[11px] transition-colors ${
-                confirming === edge.id
-                  ? 'border-red-400 bg-red-500/15 text-red-200'
-                  : 'border-white/10 text-gray-400 hover:border-white/25 hover:text-white'
-              }`}
-            >
-              {confirming === edge.id ? 'Remove — sure?' : 'Remove'}
-            </button>
+            {!readOnly && (
+              <button
+                type="button"
+                disabled={removing}
+                onClick={() =>
+                  confirming === edge.id ? remove(edge) : setConfirming(edge.id)
+                }
+                className={`shrink-0 px-2 py-1 rounded-md border text-[11px] transition-colors ${
+                  confirming === edge.id
+                    ? 'border-red-400 bg-red-500/15 text-red-200'
+                    : 'border-white/10 text-gray-400 hover:border-white/25 hover:text-white'
+                }`}
+              >
+                {confirming === edge.id ? 'Remove — sure?' : 'Remove'}
+              </button>
+            )}
           </div>
         )
       })}
@@ -353,6 +358,7 @@ function MomentsModal({
   loading,
   onClose,
   onSaved,
+  readOnly = false,
 }: {
   person: TreePerson
   people: TreePerson[]
@@ -360,6 +366,7 @@ function MomentsModal({
   parentsOf: Map<string, TreePerson[]>
   edges: TreeEdge[]
   moments: EntityMoment[] | null
+  readOnly?: boolean
   loading: boolean
   onClose: () => void
   onSaved: () => void
@@ -412,6 +419,7 @@ function MomentsModal({
               photoUrl={person.photo_url}
               size={44}
               onChanged={onSaved}
+              readOnly={readOnly}
             />
             <div>
               <h2 id="moments-title" dir="auto" className="text-lg font-bold text-white">
@@ -438,7 +446,7 @@ function MomentsModal({
             wrong is at least as worth fixing as one that is missing, and
             restricting this to floating people would put the fix out of reach
             exactly when the tree looks confidently wrong. */}
-        {!person.is_self && (
+        {!readOnly && !person.is_self && (
           <RelationEditor
             person={person}
             people={people}
@@ -453,6 +461,7 @@ function MomentsModal({
           people={people}
           edges={edges}
           onRemoved={onSaved}
+          readOnly={readOnly}
         />
 
 
@@ -497,6 +506,11 @@ function MomentsModal({
 }
 
 export function FamilyTreePanel() {
+  // A family account gets the tree VIEW-ONLY (FAMILY_UNIFIED_SHELL_PLAN
+  // §2.4): no relation editor, no per-edge Remove, no portrait upload. The
+  // hiding is presentation — the backend 403s every one of those writes for
+  // family regardless.
+  const readOnly = useStore((s) => s.user?.role === 'family')
   const [tree, setTree] = useState<FamilyTree | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -556,13 +570,14 @@ export function FamilyTreePanel() {
   }
 
   useEffect(() => {
+    if (readOnly) return // the editor never renders; the endpoint would 403
     api
       .getRelationTypes()
       .then(setRelationTypes)
       // Fail soft: without the vocabulary the editor simply is not offered,
       // which is better than a picker that cannot be submitted.
       .catch(() => setRelationTypes([]))
-  }, [])
+  }, [readOnly])
 
   const selectPerson = async (person: TreePerson) => {
     setSelected(person)
@@ -692,6 +707,7 @@ export function FamilyTreePanel() {
           loading={momentsLoading}
           onClose={() => setSelected(null)}
           onSaved={load}
+          readOnly={readOnly}
         />
       )}
     </div>

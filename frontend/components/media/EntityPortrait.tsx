@@ -22,6 +22,7 @@ export function EntityPortrait({
   photoUrl,
   size = 40,
   onChanged,
+  readOnly = false,
 }: {
   entityId: string
   name: string
@@ -32,6 +33,9 @@ export function EntityPortrait({
   /** Fired after a successful upload so the caller can refetch the payload
    *  the new photo_url rides on. */
   onChanged?: () => void
+  /** A family viewer sees the portrait, never the upload (the backend
+   *  refuses the write anyway — this keeps the UI honest about it). */
+  readOnly?: boolean
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
@@ -40,6 +44,26 @@ export function EntityPortrait({
   const [localUrl, setLocalUrl] = useState<string | null>(null)
 
   const shown = localUrl ?? photoUrl
+
+  if (readOnly) {
+    return (
+      <span
+        role="img"
+        aria-label={`Photo of ${name}`}
+        className="relative shrink-0 rounded-full overflow-hidden inline-flex"
+        style={{ width: size, height: size }}
+      >
+        {shown ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={shown} alt={name} className="w-full h-full object-cover" />
+        ) : (
+          <span className="w-full h-full flex items-center justify-center bg-white/8 text-white/70 text-xs font-semibold">
+            {name.slice(0, 2)}
+          </span>
+        )}
+      </span>
+    )
+  }
 
   const pick = () => {
     if (!uploading) inputRef.current?.click()

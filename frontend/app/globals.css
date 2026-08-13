@@ -227,8 +227,8 @@
     box-shadow: 0 0 8px rgba(168,85,247,0.3), inset 0 0 8px rgba(168,85,247,0.05);
   }
 
-  /* ── Calm theme (/talk only) — quiet, warm, low-contrast; deliberately
-     distinct from the app's neon dark theme.
+  /* ── Calm theme (family chat surfaces only) — quiet, warm, low-contrast;
+     deliberately distinct from the app's neon dark theme.
 
      WAS /record too, and the reason given was that the storyteller may be
      recording emotionally difficult content. That held while /record was a
@@ -236,10 +236,16 @@
      viewport. Once /record moved INSIDE the app shell, a warm cream panel
      was rendering inside a dark shell with a gradient nav bar, and the
      contrast read as a bug rather than as care — so the record screen moved
-     onto the shell's own system. /talk is still standalone and still calm.
+     onto the shell's own system.
 
-     Before reintroducing calm anywhere, check whether that surface owns its
-     whole viewport. Inside the shell it will look broken. ── */
+     ⚠️ 2026-08-13: the dedicated /talk page is gone and the family chat
+     (FamilyChatView → VideoClipTalkInterface/TalkInterface) now mounts
+     INSIDE the shell — the exact configuration the paragraph above warns
+     about, accepted knowingly as the family's whole world is three shell
+     views (docs/FAMILY_UNIFIED_SHELL_PLAN.md §2.2, flagged for live
+     review). If it reads as broken in practice, the fix is restyling the
+     family chat onto the shell system, not resurrecting a standalone
+     route. ── */
   .calm-btn-primary {
     @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-semibold
            bg-calm-sage-600 hover:bg-calm-sage-700 text-white
