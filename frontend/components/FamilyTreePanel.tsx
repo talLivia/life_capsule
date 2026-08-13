@@ -53,13 +53,13 @@ function PersonChip({
       className={`px-3.5 py-2 rounded-xl border text-left transition-colors ${
         selected
           ? 'border-primary-400 bg-primary-500/15'
-          : 'border-white/10 bg-surface-800/40 hover:border-white/25'
+          : 'border-edge bg-surface-800/40 hover:border-edge-strong'
       }`}
     >
-      <span dir="auto" className="block text-sm font-medium text-white">
+      <span dir="auto" className="block text-sm font-medium text-ink">
         {person.name}
       </span>
-      <span className="block text-[11px] text-gray-500 mt-0.5">
+      <span className="block text-[11px] text-muted2 mt-0.5">
         {years || 'Tap to see their moments'}
       </span>
     </button>
@@ -164,15 +164,15 @@ function RelationEditor({
   return (
     <div className="flex flex-col gap-2 p-3 rounded-xl border border-primary-500/30 bg-primary-500/5">
       <p className="text-xs font-semibold text-primary-200">How are they related?</p>
-      <div className="flex flex-wrap items-center gap-2 text-sm text-white">
+      <div className="flex flex-wrap items-center gap-2 text-sm text-ink">
         <span dir="auto" className="font-medium">{person.name}</span>
-        <span className="text-gray-400">is the</span>
+        <span className="text-muted">is the</span>
         <select
           value={relationType}
           onChange={(e) => setRelationType(e.target.value)}
           disabled={saving}
           aria-label="Relation"
-          className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white"
+          className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-edge text-sm text-ink"
         >
           <option value="">choose…</option>
           {/* Straight from the relation_types table, so adding a type is a
@@ -181,14 +181,14 @@ function RelationEditor({
             <option key={t.value} value={t.value}>{t.label}</option>
           ))}
         </select>
-        <span className="text-gray-400">of</span>
+        <span className="text-muted">of</span>
         <select
           value={otherId}
           onChange={(e) => setOtherId(e.target.value)}
           disabled={saving}
           aria-label="Of whom"
           dir="auto"
-          className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white max-w-[11rem]"
+          className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-edge text-sm text-ink max-w-[11rem]"
         >
           <option value="">choose…</option>
           {others.map((p) => (
@@ -202,7 +202,7 @@ function RelationEditor({
           chosen parent again clears it — a way back to saying nothing. */}
       {sideParents.length > 0 && (
         <fieldset className="flex flex-col gap-1.5">
-          <legend className="text-xs text-white leading-relaxed mb-1">
+          <legend className="text-xs text-ink leading-relaxed mb-1">
             {sideKind === 'grandparent'
               ? 'Whose mother or father are they?'
               : 'Whose brother or sister are they?'}
@@ -219,7 +219,7 @@ function RelationEditor({
                   className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
                     chosen
                       ? 'border-primary-400 bg-primary-500/15 text-white'
-                      : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
+                      : 'border-edge bg-surface-800 text-ink-soft hover:border-edge-strong'
                   }`}
                 >
                   <span dir="auto">{parent.name}</span>
@@ -232,7 +232,7 @@ function RelationEditor({
 
       {/* Stated before the click, on the same screen — not a dialog asking
           permission. The producer went out of their way to say this. */}
-      <p className="text-[11px] text-gray-500">
+      <p className="text-[11px] text-muted2">
         Saving replaces any relation that contradicts this one.
       </p>
 
@@ -303,7 +303,7 @@ function RelationList({
 
   return (
     <div className="flex flex-col gap-1.5">
-      <p className="text-xs uppercase tracking-wide text-gray-400 font-semibold">
+      <p className="text-xs uppercase tracking-wide text-muted font-semibold">
         Recorded relations
       </p>
       {mine.map((edge) => {
@@ -315,13 +315,13 @@ function RelationList({
         return (
           <div
             key={edge.id}
-            className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-white/8 bg-surface-800/40"
+            className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-edge bg-surface-800/40"
           >
-            <span className="text-xs text-gray-300">
-              <span dir="auto" className="text-white font-medium">{subject}</span>
+            <span className="text-xs text-ink-soft">
+              <span dir="auto" className="text-ink font-medium">{subject}</span>
               {` is the ${label} of `}
-              <span dir="auto" className="text-white font-medium">{object}</span>
-              <span className="text-gray-500">
+              <span dir="auto" className="text-ink font-medium">{object}</span>
+              <span className="text-muted2">
                 {edge.source_segment_id ? ' · from a recording' : ' · added by hand'}
               </span>
             </span>
@@ -335,7 +335,7 @@ function RelationList({
                 className={`shrink-0 px-2 py-1 rounded-md border text-[11px] transition-colors ${
                   confirming === edge.id
                     ? 'border-red-400 bg-red-500/15 text-red-200'
-                    : 'border-white/10 text-gray-400 hover:border-white/25 hover:text-white'
+                    : 'border-edge text-muted hover:border-edge-strong hover:text-ink'
                 }`}
               >
                 {confirming === edge.id ? 'Remove — sure?' : 'Remove'}
@@ -396,7 +396,7 @@ function MomentsModal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-surface-950/95 backdrop-blur-md p-4"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 backdrop-blur-md p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="moments-title"
@@ -404,7 +404,7 @@ function MomentsModal({
     >
       {/* Clicks inside the card must not reach the backdrop's close handler. */}
       <div
-        className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl p-5 animate-scale-in flex flex-col gap-3 bg-surface-800 border border-white/10 shadow-glass"
+        className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl p-5 animate-scale-in flex flex-col gap-3 bg-surface-800 border border-edge shadow-glass"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3 sticky top-0">
@@ -422,11 +422,11 @@ function MomentsModal({
               readOnly={readOnly}
             />
             <div>
-              <h2 id="moments-title" dir="auto" className="text-lg font-bold text-white">
+              <h2 id="moments-title" dir="auto" className="text-lg font-bold text-ink">
                 {person.name}
               </h2>
               {(years || person.is_self) && (
-                <p className="text-xs text-gray-500 mt-0.5">
+                <p className="text-xs text-muted2 mt-0.5">
                   {person.is_self ? 'You' : years}
                 </p>
               )}
@@ -436,7 +436,7 @@ function MomentsModal({
             ref={closeRef}
             onClick={onClose}
             aria-label="Close"
-            className="text-gray-500 hover:text-white shrink-0"
+            className="text-muted2 hover:text-ink shrink-0"
           >
             <X size={17} />
           </button>
@@ -468,7 +468,7 @@ function MomentsModal({
         {loading && <Loader2 size={20} className="animate-spin text-primary-400 self-center" />}
 
         {moments?.length === 0 && (
-          <p className="text-sm text-gray-500">No recordings mention them yet.</p>
+          <p className="text-sm text-muted2">No recordings mention them yet.</p>
         )}
 
         {moments?.map((moment) => (
@@ -483,16 +483,16 @@ function MomentsModal({
                 src={moment.video_url}
                 controls
                 playsInline
-                className="w-full rounded-lg border border-white/10"
+                className="w-full rounded-lg border border-edge"
               />
             )}
             {moment.summary && (
-              <p dir="auto" className="text-xs text-gray-400">{moment.summary}</p>
+              <p dir="auto" className="text-xs text-muted">{moment.summary}</p>
             )}
             {moment.transcript && (
               <details>
-                <summary className="text-[11px] text-gray-500 cursor-pointer">Transcript</summary>
-                <p dir="auto" className="text-xs text-gray-400 mt-1 leading-relaxed">
+                <summary className="text-[11px] text-muted2 cursor-pointer">Transcript</summary>
+                <p dir="auto" className="text-xs text-muted mt-1 leading-relaxed">
                   {moment.transcript}
                 </p>
               </details>
@@ -604,7 +604,7 @@ export function FamilyTreePanel() {
     return (
       <div className="flex items-center justify-center py-24 px-6">
         <div className="max-w-sm text-center flex flex-col items-center gap-4">
-          <p className="text-sm text-gray-300">{error || 'Something went wrong'}</p>
+          <p className="text-sm text-ink-soft">{error || 'Something went wrong'}</p>
           <button onClick={load} className="btn-primary">Try again</button>
         </div>
       </div>
@@ -626,8 +626,8 @@ export function FamilyTreePanel() {
       {!hasFamily ? (
         <div className="glass-card p-6 flex flex-col items-center gap-3 text-center max-w-lg mx-auto">
           <UserIcon size={26} className="text-primary-400" />
-          <h2 className="text-lg font-bold text-white">Just you, so far</h2>
-          <p className="text-sm text-gray-400 max-w-sm">
+          <h2 className="text-lg font-bold text-ink">Just you, so far</h2>
+          <p className="text-sm text-muted max-w-sm">
             Family appears here as you record. When you mention someone and say how
             they&apos;re related — &ldquo;my brother Nir&rdquo; — you&apos;ll be asked to
             confirm it, and they&apos;ll join the tree.
@@ -646,7 +646,7 @@ export function FamilyTreePanel() {
               onSelect={selectPerson}
             />
           </div>
-          <p className="text-[11px] text-gray-500 mt-2.5 leading-relaxed">
+          <p className="text-[11px] text-muted2 mt-2.5 leading-relaxed">
             Lines are recorded parent–child relations; a double line between two people
             is a recorded marriage. People in the same row are the same generation —
             siblings share a row rather than being joined by a line. Drag to move,
@@ -661,10 +661,10 @@ export function FamilyTreePanel() {
             row would draw a family that does not exist. */}
         {tree.unplaced.length > 0 && (
           <section className="glass-card p-4">
-            <h2 className="text-xs uppercase tracking-wide text-gray-400 font-semibold mb-1">
+            <h2 className="text-xs uppercase tracking-wide text-muted font-semibold mb-1">
               Mentioned, not yet placed
             </h2>
-            <p className="text-xs text-gray-500 mb-2.5">
+            <p className="text-xs text-muted2 mb-2.5">
               People from your stories whose family connection hasn&apos;t been recorded.
             </p>
             <div className="flex flex-wrap gap-2">
@@ -686,7 +686,7 @@ export function FamilyTreePanel() {
               <AlertTriangle size={13} />
               Recordings that disagree
             </h2>
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-muted">
               {tree.contradictions.length} relation
               {tree.contradictions.length === 1 ? '' : 's'} couldn&apos;t be drawn without
               moving someone already placed. The tree kept the first version rather than

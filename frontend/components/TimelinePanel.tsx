@@ -99,7 +99,7 @@ function AddPeriodPhotos({
         disabled={uploading}
         className={
           compact
-            ? 'ml-auto text-gray-500 hover:text-white transition-colors'
+            ? 'ml-auto text-muted2 hover:text-ink transition-colors'
             : 'btn-secondary self-start'
         }
         title="Add photos to this chapter"
@@ -139,10 +139,10 @@ function GroupBubble({
       className={`px-3 py-1.5 rounded-xl border transition-colors ${
         selected
           ? 'border-primary-400 bg-primary-500/15'
-          : 'border-white/10 bg-surface-800/50 hover:border-white/25'
+          : 'border-edge bg-surface-800/50 hover:border-edge-strong'
       }`}
     >
-      <span dir="auto" className="text-sm text-white">{group.label}</span>
+      <span dir="auto" className="text-sm text-ink">{group.label}</span>
       <span className="text-[11px] text-primary-300 ml-1.5">×{group.count}</span>
     </button>
   )
@@ -166,22 +166,22 @@ function MomentRow({
       className={`w-full flex items-start gap-2 px-3 py-2 rounded-xl border text-left transition-colors ${
         selected
           ? 'border-primary-400 bg-primary-500/15'
-          : 'border-white/10 bg-surface-800/50 hover:border-white/25'
+          : 'border-edge bg-surface-800/50 hover:border-edge-strong'
       }`}
     >
       <Play size={13} className="shrink-0 mt-1 text-primary-400" />
       <span className="flex-1 min-w-0">
-        <span dir="auto" className="block text-sm text-white leading-snug">
+        <span dir="auto" className="block text-sm text-ink leading-snug">
           {recording.title || UNTITLED}
         </span>
         {caption && (
-          <span dir="auto" className="block text-[11px] text-gray-500 leading-snug mt-0.5">
+          <span dir="auto" className="block text-[11px] text-muted2 leading-snug mt-0.5">
             {caption}
           </span>
         )}
       </span>
       {recording.take_count > 1 && (
-        <span className="text-[11px] text-gray-500 shrink-0 mt-0.5">
+        <span className="text-[11px] text-muted2 shrink-0 mt-0.5">
           take {recording.take_index}/{recording.take_count}
         </span>
       )}
@@ -226,13 +226,13 @@ function Period({
   return (
     <section className="relative pl-8 pb-8 last:pb-0">
       {/* The spine. Purely decorative — the ORDER is the server's. */}
-      <span className="absolute left-[7px] top-2 bottom-0 w-px bg-white/10" aria-hidden />
+      <span className="absolute left-[7px] top-2 bottom-0 w-px bg-veil" aria-hidden />
       <span className="absolute left-0 top-1.5 w-3.5 h-3.5 rounded-full bg-primary-500/80 ring-4 ring-surface-900" aria-hidden />
 
       <div className="glass-card p-4" onPointerEnter={onHover}>
         {/* The collapsed shape: title, sentence, bubbles. Nothing else, at
             any archive size — the card itself is static. */}
-        <h2 dir="auto" className="text-base font-bold text-white">
+        <h2 dir="auto" className="text-base font-bold text-ink">
           {period.category_label}
         </h2>
 
@@ -245,7 +245,7 @@ function Period({
         )}
 
         {period.summary && (
-          <p dir="auto" className="text-sm text-gray-300 mt-2 leading-snug">
+          <p dir="auto" className="text-sm text-ink-soft mt-2 leading-snug">
             {period.summary}
           </p>
         )}
@@ -264,7 +264,7 @@ function Period({
         )}
 
         {group && (
-          <div className="mt-4 pt-3 border-t border-white/10 flex flex-col gap-2">
+          <div className="mt-4 pt-3 border-t border-edge flex flex-col gap-2">
             {!expansion?.showAll ? (
               <>
                 {group.highlights.map((h) => {
@@ -403,7 +403,7 @@ export function TimelinePanel() {
     return (
       <div className="flex items-center justify-center py-24 px-6">
         <div className="max-w-sm text-center flex flex-col items-center gap-4">
-          <p className="text-sm text-gray-300">{error || 'Something went wrong'}</p>
+          <p className="text-sm text-ink-soft">{error || 'Something went wrong'}</p>
           <button onClick={load} className="btn-primary">Try again</button>
         </div>
       </div>
@@ -422,8 +422,8 @@ export function TimelinePanel() {
           {timeline.periods.length === 0 ? (
             <div className="glass-card p-6 flex flex-col items-center gap-3 text-center">
               <Clock size={26} className="text-primary-400" />
-              <h2 className="text-lg font-bold text-white">Nothing here yet</h2>
-              <p className="text-sm text-gray-400 max-w-sm">
+              <h2 className="text-lg font-bold text-ink">Nothing here yet</h2>
+              <p className="text-sm text-muted max-w-sm">
                 Each answer you record adds to this page. Record one and the first
                 chapter of your life appears here.
               </p>
@@ -451,14 +451,14 @@ export function TimelinePanel() {
           {/* Said out loud rather than left as a gap: a page showing three
               bubbles should say whether that is the whole interview. */}
           {timeline.hidden_empty_periods > 0 && (
-            <p className="text-xs text-gray-500 pl-8 mt-2">
+            <p className="text-xs text-muted2 pl-8 mt-2">
               {timeline.hidden_empty_periods} more chapter
               {timeline.hidden_empty_periods === 1 ? '' : 's'} appear here once you
               answer something in {timeline.hidden_empty_periods === 1 ? 'it' : 'them'}.
             </p>
           )}
           {timeline.unplaced_recordings > 0 && (
-            <p className="text-xs text-gray-500 pl-8 mt-1">
+            <p className="text-xs text-muted2 pl-8 mt-1">
               {timeline.unplaced_recordings} recording
               {timeline.unplaced_recordings === 1 ? '' : 's'} don&apos;t belong to a
               chapter — they were made outside the guided questions.
@@ -469,18 +469,18 @@ export function TimelinePanel() {
         <aside className="lg:col-span-2 lg:sticky lg:top-6">
           {!playing ? (
             <div className="glass-card p-5 flex flex-col items-center gap-2 text-center">
-              <Film size={18} className="text-gray-500" />
-              <p className="text-xs text-gray-500">
+              <Film size={18} className="text-muted2" />
+              <p className="text-xs text-muted2">
                 Open a chapter and choose a moment to watch it here.
               </p>
             </div>
           ) : (
             <div className="glass-card p-4 flex flex-col gap-3">
-              <h2 dir="auto" className="text-base font-bold text-white leading-snug">
+              <h2 dir="auto" className="text-base font-bold text-ink leading-snug">
                 {playing.recording.title || UNTITLED}
               </h2>
               {playing.recording.take_count > 1 && (
-                <p className="text-[11px] text-gray-500">
+                <p className="text-[11px] text-muted2">
                   Take {playing.recording.take_index} of {playing.recording.take_count}
                 </p>
               )}
@@ -490,10 +490,10 @@ export function TimelinePanel() {
                   src={playing.recording.video_url}
                   controls
                   playsInline
-                  className="w-full rounded-lg border border-white/10"
+                  className="w-full rounded-lg border border-edge"
                 />
               ) : (
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-muted2">
                   This recording is still being processed.
                 </p>
               )}
@@ -511,7 +511,7 @@ export function TimelinePanel() {
             <div className="glass-card p-4 mt-4 flex flex-col gap-3">
               <div className="flex items-center gap-2">
                 <ImageIcon size={14} className="text-primary-400" />
-                <h3 className="text-sm font-medium text-white">
+                <h3 className="text-sm font-medium text-ink">
                   Photos from{' '}
                   <span dir="auto">
                     {timeline.periods.find((p) => p.category === galleryCategory)
@@ -532,7 +532,7 @@ export function TimelinePanel() {
                     <button
                       type="button"
                       onClick={() => setLightbox({ photos: galleryPhotos, index: i })}
-                      className="block w-full aspect-square rounded-lg overflow-hidden border border-white/10 hover:border-white/30 focus:outline-none focus:ring-2 focus:ring-primary-400"
+                      className="block w-full aspect-square rounded-lg overflow-hidden border border-edge hover:border-edge-strong focus:outline-none focus:ring-2 focus:ring-primary-400"
                       aria-label={photo.caption || 'Open photo'}
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -559,7 +559,7 @@ export function TimelinePanel() {
             galleryPhotos !== undefined &&
             galleryPhotos.length === 0 && (
               <div className="glass-card p-4 mt-4 flex flex-col gap-2">
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-muted2">
                   No photos in this chapter yet — they&apos;ll show beside it here
                   and in the family&apos;s view.
                 </p>

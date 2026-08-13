@@ -153,13 +153,13 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
         // transcript text would dismiss the thing being read.
         onClick={e => e.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-4 p-6 border-b border-white/10">
+        <div className="flex items-start justify-between gap-4 p-6 border-b border-edge">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-primary-400 mb-1">
               <Sparkles size={16} />
               <span className="text-sm font-semibold">Extracted from this</span>
             </div>
-            <h2 id="extraction-title" className="text-lg font-bold text-white truncate">
+            <h2 id="extraction-title" className="text-lg font-bold text-ink truncate">
               {title}
             </h2>
           </div>
@@ -170,7 +170,7 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
 
         <div className="p-6 overflow-y-auto messages-scroll flex flex-col gap-6">
           {loading && (
-            <div className="flex items-center justify-center gap-2 py-12 text-gray-400">
+            <div className="flex items-center justify-center gap-2 py-12 text-muted">
               <Loader2 size={20} className="animate-spin" />
               <span className="text-sm">Loading…</span>
             </div>
@@ -178,7 +178,7 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
 
           {error && !loading && (
             <div className="flex flex-col items-center gap-4 py-10 text-center">
-              <p className="text-sm text-gray-300">{error}</p>
+              <p className="text-sm text-ink-soft">{error}</p>
               <button onClick={load} className="btn-secondary">Try again</button>
             </div>
           )}
@@ -235,8 +235,8 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
                 // A real bar rather than a spinner: the percentages are
                 // weighted by measured stage duration, so it does not sprint
                 // to 60% and then appear to hang.
-                <div className="flex flex-col gap-2 px-4 py-3 rounded-xl bg-surface-800/60 border border-white/10">
-                  <div className="flex items-center justify-between gap-3 text-sm text-white">
+                <div className="flex flex-col gap-2 px-4 py-3 rounded-xl bg-surface-800/60 border border-edge">
+                  <div className="flex items-center justify-between gap-3 text-sm text-ink">
                     <span>{data.progress_label ?? 'Reading your recording'}</span>
                     <span className="text-primary-300 tabular-nums">
                       {data.progress_percent ?? 0}%
@@ -256,7 +256,7 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
                   </div>
                   {/* No instruction to stay. Closing this changes nothing —
                       the recording is being read on the server either way. */}
-                  <p className="text-xs text-gray-400">
+                  <p className="text-xs text-muted">
                     You can close this and carry on; anything that needs checking
                     will be waiting under the bell.
                   </p>
@@ -270,9 +270,9 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
                     Couldn&apos;t reach the entity store, so this list isn&apos;t available.
                   </div>
                 ) : data.entities.length === 0 ? (
-                  <p className="text-sm text-gray-500">
+                  <p className="text-sm text-muted2">
                     Nothing named was picked up.{' '}
-                    <span className="text-gray-600">
+                    <span className="text-muted2">
                       This is often correct — only people and places called by NAME are
                       extracted, so &ldquo;my wife&rdquo; or &ldquo;my commander&rdquo; won&apos;t
                       appear here. The interview question is what identifies them instead.
@@ -291,7 +291,7 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
                       return (
                       <li
                         key={e.name}
-                        className="px-4 py-3 rounded-xl bg-surface-700/50 border border-white/10"
+                        className="px-4 py-3 rounded-xl bg-surface-700/50 border border-edge"
                       >
                         <div className="flex items-center gap-3">
                           {/* The portrait, clickable to add or change the
@@ -310,14 +310,14 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
                             />
                           )}
                           <div className="flex items-baseline gap-2">
-                            <span dir="auto" className="text-sm text-white font-medium">{e.name}</span>
+                            <span dir="auto" className="text-sm text-ink font-medium">{e.name}</span>
                             {e.kind && (
-                              <span className="text-[11px] text-gray-500">{e.kind}</span>
+                              <span className="text-[11px] text-muted2">{e.kind}</span>
                             )}
                           </div>
                         </div>
                         {e.summary && (
-                          <p dir="auto" className="text-xs text-gray-400 mt-1">{e.summary}</p>
+                          <p dir="auto" className="text-xs text-muted mt-1">{e.summary}</p>
                         )}
                         {theirs.length > 0 && (
                           <ul className="flex flex-col gap-1 mt-2">
@@ -326,10 +326,10 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
                                 key={relation.id}
                                 className="flex items-center justify-between gap-3"
                               >
-                                <span dir="auto" className="text-xs text-gray-300">
+                                <span dir="auto" className="text-xs text-ink-soft">
                                   {relation.label ?? relation.relation_type} of {relation.to_name}
                                   {relation.origin === 'confirmation' && (
-                                    <span className="text-gray-500"> (you answered this)</span>
+                                    <span className="text-muted2"> (you answered this)</span>
                                   )}
                                 </span>
                                 <button
@@ -343,7 +343,7 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
                                       toast.error('Could not remove that — please try again')
                                     }
                                   }}
-                                  className="text-[11px] text-gray-500 hover:text-red-300 shrink-0"
+                                  className="text-[11px] text-muted2 hover:text-red-300 shrink-0"
                                 >
                                   Remove
                                 </button>
@@ -360,7 +360,7 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
 
               <Section icon={<Tag size={15} />} label="Topic tags">
                 {data.topic_tags.length === 0 ? (
-                  <p className="text-sm text-gray-500">No topics were tagged.</p>
+                  <p className="text-sm text-muted2">No topics were tagged.</p>
                 ) : (
                   <div className="flex flex-wrap gap-2">
                     {data.topic_tags.map(tag => (
@@ -371,11 +371,11 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
               </Section>
 
               <Section icon={<Scissors size={15} />} label="Split into">
-                <p className="text-sm text-gray-300">
-                  <span className="text-white font-semibold">{data.unit_count}</span>{' '}
+                <p className="text-sm text-ink-soft">
+                  <span className="text-ink font-semibold">{data.unit_count}</span>{' '}
                   {data.unit_count === 1 ? 'utterance unit' : 'utterance units'}
                 </p>
-                <p className="text-xs text-gray-500 mt-1 leading-relaxed">
+                <p className="text-xs text-muted2 mt-1 leading-relaxed">
                   Answers are built from whole units, cut at the pauses you actually took —
                   so a clip can never stop mid-sentence.
                 </p>
@@ -383,11 +383,11 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
 
               <Section icon={<FileText size={15} />} label="Transcript">
                 {data.transcript ? (
-                  <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">
+                  <p className="text-sm text-ink-soft leading-relaxed whitespace-pre-wrap">
                     {data.transcript}
                   </p>
                 ) : (
-                  <p className="text-sm text-gray-500">No transcript yet.</p>
+                  <p className="text-sm text-muted2">No transcript yet.</p>
                 )}
               </Section>
             </>
@@ -426,7 +426,7 @@ function Section({
 }) {
   return (
     <section className="flex flex-col gap-2">
-      <div className="flex items-center gap-2 text-gray-400">
+      <div className="flex items-center gap-2 text-muted">
         {icon}
         <h3 className="text-xs uppercase tracking-wide font-semibold">{label}</h3>
       </div>

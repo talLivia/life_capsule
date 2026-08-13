@@ -57,7 +57,7 @@ export function EntityPortrait({
           // eslint-disable-next-line @next/next/no-img-element
           <img src={shown} alt={name} className="w-full h-full object-cover" />
         ) : (
-          <span className="w-full h-full flex items-center justify-center bg-white/8 text-white/70 text-xs font-semibold">
+          <span className="w-full h-full flex items-center justify-center bg-veil text-ink/70 text-xs font-semibold">
             {name.slice(0, 2)}
           </span>
         )}
@@ -108,10 +108,10 @@ export function EntityPortrait({
            name sits right beside this control on every surface that mounts
            it, so the initials carried no information the row lacks). A
            corner-badge draft of this read as broken, not intentional. */
-        <span className="w-full h-full flex items-center justify-center bg-white/8">
+        <span className="w-full h-full flex items-center justify-center bg-veil">
           <Camera
             size={Math.max(14, Math.round(size * 0.45))}
-            className="text-white/75 group-hover:text-white transition-colors"
+            className="text-ink/70 group-hover:text-ink transition-colors"
           />
         </span>
       )}
@@ -119,7 +119,7 @@ export function EntityPortrait({
           overlay holds regardless so the spinner cannot vanish when the
           pointer drifts. */}
       <span
-        className={`absolute inset-0 flex items-center justify-center bg-surface-950/60 transition-opacity ${
+        className={`absolute inset-0 flex items-center justify-center bg-black/55 transition-opacity ${
           uploading
             ? 'opacity-100'
             : shown

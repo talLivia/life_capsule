@@ -51,7 +51,7 @@ export function InterviewAccordion({
             className={`rounded-xl border overflow-hidden transition-colors ${
               isOpen
                 ? 'border-primary-500/40 bg-surface-800/60'
-                : 'border-white/8 bg-surface-800/30'
+                : 'border-edge bg-surface-800/30'
             }`}
           >
             <button
@@ -61,14 +61,14 @@ export function InterviewAccordion({
               aria-expanded={isOpen}
               aria-disabled={inert}
               className={`w-full flex items-center gap-2.5 px-3.5 py-3 text-left ${
-                inert ? 'cursor-default opacity-45' : 'hover:bg-white/5'
+                inert ? 'cursor-default opacity-45' : 'hover:bg-veil'
               }`}
             >
               <span className="flex-shrink-0">
                 {category.complete ? (
                   <Check size={15} className="text-primary-400" />
                 ) : inert ? (
-                  <Lock size={13} className="text-gray-500" />
+                  <Lock size={13} className="text-muted2" />
                 ) : (
                   <span className="block w-[15px] text-center text-xs text-primary-300">•</span>
                 )}
@@ -81,10 +81,10 @@ export function InterviewAccordion({
                 dir="auto"
                 className={`flex-1 text-sm ${
                   category.current
-                    ? 'font-semibold text-white'
+                    ? 'font-semibold text-ink'
                     : category.complete
-                      ? 'text-gray-300'
-                      : 'text-gray-400'
+                      ? 'text-ink-soft'
+                      : 'text-muted'
                 }`}
               >
                 {category.label}
@@ -93,7 +93,7 @@ export function InterviewAccordion({
               {/* Only a settled category can show a count — before that the
                   total is not knowable and no number is shown at all (§8.4). */}
               {category.settled && category.total != null && (
-                <span className="text-[11px] tabular-nums text-gray-500">
+                <span className="text-[11px] tabular-nums text-muted2">
                   {category.done_count}/{category.total}
                 </span>
               )}
@@ -101,7 +101,7 @@ export function InterviewAccordion({
               {!inert && (
                 <ChevronDown
                   size={14}
-                  className={`text-gray-500 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+                  className={`text-muted2 transition-transform ${isOpen ? 'rotate-180' : ''}`}
                 />
               )}
             </button>
@@ -127,8 +127,8 @@ export function InterviewAccordion({
                           isViewing
                             ? 'bg-primary-500/15 text-primary-100'
                             : selectable
-                              ? 'text-gray-400 hover:bg-white/5'
-                              : 'text-gray-600 cursor-default'
+                              ? 'text-muted hover:bg-veil'
+                              : 'text-muted2 cursor-default'
                         }`}
                       >
                         <span className="flex-shrink-0 mt-[3px]">
@@ -140,7 +140,7 @@ export function InterviewAccordion({
                         </span>
                         <span dir="auto" className="flex-1 line-clamp-2">{step.text}</span>
                         {step.kind === 'question' && (step.takes ?? 0) > 1 && (
-                          <span className="flex-shrink-0 text-[10px] text-gray-500 mt-[2px]">
+                          <span className="flex-shrink-0 text-[10px] text-muted2 mt-[2px]">
                             ×{step.takes}
                           </span>
                         )}

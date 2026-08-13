@@ -68,7 +68,7 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
     <div className="max-w-7xl mx-auto px-6 py-10 animate-fade-in">
       <div className="mb-6">
         <h1 className="text-3xl font-black gradient-text mb-2">Live Conversation</h1>
-        <p className="text-gray-400">
+        <p className="text-muted">
           {producerName
             ? <>Ask a question and watch <span dir="auto">{producerName}</span> answer it, in their own words.</>
             : 'Ask a question and watch the matching moment from your story.'}
@@ -79,7 +79,7 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
         {/* ── Video Panel (single, updates in place) ────────────────────── */}
         <div className="lg:col-span-3 flex flex-col gap-4">
           <div className="card-glow flex-1 relative overflow-hidden rounded-2xl">
-            <div className="aspect-video w-full bg-surface-950 rounded-xl overflow-hidden relative">
+            <div className="aspect-video w-full bg-black rounded-xl overflow-hidden relative">
               {latestClip?.videoUrl ? (
                 <video
                   key={latestClip.id}
@@ -90,21 +90,21 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
                   onPlay={() => setIsClipPlaying(true)}
                   onPause={() => setIsClipPlaying(false)}
                   onEnded={() => setIsClipPlaying(false)}
-                  className="absolute inset-0 w-full h-full object-contain bg-surface-950"
+                  className="absolute inset-0 w-full h-full object-contain bg-black"
                 />
               ) : (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-4">
                   <div className="w-20 h-20 rounded-full bg-gradient-to-br from-primary-600/30 to-accent-600/20
-                                  flex items-center justify-center border border-white/10 animate-pulse-slow">
+                                  flex items-center justify-center border border-edge animate-pulse-slow">
                     <Film size={36} className="text-primary-400" />
                   </div>
-                  <p className="text-gray-500 text-sm">The matching clip will play here</p>
+                  <p className="text-muted2 text-sm">The matching clip will play here</p>
                 </div>
               )}
 
               {/* Processing overlay while the backend transcribes / finds a clip */}
               {isThinking && (
-                <div className="absolute inset-0 bg-surface-950/75 backdrop-blur-sm flex flex-col
+                <div className="absolute inset-0 bg-black/65 backdrop-blur-sm flex flex-col
                                 items-center justify-center gap-4 z-20">
                   <div className="relative">
                     <div className="w-16 h-16 rounded-full border-2 border-primary-500/30 animate-spin-slow" />
@@ -112,7 +112,7 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
                                     border-r-transparent border-b-transparent border-l-transparent animate-spin" />
                     <Wand2 className="absolute inset-0 m-auto text-primary-400" size={20} />
                   </div>
-                  <p className="text-sm text-gray-300 font-medium animate-pulse">{statusText}</p>
+                  <p className="text-sm text-ink-soft font-medium animate-pulse">{statusText}</p>
                 </div>
               )}
             </div>
@@ -135,7 +135,7 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
             <div className="flex items-center justify-between mt-4 px-1">
               <div className="flex items-center gap-1.5 text-xs">
                 <span className={`status-dot ${connected ? 'online' : 'processing'}`} />
-                <span className="text-gray-400">
+                <span className="text-muted">
                   {!connected
                     ? 'Reconnecting…'
                     : isThinking
@@ -147,7 +147,7 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
                           : 'Ready'}
                 </span>
               </div>
-              <div className="flex items-center gap-1.5 text-xs text-gray-500">
+              <div className="flex items-center gap-1.5 text-xs text-muted2">
                 <Video size={12} className="text-primary-400" />
                 <span>Original story clips</span>
               </div>
@@ -157,12 +157,12 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
 
         {/* ── Chat Panel ─────────────────────────────────────────────────── */}
         <div className="lg:col-span-2 flex flex-col glass-card rounded-2xl overflow-hidden p-0">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-edge">
             <div className="flex items-center gap-2">
               <MessageCircle size={16} className="text-primary-400" />
-              <span className="font-semibold text-white">Conversation</span>
+              <span className="font-semibold text-ink">Conversation</span>
             </div>
-            <div className="flex items-center gap-1.5 text-xs text-gray-500">
+            <div className="flex items-center gap-1.5 text-xs text-muted2">
               <span>{messages.filter((m) => m.role === 'user').length} questions</span>
             </div>
           </div>
@@ -171,12 +171,12 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
             {messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full gap-4 py-12 text-center">
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-600/20 to-accent-600/10
-                                flex items-center justify-center border border-white/8">
+                                flex items-center justify-center border border-edge">
                   <Sparkles size={28} className="text-primary-400" />
                 </div>
                 <div>
-                  <p className="text-white font-medium mb-1">Ask about a memory</p>
-                  <p className="text-gray-500 text-sm">Type a question or press the mic button</p>
+                  <p className="text-ink font-medium mb-1">Ask about a memory</p>
+                  <p className="text-muted2 text-sm">Type a question or press the mic button</p>
                 </div>
               </div>
             ) : (
@@ -197,7 +197,7 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
                         ? 'bg-gradient-to-br from-primary-700/80 to-accent-700/60 text-white rounded-tr-sm'
                         : m.videoUrl
                           ? 'bg-surface-700/80 border border-primary-500/30 text-primary-200 rounded-tl-sm'
-                          : `bg-surface-700/80 border border-white/8 rounded-tl-sm ${m.noStory ? 'italic text-gray-400' : 'text-gray-200'}`
+                          : `bg-surface-700/80 border border-edge rounded-tl-sm ${m.noStory ? 'italic text-muted' : 'text-ink-soft'}`
                       }`}
                     >
                       {/* The clip's words, not "Playing the matching clip →".
@@ -215,7 +215,7 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
                     <div className="flex items-center gap-2 mt-2.5">
                       <button
                         onClick={() => retryQuestion(m.id, m.retryQuestion!)}
-                        className="px-3 py-1 rounded-lg text-xs font-medium text-gray-200 bg-surface-700 border border-white/10 hover:bg-surface-600 transition-all active:scale-95"
+                        className="px-3 py-1 rounded-lg text-xs font-medium text-ink-soft bg-surface-700 border border-edge hover:bg-surface-600 transition-all active:scale-95"
                       >
                         נסה שוב
                       </button>
@@ -229,8 +229,8 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
                               onClick={() =>
                                 chooseClarification(m.id, option, m.clarifyFor ?? '')
                               }
-                              className="px-3 py-1 rounded-lg text-xs font-medium text-gray-200
-                                         bg-surface-700 border border-white/10 hover:bg-surface-600
+                              className="px-3 py-1 rounded-lg text-xs font-medium text-ink-soft
+                                         bg-surface-700 border border-edge hover:bg-surface-600
                                          transition-all active:scale-95"
                             >
                               {option}
@@ -244,7 +244,7 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
                         <div className="flex items-center gap-2 mt-2.5">
                           <button
                             onClick={() => acceptFollowUp(m.id, m.followUpQuestion!)}
-                            className="px-3 py-1 rounded-lg text-xs font-medium text-white
+                            className="px-3 py-1 rounded-lg text-xs font-medium text-ink
                                        bg-gradient-to-br from-primary-600 to-accent-600
                                        hover:shadow-glow transition-all active:scale-95"
                           >
@@ -252,8 +252,8 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
                           </button>
                           <button
                             onClick={() => declineFollowUp(m.id)}
-                            className="px-3 py-1 rounded-lg text-xs font-medium text-gray-300
-                                       bg-surface-700 border border-white/10 hover:bg-surface-600
+                            className="px-3 py-1 rounded-lg text-xs font-medium text-ink-soft
+                                       bg-surface-700 border border-edge hover:bg-surface-600
                                        transition-all active:scale-95"
                           >
                             לא
@@ -266,7 +266,7 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
               })
             )}
             {isThinking && (
-              <div className="flex items-center gap-1.5 text-gray-500 text-sm px-2">
+              <div className="flex items-center gap-1.5 text-muted2 text-sm px-2">
                 <Loader2 size={14} className="animate-spin" />
                 {statusText}
               </div>
@@ -282,10 +282,10 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
             </div>
           )}
 
-          <div className="border-t border-white/8 px-4 py-3">
+          <div className="border-t border-edge px-4 py-3">
             {!micMuted && (
               <div className="flex items-center gap-2 mb-3 px-2">
-                <span className={`text-xs font-medium ${hearingSpeech ? 'text-red-400 animate-pulse' : 'text-gray-500'}`}>
+                <span className={`text-xs font-medium ${hearingSpeech ? 'text-red-400 animate-pulse' : 'text-muted2'}`}>
                   {micUnavailable
                     ? 'NO MICROPHONE'
                     : hearingSpeech
@@ -311,7 +311,7 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
                     ? 'bg-red-600 hover:bg-red-500 text-white shadow-[0_0_20px_rgba(239,68,68,0.5)]'
                     : !micMuted && isListening
                       ? 'bg-primary-600 hover:bg-primary-500 text-white'
-                      : 'bg-surface-700 hover:bg-surface-600 border border-white/10 hover:border-primary-500/40 text-gray-400 hover:text-white'
+                      : 'bg-surface-700 hover:bg-surface-600 border border-edge hover:border-primary-500/40 text-muted hover:text-ink'
                   }`}
               >
                 {micMuted ? <MicOff size={18} /> : <Mic size={18} />}
@@ -327,8 +327,8 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
                   placeholder="Ask about a memory… (Enter to send)"
                   aria-label="Ask about a memory"
                   rows={1}
-                  className="w-full px-4 py-2.5 rounded-xl bg-surface-700/80 border border-white/10 text-white text-sm
-                             placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-primary-500/50
+                  className="w-full px-4 py-2.5 rounded-xl bg-surface-700/80 border border-edge text-ink text-sm
+                             placeholder:text-muted2 focus:outline-none focus:ring-2 focus:ring-primary-500/50
                              focus:border-primary-500/40 resize-none transition-all duration-200
                              [field-sizing:content] max-h-32 overflow-y-auto"
                 />
@@ -339,14 +339,14 @@ export function ProducerVideoClipChat({ producerName }: { producerName?: string 
                 disabled={!inputText.trim()}
                 aria-label="Send question"
                 className="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-primary-600 to-accent-600
-                           flex items-center justify-center text-white hover:shadow-glow
+                           flex items-center justify-center text-ink hover:shadow-glow
                            disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-200 active:scale-95"
               >
                 <Send size={18} />
               </button>
             </div>
 
-            <p className="text-xs text-gray-600 text-center mt-2">
+            <p className="text-xs text-muted2 text-center mt-2">
               Mic listens automatically · Enter to send
             </p>
           </div>

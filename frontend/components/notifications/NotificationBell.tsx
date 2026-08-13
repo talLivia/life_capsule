@@ -66,7 +66,7 @@ export function NotificationBell({
         }
         aria-expanded={open}
         aria-haspopup="menu"
-        className="relative p-2 rounded-lg text-gray-400 hover:text-white transition-colors"
+        className="relative p-2 rounded-lg text-muted hover:text-ink transition-colors"
       >
         <Bell size={18} />
         {count > 0 && (
@@ -82,11 +82,11 @@ export function NotificationBell({
           className="absolute right-0 top-full mt-2 w-[min(22rem,calc(100vw-2rem))] z-50
             glass-card overflow-hidden animate-fade-in flex flex-col"
         >
-          <div className="px-4 py-2.5 border-b border-white/10 flex items-center justify-between gap-3">
-            <span className="text-xs uppercase tracking-wide font-semibold text-gray-400">
+          <div className="px-4 py-2.5 border-b border-edge flex items-center justify-between gap-3">
+            <span className="text-xs uppercase tracking-wide font-semibold text-muted">
               Notifications
             </span>
-            {count > 0 && <span className="text-[11px] text-gray-500">{count} waiting</span>}
+            {count > 0 && <span className="text-[11px] text-muted2">{count} waiting</span>}
           </div>
 
           {/* Bounded, because this is a dropdown and not the page. Anything
@@ -98,8 +98,8 @@ export function NotificationBell({
           <button
             type="button"
             onClick={onSeeAll}
-            className="px-4 py-2.5 border-t border-white/10 text-xs font-medium
-              text-primary-300 hover:text-primary-200 hover:bg-white/5 transition-colors"
+            className="px-4 py-2.5 border-t border-edge text-xs font-medium
+              text-primary-300 hover:text-primary-200 hover:bg-veil transition-colors"
           >
             See all
           </button>

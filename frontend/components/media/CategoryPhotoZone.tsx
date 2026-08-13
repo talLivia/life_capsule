@@ -72,11 +72,11 @@ export function CategoryPhotoZone({ categoryId }: { categoryId: string }) {
   }
 
   return (
-    <section className="border-t border-white/8 pt-4">
+    <section className="border-t border-edge pt-4">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-sm text-white font-medium">Photos for this chapter</h2>
-          <p className="text-[11px] text-gray-500 mt-0.5">
+          <h2 className="text-sm text-ink font-medium">Photos for this chapter</h2>
+          <p className="text-[11px] text-muted2 mt-0.5">
             They belong to the whole chapter, not one answer — family will see them
             beside it on the timeline.
           </p>
@@ -101,16 +101,16 @@ export function CategoryPhotoZone({ categoryId }: { categoryId: string }) {
               <img
                 src={photo.url}
                 alt={photo.caption ?? ''}
-                className="w-20 h-20 object-cover rounded-lg border border-white/10"
+                className="w-20 h-20 object-cover rounded-lg border border-edge"
               />
               <button
                 type="button"
                 onClick={() => remove(photo)}
                 aria-label="Remove photo"
-                className={`absolute -top-1.5 -right-1.5 rounded-full p-1 text-white transition-opacity ${
+                className={`absolute -top-1.5 -right-1.5 rounded-full p-1 text-ink transition-opacity ${
                   confirmingId === photo.id
                     ? 'bg-red-500 opacity-100'
-                    : 'bg-surface-950/80 opacity-0 group-hover:opacity-100'
+                    : 'bg-black/60 opacity-0 group-hover:opacity-100'
                 }`}
                 title={confirmingId === photo.id ? 'Click again to remove' : 'Remove'}
               >

@@ -51,7 +51,7 @@ export function FamilyChatView() {
     return (
       <div className="min-h-[60vh] flex items-center justify-center px-6">
         <div className="max-w-sm text-center flex flex-col items-center gap-4">
-          <p className="text-sm text-gray-300">{loadError || 'Something went wrong'}</p>
+          <p className="text-sm text-ink-soft">{loadError || 'Something went wrong'}</p>
           <button onClick={loadAvailability} className="btn-primary">
             Try again
           </button>
@@ -64,10 +64,10 @@ export function FamilyChatView() {
     <div className="min-h-[60vh] flex items-center justify-center px-6">
       <div className="max-w-sm text-center flex flex-col items-center gap-4">
         <Heart size={28} className="text-calm-sage-600 dark:text-calm-sage-300" />
-        <h1 className="text-lg font-semibold text-gray-200">
+        <h1 className="text-lg font-semibold text-ink-soft">
           {availability.producer_name} is still preparing their stories
         </h1>
-        <p className="text-sm text-gray-400">
+        <p className="text-sm text-muted">
           Check back soon — you&apos;ll be able to talk with them here once they&apos;ve
           recorded some memories.
         </p>

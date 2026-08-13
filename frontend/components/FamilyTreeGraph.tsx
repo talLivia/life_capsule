@@ -77,12 +77,12 @@ function truncate(name: string, max = 16): string {
   return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : name
 }
 
-const IDLE_STROKE = 'rgb(148 163 184 / 0.45)'
-const IDLE_ARC_STROKE = 'rgb(148 163 184 / 0.3)'
-const IDLE_SPOUSE_STROKE = 'rgb(148 163 184 / 0.55)'
+const IDLE_STROKE = 'rgb(var(--muted) / 0.55)'
+const IDLE_ARC_STROKE = 'rgb(var(--muted) / 0.4)'
+const IDLE_SPOUSE_STROKE = 'rgb(var(--muted) / 0.65)'
 /** The highlight. A colour change alone can vanish on a thin line at low
  *  zoom, so the width moves with it. */
-const ACTIVE_STROKE = 'rgb(96 165 250 / 0.95)'
+const ACTIVE_STROKE = 'rgb(var(--accent-400) / 0.95)'
 const ACTIVE_WIDTH = 2.5
 
 export function FamilyTreeGraph({
@@ -129,8 +129,8 @@ export function FamilyTreeGraph({
   if (placed.size === 0) return null
 
   const control =
-    'p-2 rounded-lg bg-surface-800/80 border border-white/10 text-gray-300 ' +
-    'hover:text-white hover:border-white/30 transition-colors'
+    'p-2 rounded-lg bg-surface-800/80 border border-edge text-ink-soft ' +
+    'hover:text-ink hover:border-edge-strong transition-colors'
 
   const inGroup = (d: Descent, id: string | null) =>
     id !== null &&
@@ -147,7 +147,7 @@ export function FamilyTreeGraph({
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full overflow-hidden rounded-2xl bg-surface-900/40 border border-white/6"
+      className="relative w-full h-full overflow-hidden rounded-2xl bg-surface-900/40 border border-edge"
     >
       <TransformWrapper
         ref={zoomRef}
@@ -216,7 +216,7 @@ export function FamilyTreeGraph({
                     y1={PAD + arcSpacePx}
                     x2={heading.dividerX}
                     y2={height - PAD}
-                    stroke="rgb(148 163 184 / 0.15)"
+                    stroke="rgb(var(--muted) / 0.18)"
                     strokeWidth={1}
                     strokeDasharray="2 6"
                   />
@@ -225,7 +225,7 @@ export function FamilyTreeGraph({
                     y={heading.y}
                     textAnchor="middle"
                     dominantBaseline="hanging"
-                    className="fill-gray-500 text-[11px] uppercase tracking-wide"
+                    className="fill-muted2 text-[11px] uppercase tracking-wide"
                   >
                     {heading.text}
                   </text>
@@ -241,7 +241,7 @@ export function FamilyTreeGraph({
                     y={label.y + NODE_H / 2}
                     textAnchor="end"
                     dominantBaseline="central"
-                    className="fill-gray-500 text-[11px] uppercase tracking-wide"
+                    className="fill-muted2 text-[11px] uppercase tracking-wide"
                   >
                     {label.text}
                   </text>
@@ -396,7 +396,7 @@ export function FamilyTreeGraph({
                             ? 'fill-primary-500/20 stroke-primary-400'
                             : person.is_self
                               ? 'fill-surface-800 stroke-primary-500/50'
-                              : 'fill-surface-800/70 stroke-white/10 hover:stroke-white/30'
+                              : 'fill-surface-800/70 stroke-edge hover:stroke-edge-strong'
                         }
                         strokeWidth={1.5}
                       />
@@ -408,7 +408,7 @@ export function FamilyTreeGraph({
                         cx={NODE_H / 2}
                         cy={NODE_H / 2}
                         r={16}
-                        className={person.is_self ? 'fill-primary-500/30' : 'fill-white/8'}
+                        className={person.is_self ? 'fill-primary-500/30' : 'fill-veil'}
                       />
                       {person.photo_url ? (
                         <image
@@ -426,7 +426,7 @@ export function FamilyTreeGraph({
                           y={NODE_H / 2}
                           textAnchor="middle"
                           dominantBaseline="central"
-                          className="fill-white text-[12px] font-semibold"
+                          className="fill-ink text-[12px] font-semibold"
                         >
                           {initials(person.name)}
                         </text>
@@ -436,7 +436,7 @@ export function FamilyTreeGraph({
                         x={NODE_H - 4}
                         y={years ? NODE_H / 2 - 6 : NODE_H / 2}
                         dominantBaseline="central"
-                        className="fill-white text-[12px] font-medium"
+                        className="fill-ink text-[12px] font-medium"
                       >
                         {truncate(person.name)}
                       </text>
@@ -445,7 +445,7 @@ export function FamilyTreeGraph({
                           x={NODE_H - 4}
                           y={NODE_H / 2 + 10}
                           dominantBaseline="central"
-                          className="fill-gray-500 text-[10px]"
+                          className="fill-muted2 text-[10px]"
                         >
                           {years}
                         </text>

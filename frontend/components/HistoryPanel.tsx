@@ -208,7 +208,7 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
       <div className="mb-8 flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-3xl font-black gradient-text mb-2">Conversation History</h1>
-          <p className="text-gray-400">Re-open, review, export, and clean up your past sessions.</p>
+          <p className="text-muted">Re-open, review, export, and clean up your past sessions.</p>
         </div>
         <button onClick={() => refetch()} className="btn-icon" title="Refresh" aria-label="Refresh">
           <RefreshCw size={15} />
@@ -216,7 +216,7 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
       </div>
 
       <div className="relative mb-6">
-        <Search size={15} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" />
+        <Search size={15} className="absolute left-4 top-1/2 -translate-y-1/2 text-muted2" />
         <input
           type="search"
           value={query}
@@ -233,12 +233,12 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
         </div>
       ) : filtered.length === 0 ? (
         <div className="card flex flex-col items-center justify-center py-16 gap-4 text-center">
-          <div className="w-16 h-16 rounded-2xl bg-surface-700/80 flex items-center justify-center border border-white/8">
-            <MessageCircle size={28} className="text-gray-500" />
+          <div className="w-16 h-16 rounded-2xl bg-surface-700/80 flex items-center justify-center border border-edge">
+            <MessageCircle size={28} className="text-muted2" />
           </div>
           <div>
-            <p className="text-white font-medium">No conversations yet</p>
-            <p className="text-gray-500 text-sm mt-1">
+            <p className="text-ink font-medium">No conversations yet</p>
+            <p className="text-muted2 text-sm mt-1">
               {query ? 'Nothing matches that search.' : 'Start a chat with an avatar to see it here.'}
             </p>
           </div>
@@ -254,7 +254,7 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
             const isBusy = busy === s.id
             const title = convo?.title || av?.name || 'Untitled conversation'
             return (
-              <div key={s.id} className="glass-card rounded-2xl overflow-hidden border border-white/8">
+              <div key={s.id} className="glass-card rounded-2xl overflow-hidden border border-edge">
                 <div className="flex items-center gap-4 px-5 py-4">
                   <div className="w-12 h-12 rounded-xl overflow-hidden bg-surface-700 flex-shrink-0 flex items-center justify-center">
                     {av?.thumbnail_url || av?.image_url ? (
@@ -265,7 +265,7 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
                         className="w-full h-full object-cover"
                       />
                     ) : (
-                      <MessageCircle size={20} className="text-gray-500" />
+                      <MessageCircle size={20} className="text-muted2" />
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
@@ -302,7 +302,7 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
                       </div>
                     ) : (
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-semibold text-white truncate">{title}</span>
+                        <span className="font-semibold text-ink truncate">{title}</span>
                         <span className={`badge text-xs ${
                           s.status === 'active' ? 'badge-green' :
                           s.status === 'paused' ? 'badge-amber' :
@@ -312,7 +312,7 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
                         </span>
                       </div>
                     )}
-                    <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
+                    <div className="flex items-center gap-2 mt-1 text-xs text-muted2">
                       <Clock size={11} />
                       <span>{timeAgo(s.started_at)}</span>
                       {av && <><span>·</span><span>{av.name}</span></>}
@@ -373,7 +373,7 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
                     )}
                     <button
                       onClick={() => handleDelete(s.id)}
-                      className="btn-icon text-gray-500 hover:text-red-400"
+                      className="btn-icon text-muted2 hover:text-red-400"
                       title="Delete conversation"
                       aria-label="Delete conversation"
                       disabled={isBusy}
@@ -384,23 +384,23 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
                 </div>
 
                 {convo?.summary && !isExpanded && (
-                  <div className="border-t border-white/8 px-5 py-3 bg-primary-500/5 flex items-start gap-2">
+                  <div className="border-t border-edge px-5 py-3 bg-primary-500/5 flex items-start gap-2">
                     <Sparkles size={12} className="text-primary-400 mt-0.5 flex-shrink-0" />
-                    <p className="text-xs text-gray-300 leading-relaxed">{convo.summary}</p>
+                    <p className="text-xs text-ink-soft leading-relaxed">{convo.summary}</p>
                   </div>
                 )}
                 {isExpanded && (
-                  <div className="border-t border-white/8 px-5 py-4 bg-surface-800/40">
+                  <div className="border-t border-edge px-5 py-4 bg-surface-800/40">
                     {convo?.summary && (
                       <div className="mb-3 flex items-start gap-2 px-3 py-2 rounded-lg bg-primary-500/10 border border-primary-500/20">
                         <Sparkles size={12} className="text-primary-400 mt-0.5 flex-shrink-0" />
-                        <p className="text-xs text-gray-300 leading-relaxed">{convo.summary}</p>
+                        <p className="text-xs text-ink-soft leading-relaxed">{convo.summary}</p>
                       </div>
                     )}
                     {!msgs ? (
-                      <p className="text-sm text-gray-500">Loading…</p>
+                      <p className="text-sm text-muted2">Loading…</p>
                     ) : msgs.length === 0 ? (
-                      <p className="text-sm text-gray-500">No messages in this session.</p>
+                      <p className="text-sm text-muted2">No messages in this session.</p>
                     ) : (
                       <div className="space-y-2 max-h-72 overflow-y-auto messages-scroll">
                         {msgs.map((m) => {
@@ -417,9 +417,9 @@ export function HistoryPanel({ onResume }: HistoryPanelProps) {
                               }`}>
                                 {m.role === 'user' ? 'YOU' : 'AI'}
                               </span>
-                              <span className="text-gray-200 flex-1 leading-relaxed whitespace-pre-wrap">
+                              <span className="text-ink-soft flex-1 leading-relaxed whitespace-pre-wrap">
                                 {contentIsUrl ? (
-                                  <em className="text-gray-500">(video clip — no transcript stored)</em>
+                                  <em className="text-muted2">(video clip — no transcript stored)</em>
                                 ) : (
                                   m.content
                                 )}

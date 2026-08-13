@@ -93,15 +93,15 @@ export function AvatarUpload() {
     <div className="card flex flex-col gap-5">
       {/* Header */}
       <div>
-        <h2 className="text-xl font-bold text-white">Upload Avatar</h2>
-        <p className="text-sm text-gray-500 mt-0.5">JPG · PNG · WEBP · up to 10 MB</p>
+        <h2 className="text-xl font-bold text-ink">Upload Avatar</h2>
+        <p className="text-sm text-muted2 mt-0.5">JPG · PNG · WEBP · up to 10 MB</p>
       </div>
 
       <div className="divider" />
 
       {/* Name field */}
       <div className="space-y-1.5">
-        <label className="text-sm font-medium text-gray-300">Avatar Name</label>
+        <label className="text-sm font-medium text-ink-soft">Avatar Name</label>
         <input
           type="text"
           value={name}
@@ -123,7 +123,7 @@ export function AvatarUpload() {
             transition-all duration-300
             ${dragActive
               ? 'border-primary-400 bg-primary-500/10 scale-[1.01] shadow-glow-sm'
-              : 'border-white/15 hover:border-primary-500/50 hover:bg-primary-500/5'
+              : 'border-edge-strong hover:border-primary-500/50 hover:bg-primary-500/5'
             }`}
         >
           <input
@@ -139,21 +139,21 @@ export function AvatarUpload() {
             <div className={`w-16 h-16 rounded-2xl flex items-center justify-center border transition-all duration-300
               ${dragActive
                 ? 'bg-primary-500/20 border-primary-400/50'
-                : 'bg-surface-700/80 border-white/10'
+                : 'bg-surface-700/80 border-edge'
               }`}
             >
               {dragActive ? (
                 <Sparkles size={28} className="text-primary-400 animate-pulse" />
               ) : (
-                <ImagePlus size={28} className="text-gray-400" />
+                <ImagePlus size={28} className="text-muted" />
               )}
             </div>
 
             <div>
-              <p className="text-white font-semibold text-base mb-1">
+              <p className="text-ink font-semibold text-base mb-1">
                 {dragActive ? 'Drop to upload' : 'Drag & drop your photo'}
               </p>
-              <p className="text-gray-500 text-sm">
+              <p className="text-muted2 text-sm">
                 or <span className="text-primary-400 font-medium underline underline-offset-2">click to browse</span>
               </p>
             </div>
@@ -168,7 +168,7 @@ export function AvatarUpload() {
         </div>
       ) : (
         /* Preview */
-        <div className="relative rounded-2xl overflow-hidden border border-white/10 group">
+        <div className="relative rounded-2xl overflow-hidden border border-edge group">
           <img
             src={preview}
             alt="Avatar preview"
@@ -180,8 +180,8 @@ export function AvatarUpload() {
           {/* Remove button */}
           <button
             onClick={clearPreview}
-            className="absolute top-3 right-3 w-8 h-8 rounded-full bg-surface-900/80 backdrop-blur-sm border border-white/15
-                       flex items-center justify-center text-gray-400 hover:text-white hover:border-red-500/40
+            className="absolute top-3 right-3 w-8 h-8 rounded-full bg-surface-900/80 backdrop-blur-sm border border-edge-strong
+                       flex items-center justify-center text-muted hover:text-ink hover:border-red-500/40
                        transition-all duration-200 opacity-0 group-hover:opacity-100"
           >
             <X size={15} />
@@ -189,9 +189,9 @@ export function AvatarUpload() {
 
           {/* File name tag */}
           <div className="absolute bottom-3 left-3 flex items-center gap-1.5 px-3 py-1.5 rounded-lg
-                          bg-surface-900/80 backdrop-blur-sm border border-white/10">
+                          bg-surface-900/80 backdrop-blur-sm border border-edge">
             <CheckCircle2 size={13} className="text-green-400" />
-            <span className="text-xs text-gray-300 truncate max-w-[180px]">{fileName}</span>
+            <span className="text-xs text-ink-soft truncate max-w-[180px]">{fileName}</span>
           </div>
         </div>
       )}
@@ -227,7 +227,7 @@ export function AvatarUpload() {
 
       {/* Processing note */}
       {uploadMutation.isPending && (
-        <p className="text-xs text-center text-gray-500 animate-pulse">
+        <p className="text-xs text-center text-muted2 animate-pulse">
           Detecting face · Cropping · Optimizing…
         </p>
       )}

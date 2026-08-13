@@ -153,15 +153,15 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
     <div className="max-w-3xl mx-auto px-6 py-10 animate-fade-in">
       <div className="mb-8">
         <h1 className="text-3xl font-black gradient-text mb-2">Settings</h1>
-        <p className="text-gray-400">Manage your account and preferences.</p>
+        <p className="text-muted">Manage your account and preferences.</p>
       </div>
 
       {isGuest && (
         <div className="card-glow mb-6 flex items-start gap-3">
           <User size={16} className="text-amber-400 mt-0.5 flex-shrink-0" />
           <div>
-            <p className="text-sm text-white font-semibold">You&apos;re signed in as a guest.</p>
-            <p className="text-xs text-gray-400 mt-1">Sign out and register an account to save your profile and access multi-device sync.</p>
+            <p className="text-sm text-ink font-semibold">You&apos;re signed in as a guest.</p>
+            <p className="text-xs text-muted mt-1">Sign out and register an account to save your profile and access multi-device sync.</p>
           </div>
         </div>
       )}
@@ -170,12 +170,12 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
       <div className="card flex flex-col gap-5">
         <div className="flex items-center gap-2">
           <User size={16} className="text-primary-400" />
-          <h2 className="text-xl font-bold text-white">Profile</h2>
+          <h2 className="text-xl font-bold text-ink">Profile</h2>
         </div>
         <div className="divider" />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-300">Full name</label>
+            <label className="text-sm font-medium text-ink-soft">Full name</label>
             <input
               type="text"
               value={fullName}
@@ -186,7 +186,7 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-300">Username</label>
+            <label className="text-sm font-medium text-ink-soft">Username</label>
             <input
               type="text"
               value={username}
@@ -197,7 +197,7 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
             />
           </div>
           <div className="space-y-1.5 md:col-span-2">
-            <label className="text-sm font-medium text-gray-300">Email</label>
+            <label className="text-sm font-medium text-ink-soft">Email</label>
             <input
               type="email"
               value={email}
@@ -222,12 +222,12 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
       <div className="card flex flex-col gap-5 mt-6">
         <div className="flex items-center gap-2">
           <KeyRound size={16} className="text-primary-400" />
-          <h2 className="text-xl font-bold text-white">Password</h2>
+          <h2 className="text-xl font-bold text-ink">Password</h2>
         </div>
         <div className="divider" />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-300">New password</label>
+            <label className="text-sm font-medium text-ink-soft">New password</label>
             <input
               type="password"
               value={newPassword}
@@ -239,7 +239,7 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-300">Confirm new password</label>
+            <label className="text-sm font-medium text-ink-soft">Confirm new password</label>
             <input
               type="password"
               value={confirmPassword}
@@ -268,10 +268,10 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
         <div className="card flex flex-col gap-5 mt-6">
           <div className="flex items-center gap-2">
             <Film size={16} className="text-primary-400" />
-            <h2 className="text-xl font-bold text-white">Talk mode</h2>
+            <h2 className="text-xl font-bold text-ink">Talk mode</h2>
           </div>
           <div className="divider" />
-          <p className="text-sm text-gray-400">
+          <p className="text-sm text-muted">
             Choose how family members experience your stories on /talk.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -282,14 +282,14 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
               className={`text-left p-4 rounded-xl border transition-colors ${
                 chatMode === 'video_clips_v2'
                   ? 'border-primary-400 bg-primary-400/10'
-                  : 'border-white/10 hover:border-white/20'
+                  : 'border-edge hover:border-edge-strong'
               }`}
             >
               <div className="flex items-center gap-2 mb-1">
                 <Film size={15} className="text-primary-400" />
-                <span className="font-semibold text-white">Original video clips</span>
+                <span className="font-semibold text-ink">Original video clips</span>
               </div>
-              <p className="text-xs text-gray-400">
+              <p className="text-xs text-muted">
                 Family members see the real recorded moment that answers their
                 question — your own face and voice (default).
               </p>
@@ -301,14 +301,14 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
               className={`text-left p-4 rounded-xl border transition-colors ${
                 chatMode === 'avatar'
                   ? 'border-primary-400 bg-primary-400/10'
-                  : 'border-white/10 hover:border-white/20'
+                  : 'border-edge hover:border-edge-strong'
               }`}
             >
               <div className="flex items-center gap-2 mb-1">
                 <Sparkles size={15} className="text-primary-400" />
-                <span className="font-semibold text-white">Avatar</span>
+                <span className="font-semibold text-ink">Avatar</span>
               </div>
-              <p className="text-xs text-gray-400">
+              <p className="text-xs text-muted">
                 A talking-head avatar speaks your stories aloud.
                 {hasReadyAvatar === false && (
                   <span className="block mt-1 text-amber-400/90">
@@ -325,7 +325,7 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
         <div className="card flex flex-col gap-4 mt-6">
           <div className="flex items-center gap-2">
             <Compass size={16} className="text-primary-400" />
-            <h2 className="text-xl font-bold text-white">Recording navigation</h2>
+            <h2 className="text-xl font-bold text-ink">Recording navigation</h2>
           </div>
           <div className="divider" />
           <label className="flex items-start gap-3 cursor-pointer">
@@ -337,10 +337,10 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
               className="mt-1 w-4 h-4 accent-primary-500 flex-shrink-0"
             />
             <span>
-              <span className="font-semibold text-white block">
+              <span className="font-semibold text-ink block">
                 Let me jump between categories
               </span>
-              <span className="text-xs text-gray-400 block mt-1">
+              <span className="text-xs text-muted block mt-1">
                 Off by default, so the interview walks you through in order. Turn it on to
                 open any category and record or upload into it out of sequence — useful for
                 filling in a section you skipped earlier.
@@ -348,7 +348,7 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
               {/* Says what it does NOT do, because "unlock everything" is the
                   natural but wrong reading — the server refuses a question
                   behind an unanswered screening question either way. */}
-              <span className="text-xs text-gray-500 block mt-1.5">
+              <span className="text-xs text-muted2 block mt-1.5">
                 Screening questions still apply — you&apos;ll be asked those before a
                 category&apos;s questions open up.
               </span>
@@ -363,19 +363,19 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
       <div className="card flex flex-col gap-4 mt-6 border border-red-500/20">
         <div className="flex items-center gap-2">
           <Trash2 size={16} className="text-red-400" />
-          <h2 className="text-xl font-bold text-white">Delete all my recordings</h2>
+          <h2 className="text-xl font-bold text-ink">Delete all my recordings</h2>
         </div>
         <div className="divider" />
-        <p className="text-sm text-gray-400">
+        <p className="text-sm text-muted">
           Every recording, transcript, and the people and relationships found in them.
           The videos are deleted from storage too.{' '}
-          <span className="text-gray-300">This cannot be undone.</span>
+          <span className="text-ink-soft">This cannot be undone.</span>
         </p>
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-muted2">
           Your account, avatars and voice samples are not touched, and you stay in your
           own family tree — you just start with an empty archive.
         </p>
-        <label htmlFor="reset-confirm" className="text-xs text-gray-400">
+        <label htmlFor="reset-confirm" className="text-xs text-muted">
           Type <span className="text-red-300 font-semibold">{RESET_PHRASE}</span> to confirm
         </label>
         <input
@@ -385,7 +385,7 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
           onChange={(e) => setResetPhrase(e.target.value)}
           disabled={resetting}
           placeholder={RESET_PHRASE}
-          className="w-full md:w-56 px-3 py-2 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
+          className="w-full md:w-56 px-3 py-2 rounded-lg bg-surface-800 border border-edge text-sm text-ink placeholder:text-muted2"
         />
         <button
           onClick={async () => {
@@ -415,10 +415,10 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
       <div className="card flex flex-col gap-5 mt-6 border border-red-500/20">
         <div className="flex items-center gap-2">
           <Trash2 size={16} className="text-red-400" />
-          <h2 className="text-xl font-bold text-white">Danger zone</h2>
+          <h2 className="text-xl font-bold text-ink">Danger zone</h2>
         </div>
         <div className="divider" />
-        <p className="text-sm text-gray-400">
+        <p className="text-sm text-muted">
           Sign out of this device. Your avatars, voices, and conversations remain on the server.
         </p>
         <button

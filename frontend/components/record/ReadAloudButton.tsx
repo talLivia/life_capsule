@@ -86,7 +86,7 @@ export function ReadAloudButton({
 
   if (state === 'unavailable') {
     return (
-      <span className="text-[11px] text-gray-500">Read aloud isn&apos;t available here</span>
+      <span className="text-[11px] text-muted2">Read aloud isn&apos;t available here</span>
     )
   }
 
@@ -95,7 +95,7 @@ export function ReadAloudButton({
       type="button"
       onClick={state === 'playing' ? stop : play}
       disabled={state === 'loading'}
-      className="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-white
+      className="inline-flex items-center gap-1.5 text-xs text-muted hover:text-ink
         transition-colors disabled:opacity-50"
     >
       {state === 'loading' ? (

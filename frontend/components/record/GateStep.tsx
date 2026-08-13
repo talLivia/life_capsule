@@ -35,10 +35,10 @@ export function GateStep({ step, onAnswer, answering }: GateStepProps) {
         {/* dir="auto" because the TEXT is interview content (Hebrew) while
             the chrome around it is English — the element picks its own
             direction from what it actually contains. */}
-        <h2 dir="auto" className="text-xl md:text-2xl font-bold text-white mt-1.5 leading-snug">
+        <h2 dir="auto" className="text-xl md:text-2xl font-bold text-ink mt-1.5 leading-snug">
           {step.text}
         </h2>
-        <p className="text-xs text-gray-500 mt-2">
+        <p className="text-xs text-muted2 mt-2">
           No recording needed — choose an answer to continue
         </p>
       </div>
@@ -64,7 +64,7 @@ export function GateStep({ step, onAnswer, answering }: GateStepProps) {
       {/* An answered gate stays changeable — the producer may have picked
           wrong. Changing it never deletes anything already recorded. */}
       {step.answer && (
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-muted2">
           You can change this answer — nothing you&apos;ve already recorded is deleted.
         </p>
       )}

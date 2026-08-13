@@ -56,7 +56,7 @@ export function PhotoLightbox({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[70] flex flex-col items-center justify-center bg-surface-950/95 backdrop-blur-md p-4"
+      className="fixed inset-0 z-[70] flex flex-col items-center justify-center bg-black/85 backdrop-blur-md p-4"
       role="dialog"
       aria-modal="true"
       aria-label="Photo viewer"
@@ -65,7 +65,7 @@ export function PhotoLightbox({
       <button
         onClick={onClose}
         aria-label="Close"
-        className="absolute top-4 right-4 text-gray-400 hover:text-white"
+        className="absolute top-4 right-4 text-muted hover:text-ink"
       >
         <X size={20} />
       </button>
@@ -93,10 +93,10 @@ export function PhotoLightbox({
             photo and not the next must not shift the buttons either. */}
         <figcaption className="text-center h-10">
           {photo.caption && (
-            <p dir="auto" className="text-sm text-gray-200">{photo.caption}</p>
+            <p dir="auto" className="text-sm text-ink-soft">{photo.caption}</p>
           )}
           {photo.taken_year && (
-            <p className="text-xs text-gray-500 mt-0.5">{photo.taken_year}</p>
+            <p className="text-xs text-muted2 mt-0.5">{photo.taken_year}</p>
           )}
         </figcaption>
       </figure>
@@ -110,18 +110,18 @@ export function PhotoLightbox({
             onClick={() => step(-1)}
             disabled={index === 0}
             aria-label="Previous photo"
-            className="p-2 rounded-full bg-white/8 text-white disabled:opacity-30 hover:bg-white/15"
+            className="p-2 rounded-full bg-veil text-ink disabled:opacity-30 hover:bg-white/15"
           >
             <ChevronLeft size={18} />
           </button>
-          <span className="text-xs text-gray-500">
+          <span className="text-xs text-muted2">
             {index + 1} / {photos.length}
           </span>
           <button
             onClick={() => step(1)}
             disabled={index === photos.length - 1}
             aria-label="Next photo"
-            className="p-2 rounded-full bg-white/8 text-white disabled:opacity-30 hover:bg-white/15"
+            className="p-2 rounded-full bg-veil text-ink disabled:opacity-30 hover:bg-white/15"
           >
             <ChevronRight size={18} />
           </button>

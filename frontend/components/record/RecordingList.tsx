@@ -57,7 +57,7 @@ function statusLabel(status: string): { icon: React.ReactNode; text: string; ton
   return {
     icon: <Clock size={14} />,
     text: 'Still processing…',
-    tone: 'text-gray-500',
+    tone: 'text-muted2',
   }
 }
 
@@ -114,9 +114,9 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
     <div className="flex flex-col gap-3">
       {/* ── The player ─────────────────────────────────────────────── */}
       <div className="glass-card">
-        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-white/10">
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-edge">
           <div className="min-w-0">
-            <p dir="auto" className="text-sm font-semibold text-white">
+            <p dir="auto" className="text-sm font-semibold text-ink">
               {segmentTitle(open, openIndex, total)}
             </p>
             <p
@@ -139,7 +139,7 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
             <button
               onClick={() => setConfirmingId(confirmingId === open.id ? null : open.id)}
               disabled={deletingId === open.id}
-              className="w-9 h-9 flex items-center justify-center rounded-lg text-gray-400 hover:text-red-300 hover:bg-red-600/20 border border-transparent hover:border-red-500/50 disabled:opacity-40 transition-all duration-200"
+              className="w-9 h-9 flex items-center justify-center rounded-lg text-muted hover:text-red-300 hover:bg-red-600/20 border border-transparent hover:border-red-500/50 disabled:opacity-40 transition-all duration-200"
               aria-label={`Delete ${takeLabel(openIndex, total).toLowerCase()}`}
             >
               {deletingId === open.id ? (
@@ -187,7 +187,7 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
             className="w-full bg-black aspect-video"
           />
         ) : (
-          <div className="flex items-center justify-center gap-2 py-10 text-sm text-gray-500">
+          <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted2">
             <Loader2 size={16} className="animate-spin" />
             Preparing playback…
           </div>
@@ -206,12 +206,12 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
                 <button
                   type="button"
                   onClick={() => setOpenId(segment.id)}
-                  className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl border border-white/10
-                    bg-surface-800/40 hover:border-white/25 hover:bg-white/5 transition-colors text-left"
+                  className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl border border-edge
+                    bg-surface-800/40 hover:border-edge-strong hover:bg-veil transition-colors text-left"
                 >
-                  <ChevronDown size={15} className="text-gray-500 shrink-0 -rotate-90" aria-hidden />
+                  <ChevronDown size={15} className="text-muted2 shrink-0 -rotate-90" aria-hidden />
                   <span className="min-w-0 flex-1">
-                    <span dir="auto" className="block text-sm text-white">
+                    <span dir="auto" className="block text-sm text-ink">
                       {segmentTitle(segment, i, total)}
                     </span>
                     <span className={`text-xs flex items-center gap-1.5 mt-0.5 ${tone}`}>
@@ -219,7 +219,7 @@ export function RecordingList({ recordings, onDeleted }: RecordingListProps) {
                       {text}
                     </span>
                   </span>
-                  <span className="text-[11px] text-gray-500 shrink-0">Play</span>
+                  <span className="text-[11px] text-muted2 shrink-0">Play</span>
                 </button>
               </li>
             )

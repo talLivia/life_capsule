@@ -66,7 +66,7 @@ const FamilyChatView = dynamic(
 
 function PanelLoader({ label }: { label: string }) {
   return (
-    <div className="flex items-center justify-center py-20 text-gray-500 text-sm">
+    <div className="flex items-center justify-center py-20 text-muted2 text-sm">
       <span className="inline-block w-2 h-2 rounded-full bg-primary-500 animate-pulse mr-2" />
       {label}
     </div>
@@ -350,7 +350,7 @@ export default function Home() {
             />
           </div>
 
-          <div className="flex items-center gap-1 p-1 rounded-xl bg-surface-800/80 backdrop-blur-xl border border-white/8 overflow-x-auto">
+          <div className="flex items-center gap-1 p-1 rounded-xl bg-navpill backdrop-blur-xl border border-white/10 overflow-x-auto">
             {navItems.map(({ id, icon: Icon, label, disabled }) => (
               <button
                 key={id}
@@ -360,7 +360,7 @@ export default function Home() {
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 flex-shrink-0
                   ${view === id
                     ? 'bg-gradient-to-r from-primary-600/80 to-accent-600/80 text-white shadow-glow-sm'
-                    : 'text-gray-400 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed'
+                    : 'text-navfg hover:text-navfg-strong hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed'
                   }`}
               >
                 <Icon size={14} />
@@ -381,10 +381,10 @@ export default function Home() {
             <ThemeToggle />
             {user && (
               <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-400 hidden sm:block">{user.username}</span>
+                <span className="text-xs text-navfg hidden sm:block">{user.username}</span>
                 <button
                   onClick={() => { api.logout(); clearAuth() }}
-                  className="text-xs text-gray-500 hover:text-red-400 transition-colors px-2 py-1 rounded-lg hover:bg-red-500/10"
+                  className="text-xs text-navfg hover:text-red-300 transition-colors px-2 py-1 rounded-lg hover:bg-red-500/15"
                   title="Sign out"
                 >
                   Sign out
@@ -394,7 +394,7 @@ export default function Home() {
           </div>
         </div>
         {/* nav glass blur border */}
-        <div className="absolute inset-0 -z-10 bg-surface-900/70 backdrop-blur-xl border-b border-white/6" />
+        <div className="absolute inset-0 -z-10 bg-navbar backdrop-blur-xl border-b border-white/10" />
       </nav>
 
       <main className="pt-16">
@@ -422,12 +422,12 @@ export default function Home() {
               <h1 className="text-6xl md:text-7xl lg:text-8xl font-black leading-none mb-6 tracking-tight animate-slide-up" style={{ animationDelay: '0.1s' }}>
                 <span className="gradient-text">Their stories,</span>
                 <br />
-                <span className="text-white">in their own</span>
+                <span className="text-ink">in their own</span>
                 <br />
                 <span className="gradient-text-gold">words.</span>
               </h1>
 
-              <p className="max-w-2xl text-lg md:text-xl text-gray-400 mb-10 leading-relaxed animate-slide-up" style={{ animationDelay: '0.2s' }}>
+              <p className="max-w-2xl text-lg md:text-xl text-muted mb-10 leading-relaxed animate-slide-up" style={{ animationDelay: '0.2s' }}>
                 Someone in your family has a lifetime of stories. We ask the questions, they
                 record the answers, and everything they say is kept exactly as they said it.
                 Years from now your family can ask about a name, a place, a year — and watch
@@ -462,7 +462,7 @@ export default function Home() {
                 {STATS.map(({ value, label }) => (
                   <div key={label} className="text-center">
                     <div className="text-3xl font-black gradient-text">{value}</div>
-                    <div className="text-sm text-gray-500 mt-1">{label}</div>
+                    <div className="text-sm text-muted2 mt-1">{label}</div>
                   </div>
                 ))}
               </div>
@@ -475,7 +475,7 @@ export default function Home() {
                   Everything they say,
                   <span className="gradient-text"> kept as they said it</span>
                 </h2>
-                <p className="text-gray-400 text-lg max-w-2xl mx-auto">
+                <p className="text-muted text-lg max-w-2xl mx-auto">
                   No scripts, no rewriting, and nothing invented. Just their answers, ready when someone asks.
                 </p>
               </div>
@@ -488,10 +488,10 @@ export default function Home() {
                     style={{ '--glow': glow } as CSSProperties}
                   >
                     <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${color} flex items-center justify-center mb-4 shadow-lg group-hover:scale-110 transition-transform duration-300`}>
-                      <Icon size={22} className="text-white" />
+                      <Icon size={22} className="text-ink" />
                     </div>
-                    <h3 className="font-bold text-lg text-white mb-2">{title}</h3>
-                    <p className="text-gray-400 text-sm leading-relaxed">{description}</p>
+                    <h3 className="font-bold text-lg text-ink mb-2">{title}</h3>
+                    <p className="text-muted text-sm leading-relaxed">{description}</p>
                   </div>
                 ))}
               </div>
@@ -504,7 +504,7 @@ export default function Home() {
           <div className="max-w-7xl mx-auto px-6 py-10 animate-fade-in">
             <div className="mb-8">
               <h1 className="text-3xl font-black gradient-text mb-2">Avatar Studio</h1>
-              <p className="text-gray-400">Upload photos and manage your avatar collection.</p>
+              <p className="text-muted">Upload photos and manage your avatar collection.</p>
             </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               <AvatarUpload />
@@ -533,7 +533,7 @@ export default function Home() {
           <div className="max-w-4xl mx-auto px-6 py-10 animate-fade-in">
             <div className="mb-8">
               <h1 className="text-3xl font-black gradient-text mb-2">Voice Studio</h1>
-              <p className="text-gray-400">Clone voices and manage your voice library.</p>
+              <p className="text-muted">Clone voices and manage your voice library.</p>
             </div>
             <VoicePanel onVoiceSelect={handleVoiceSelect} />
           </div>
@@ -565,7 +565,7 @@ export default function Home() {
           <div className="max-w-7xl mx-auto px-6 py-10 animate-fade-in">
             <div className="mb-6">
               <h1 className="text-3xl font-black gradient-text mb-2">Live Conversation</h1>
-              <p className="text-gray-400">Talk to your AI avatar in real time.</p>
+              <p className="text-muted">Talk to your AI avatar in real time.</p>
             </div>
             <ChatInterface
               key={`${selectedAvatar}:${resumeSessionId ?? 'new'}`}
@@ -579,7 +579,7 @@ export default function Home() {
         {/* Avatar mode, no avatar selected — redirect to Avatar Studio. */}
         {view === 'chat' && !isFamilyUser && !selectedAvatar && !isVideoClipMode && (
           <div className="max-w-7xl mx-auto px-6 py-10 text-center">
-            <p className="text-gray-400 mb-4">Please select an avatar first.</p>
+            <p className="text-muted mb-4">Please select an avatar first.</p>
             <button onClick={() => setView('avatars')} className="btn-primary">
               <Camera size={18} />
               Go to Avatar Studio

@@ -17,7 +17,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; dot: string 
   ready:      { label: 'Ready',      color: 'text-green-400',  dot: 'bg-green-400' },
   processing: { label: 'Processing', color: 'text-amber-400',  dot: 'bg-amber-400 animate-pulse' },
   failed:     { label: 'Failed',     color: 'text-red-400',    dot: 'bg-red-400' },
-  pending:    { label: 'Pending',    color: 'text-gray-400',   dot: 'bg-gray-500' },
+  pending:    { label: 'Pending',    color: 'text-muted',   dot: 'bg-gray-500' },
 }
 
 function AvatarCardSkeleton() {
@@ -92,8 +92,8 @@ export function AvatarList({ selectedAvatar, onSelectAvatar }: AvatarListProps) 
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold text-white">Your Avatars</h2>
-          <p className="text-sm text-gray-500 mt-0.5">
+          <h2 className="text-xl font-bold text-ink">Your Avatars</h2>
+          <p className="text-sm text-muted2 mt-0.5">
             {avatars?.length ?? 0} avatar{(avatars?.length ?? 0) !== 1 ? 's' : ''}
           </p>
         </div>
@@ -110,12 +110,12 @@ export function AvatarList({ selectedAvatar, onSelectAvatar }: AvatarListProps) 
         </div>
       ) : !avatars || avatars.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 gap-4 text-center">
-          <div className="w-16 h-16 rounded-2xl bg-surface-700/80 flex items-center justify-center border border-white/8">
-            <User size={28} className="text-gray-500" />
+          <div className="w-16 h-16 rounded-2xl bg-surface-700/80 flex items-center justify-center border border-edge">
+            <User size={28} className="text-muted2" />
           </div>
           <div>
-            <p className="text-white font-medium">No avatars yet</p>
-            <p className="text-gray-500 text-sm mt-1">Upload your first avatar to get started</p>
+            <p className="text-ink font-medium">No avatars yet</p>
+            <p className="text-muted2 text-sm mt-1">Upload your first avatar to get started</p>
           </div>
         </div>
       ) : (
@@ -147,7 +147,7 @@ export function AvatarList({ selectedAvatar, onSelectAvatar }: AvatarListProps) 
                       />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
-                        <User size={40} className="text-gray-600" />
+                        <User size={40} className="text-muted2" />
                       </div>
                     )}
 
@@ -155,14 +155,14 @@ export function AvatarList({ selectedAvatar, onSelectAvatar }: AvatarListProps) 
 
                     {isSelected && (
                       <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-primary-500 flex items-center justify-center shadow-glow-sm animate-scale-in">
-                        <Check size={14} className="text-white" />
+                        <Check size={14} className="text-ink" />
                       </div>
                     )}
 
                     {!isSelected && (
                       <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                         <div className="w-10 h-10 rounded-full bg-primary-600/80 backdrop-blur-sm flex items-center justify-center">
-                          <Play size={16} className="text-white ml-0.5" />
+                          <Play size={16} className="text-ink ml-0.5" />
                         </div>
                       </div>
                     )}
@@ -180,9 +180,9 @@ export function AvatarList({ selectedAvatar, onSelectAvatar }: AvatarListProps) 
                       title="Delete avatar"
                     >
                       {deleteMutation.isPending ? (
-                        <Loader2 size={11} className="text-white animate-spin" />
+                        <Loader2 size={11} className="text-ink animate-spin" />
                       ) : (
-                        <Trash2 size={11} className="text-white" />
+                        <Trash2 size={11} className="text-ink" />
                       )}
                     </button>
 
@@ -201,14 +201,14 @@ export function AvatarList({ selectedAvatar, onSelectAvatar }: AvatarListProps) 
                                    }`}
                         title="Rename avatar"
                       >
-                        <Settings2 size={11} className="text-white" />
+                        <Settings2 size={11} className="text-ink" />
                       </button>
                     )}
                   </div>
 
                   {/* Info */}
-                  <div className="bg-surface-800/90 px-3 py-2.5 border-t border-white/8">
-                    <p className="font-semibold text-sm text-white truncate">{avatar.name}</p>
+                  <div className="bg-surface-800/90 px-3 py-2.5 border-t border-edge">
+                    <p className="font-semibold text-sm text-ink truncate">{avatar.name}</p>
                     <div className="flex items-center gap-1.5 mt-1">
                       <span className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
                       <span className={`text-xs ${status.color}`}>{status.label}</span>
@@ -228,7 +228,7 @@ export function AvatarList({ selectedAvatar, onSelectAvatar }: AvatarListProps) 
                             <Mic2 size={9} />
                           </button>
                         ) : (
-                          <span title="No custom voice" aria-label="No custom voice" className="text-[10px] text-gray-600 flex items-center gap-0.5">
+                          <span title="No custom voice" aria-label="No custom voice" className="text-[10px] text-muted2 flex items-center gap-0.5">
                             <MicOff size={9} />
                           </span>
                         )}
@@ -249,7 +249,7 @@ export function AvatarList({ selectedAvatar, onSelectAvatar }: AvatarListProps) 
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <Settings2 size={14} className="text-primary-400" />
-                    <span className="text-sm font-semibold text-white">
+                    <span className="text-sm font-semibold text-ink">
                       Rename — <span className="text-primary-400">{av.name}</span>
                     </span>
                   </div>
@@ -259,13 +259,13 @@ export function AvatarList({ selectedAvatar, onSelectAvatar }: AvatarListProps) 
                 </div>
 
                 <div className="space-y-1.5 mb-3">
-                  <label className="text-xs font-medium text-gray-400">Display name</label>
+                  <label className="text-xs font-medium text-muted">Display name</label>
                   <input
                     type="text"
                     value={draftName}
                     onChange={(e) => setDraftName(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-surface-700/80 border border-white/10 text-white text-sm
-                               placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-primary-500/50
+                    className="w-full px-3 py-2 rounded-xl bg-surface-700/80 border border-edge text-ink text-sm
+                               placeholder:text-muted2 focus:outline-none focus:ring-2 focus:ring-primary-500/50
                                focus:border-primary-500/40 transition-all duration-200"
                     placeholder="Avatar name"
                   />

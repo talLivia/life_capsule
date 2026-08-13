@@ -379,7 +379,7 @@ export function VideoRecorder({
     <div className="glass-card">
       {/* ── Acquiring camera ── */}
       {phase === 'acquiring' && (
-        <div className="flex flex-col items-center justify-center gap-3 py-24 text-gray-400">
+        <div className="flex flex-col items-center justify-center gap-3 py-24 text-muted">
           <Loader2 size={28} className="animate-spin" />
           <p className="text-sm">Requesting camera access…</p>
         </div>
@@ -389,7 +389,7 @@ export function VideoRecorder({
       {phase === 'camera_error' && (
         <div className="flex flex-col items-center justify-center gap-4 py-20 px-6 text-center">
           <AlertTriangle size={28} className="text-amber-600" />
-          <p className="text-sm text-gray-300 max-w-sm">{cameraErrorMsg}</p>
+          <p className="text-sm text-ink-soft max-w-sm">{cameraErrorMsg}</p>
           <button onClick={() => acquireCamera()} className="btn-primary">
             Try again
           </button>
@@ -407,7 +407,7 @@ export function VideoRecorder({
                   size={9}
                   className={phase === 'recording' ? 'text-red-500 fill-red-500 animate-pulse' : 'text-amber-400 fill-amber-400'}
                 />
-                <span className="text-white text-sm font-mono">{fmtTime(elapsed)}</span>
+                <span className="text-ink text-sm font-mono">{fmtTime(elapsed)}</span>
               </div>
             )}
           </div>
@@ -510,7 +510,7 @@ export function VideoRecorder({
                     style={{ width: `${Math.round(uploadFraction * 100)}%` }}
                   />
                 </div>
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-muted2">
                   Uploading… {Math.round(uploadFraction * 100)}%
                 </p>
               </div>

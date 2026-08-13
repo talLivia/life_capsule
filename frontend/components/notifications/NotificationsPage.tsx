@@ -46,11 +46,11 @@ export function NotificationsPage({
         <div className="flex items-center justify-between gap-4 mb-6">
           <div className="flex items-center gap-2.5">
             <Bell size={20} className="text-primary-400" />
-            <h1 id="notifications-heading" className="text-xl font-bold text-white">
+            <h1 id="notifications-heading" className="text-xl font-bold text-ink">
               Notifications
             </h1>
             {items.length > 0 && (
-              <span className="text-sm text-gray-500">
+              <span className="text-sm text-muted2">
                 {items.length} waiting
               </span>
             )}

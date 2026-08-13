@@ -127,7 +127,7 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-surface-950/90 backdrop-blur-md"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md"
       role="dialog"
       aria-modal="true"
       aria-labelledby="auth-modal-title"
@@ -153,14 +153,14 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
             {title && (
               <h1 id="auth-modal-title" className="text-2xl font-black gradient-text">{title}</h1>
             )}
-            <p id="auth-modal-desc" className="text-sm text-gray-500 mt-0.5">
+            <p id="auth-modal-desc" className="text-sm text-muted2 mt-0.5">
               {description ?? 'Sign in to your account'}
             </p>
           </div>
         </div>
 
         {/* Tab switcher */}
-        <div className="flex gap-1 p-1 rounded-xl bg-surface-800/80 border border-white/8 mb-6">
+        <div className="flex gap-1 p-1 rounded-xl bg-surface-800/80 border border-edge mb-6">
           {(['login', 'register'] as const).map(t => (
             <button
               key={t}
@@ -168,7 +168,7 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
               className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium transition-all duration-200
                 ${tab === t
                   ? 'bg-gradient-to-r from-primary-600/80 to-accent-600/80 text-white shadow-glow-sm'
-                  : 'text-gray-400 hover:text-white'
+                  : 'text-muted hover:text-ink'
                 }`}
             >
               {t === 'login' ? <><LogIn size={14} /> Sign In</> : <><UserPlus size={14} /> Register</>}
@@ -180,7 +180,7 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
         {tab === 'login' && (
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-gray-300">Email</label>
+              <label className="text-sm font-medium text-ink-soft">Email</label>
               <input
                 type="email"
                 value={loginEmail}
@@ -192,7 +192,7 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-gray-300">Password</label>
+              <label className="text-sm font-medium text-ink-soft">Password</label>
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
@@ -206,7 +206,7 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
                 <button
                   type="button"
                   onClick={() => setShowPassword(s => !s)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted2 hover:text-ink-soft"
                 >
                   {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
@@ -224,7 +224,7 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
           <form onSubmit={handleRegister} className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-gray-300">Username</label>
+                <label className="text-sm font-medium text-ink-soft">Username</label>
                 <input
                   type="text"
                   value={regUsername}
@@ -235,7 +235,7 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
                 />
               </div>
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-gray-300">Full Name</label>
+                <label className="text-sm font-medium text-ink-soft">Full Name</label>
                 <input
                   type="text"
                   value={regFullName}
@@ -246,7 +246,7 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
               </div>
             </div>
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-gray-300">Email</label>
+              <label className="text-sm font-medium text-ink-soft">Email</label>
               <input
                 type="email"
                 value={regEmail}
@@ -257,7 +257,7 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-gray-300">Password</label>
+              <label className="text-sm font-medium text-ink-soft">Password</label>
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
@@ -271,7 +271,7 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
                 <button
                   type="button"
                   onClick={() => setShowPassword(s => !s)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted2 hover:text-ink-soft"
                 >
                   {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
@@ -286,9 +286,9 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
 
         {/* Divider */}
         <div className="flex items-center gap-3 my-5">
-          <div className="flex-1 h-px bg-white/10" />
-          <span className="text-xs text-gray-600">or</span>
-          <div className="flex-1 h-px bg-white/10" />
+          <div className="flex-1 h-px bg-veil" />
+          <span className="text-xs text-muted2">or</span>
+          <div className="flex-1 h-px bg-veil" />
         </div>
 
         {/* Guest mode */}
@@ -299,7 +299,7 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
           <User size={15} />
           Continue as Guest
         </button>
-        <p className="text-xs text-center text-gray-600 mt-3">
+        <p className="text-xs text-center text-muted2 mt-3">
           Guest data is scoped to this browser session only.
         </p>
       </div>

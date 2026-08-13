@@ -51,15 +51,15 @@ export function FamilyRedeem({
     <div className="min-h-[70vh] flex items-center justify-center px-6">
       <div className="max-w-sm w-full text-center flex flex-col items-center gap-4 glass-card p-8 rounded-2xl">
         <Gift size={28} className="text-primary-400" />
-        <h1 className="text-lg font-semibold text-white">Enter your invite code</h1>
-        <p className="text-sm text-gray-400">
+        <h1 className="text-lg font-semibold text-ink">Enter your invite code</h1>
+        <p className="text-sm text-muted">
           Ask the person who invited you for the link or code they shared with you.
         </p>
         <input
           value={token}
           onChange={(e) => setToken(e.target.value)}
           placeholder="Paste your invite code"
-          className="w-full px-4 py-3 rounded-xl border border-white/10 bg-surface-800 text-white placeholder:text-gray-500"
+          className="w-full px-4 py-3 rounded-xl border border-edge bg-surface-800 text-ink placeholder:text-muted2"
         />
         <button
           onClick={() => redeem(token)}

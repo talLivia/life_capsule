@@ -182,7 +182,7 @@ export function TurnPhotoGallery({
               {photo.caption && (
                 <figcaption
                   dir="auto"
-                  className="absolute bottom-0 left-2 right-2 text-center text-[10px] leading-7 text-gray-500 truncate"
+                  className="absolute bottom-0 left-2 right-2 text-center text-[10px] leading-7 text-muted2 truncate"
                 >
                   {photo.caption}
                 </figcaption>

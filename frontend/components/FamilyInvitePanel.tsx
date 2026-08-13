@@ -113,10 +113,10 @@ export function FamilyInvitePanel() {
     <div className="card flex flex-col gap-5 mt-6">
       <div className="flex items-center gap-2">
         <Gift size={16} className="text-primary-400" />
-        <h2 className="text-xl font-bold text-white">Family access</h2>
+        <h2 className="text-xl font-bold text-ink">Family access</h2>
       </div>
       <div className="divider" />
-      <p className="text-sm text-gray-400">
+      <p className="text-sm text-muted">
         Invite a family member to talk with your stories on the{' '}
         chat. Each link works once.
       </p>
@@ -131,28 +131,28 @@ export function FamilyInvitePanel() {
       </button>
 
       {loading ? (
-        <div className="flex items-center justify-center py-8 text-gray-500 text-sm">
+        <div className="flex items-center justify-center py-8 text-muted2 text-sm">
           <Loader2 size={16} className="animate-spin mr-2" />
           Loading…
         </div>
       ) : (
         <>
           {/* Pending invites: sent, not yet redeemed */}
-          <h3 className="text-sm font-semibold text-gray-300">Pending invites</h3>
+          <h3 className="text-sm font-semibold text-ink-soft">Pending invites</h3>
           {pending.length === 0 ? (
-            <p className="text-sm text-gray-500">No pending invites.</p>
+            <p className="text-sm text-muted2">No pending invites.</p>
           ) : (
             <div className="flex flex-col gap-2">
               {pending.map((invite) => (
                 <div
                   key={invite.id}
-                  className="flex items-center gap-3 px-4 py-3 rounded-xl bg-surface-800/60 border border-white/8"
+                  className="flex items-center gap-3 px-4 py-3 rounded-xl bg-surface-800/60 border border-edge"
                 >
                   <div className="flex-1 min-w-0">
-                    <span className="text-xs text-gray-500">
+                    <span className="text-xs text-muted2">
                       created {new Date(invite.created_at).toLocaleDateString()}
                     </span>
-                    <p className="text-xs text-gray-500 mt-1 truncate">
+                    <p className="text-xs text-muted2 mt-1 truncate">
                       {buildInviteUrl(invite.token)}
                     </p>
                   </div>
@@ -167,7 +167,7 @@ export function FamilyInvitePanel() {
                   <button
                     onClick={() => revokeInvite(invite.id)}
                     disabled={revokingId === invite.id}
-                    className="text-xs text-gray-500 hover:text-red-400 transition-colors px-2 py-1.5 rounded-lg hover:bg-red-500/10 flex-shrink-0"
+                    className="text-xs text-muted2 hover:text-red-400 transition-colors px-2 py-1.5 rounded-lg hover:bg-red-500/10 flex-shrink-0"
                     title="Revoke invite"
                   >
                     {revokingId === invite.id ? (
@@ -184,10 +184,10 @@ export function FamilyInvitePanel() {
           {/* Active users: accounts that redeemed an invite */}
           <div className="flex items-center gap-2 mt-2">
             <Users size={14} className="text-primary-400" />
-            <h3 className="text-sm font-semibold text-gray-300">Active users</h3>
+            <h3 className="text-sm font-semibold text-ink-soft">Active users</h3>
           </div>
           {members.length === 0 ? (
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-muted2">
               Nobody has joined yet — they appear here the moment an invite is used.
             </p>
           ) : (
@@ -195,14 +195,14 @@ export function FamilyInvitePanel() {
               {members.map((member) => (
                 <div
                   key={member.user_id}
-                  className="flex items-center gap-3 px-4 py-3 rounded-xl bg-surface-800/60 border border-white/8"
+                  className="flex items-center gap-3 px-4 py-3 rounded-xl bg-surface-800/60 border border-edge"
                 >
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm text-white truncate" dir="auto">
+                    <p className="text-sm text-ink truncate" dir="auto">
                       {member.display_name}
                     </p>
                     {member.joined_at && (
-                      <p className="text-xs text-gray-500 mt-0.5">
+                      <p className="text-xs text-muted2 mt-0.5">
                         joined {new Date(member.joined_at).toLocaleDateString()}
                       </p>
                     )}
@@ -217,7 +217,7 @@ export function FamilyInvitePanel() {
                     className={`shrink-0 px-2.5 py-1.5 rounded-lg border text-xs transition-colors ${
                       confirmingRemove === member.user_id
                         ? 'border-red-400 bg-red-500/15 text-red-200'
-                        : 'border-white/10 text-gray-400 hover:border-red-400/40 hover:text-red-300'
+                        : 'border-edge text-muted hover:border-red-400/40 hover:text-red-300'
                     }`}
                     title="Deletes their account and chat history — permanent"
                   >

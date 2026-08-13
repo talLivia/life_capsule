@@ -40,7 +40,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
             <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-gray-100">
               Something went wrong
             </h2>
-            <p className="text-gray-600 dark:text-gray-400 mb-4">
+            <p className="text-muted2 dark:text-muted mb-4">
               {this.state.error?.message || 'An unexpected error occurred'}
             </p>
             <button

@@ -129,9 +129,9 @@ export function RecordPanel() {
     return (
       <div className="flex items-center justify-center py-24 px-6">
         <div className="max-w-sm text-center flex flex-col items-center gap-4">
-          <ShieldOff size={28} className="text-gray-500" />
-          <h1 className="text-lg font-bold text-white">This section is for the account owner</h1>
-          <p className="text-sm text-gray-400">
+          <ShieldOff size={28} className="text-muted2" />
+          <h1 className="text-lg font-bold text-ink">This section is for the account owner</h1>
+          <p className="text-sm text-muted">
             Recording is only available to the producer account that owns this story archive.
           </p>
         </div>
@@ -151,7 +151,7 @@ export function RecordPanel() {
     return (
       <div className="flex items-center justify-center py-24 px-6">
         <div className="max-w-sm text-center flex flex-col items-center gap-4">
-          <p className="text-sm text-gray-300">{error || 'Something went wrong'}</p>
+          <p className="text-sm text-ink-soft">{error || 'Something went wrong'}</p>
           <button onClick={reload} className="btn-primary">Try again</button>
         </div>
       </div>
@@ -168,7 +168,7 @@ export function RecordPanel() {
               <h1 className="text-2xl font-black gradient-text mb-2">
                 You&apos;ve answered every question
               </h1>
-              <p className="text-sm text-gray-400">
+              <p className="text-sm text-muted">
                 Your story is saved. Invite a family member from Settings so they can talk
                 with it, or reopen any category below to review or re-record an answer.
               </p>
@@ -209,7 +209,7 @@ export function RecordPanel() {
           <button
             type="button"
             onClick={() => setPanelOpen(open => !open)}
-            className="hidden lg:flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
+            className="hidden lg:flex items-center gap-1.5 text-xs text-muted hover:text-ink transition-colors"
             aria-expanded={panelOpen}
           >
             {panelOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
@@ -225,10 +225,10 @@ export function RecordPanel() {
             denominator, deliberately. */}
         <div className="mt-4 flex flex-col gap-1.5">
           <div className="flex items-baseline justify-between gap-3">
-            <span className="text-xs text-gray-400">
+            <span className="text-xs text-muted">
               {overall.sectionsDone} of {overall.sectionsTotal} sections finished
             </span>
-            <span className="text-xs text-gray-500">
+            <span className="text-xs text-muted2">
               {overall.questionsRecorded === 1
                 ? '1 question recorded'
                 : `${overall.questionsRecorded} questions recorded`}
@@ -282,15 +282,15 @@ export function RecordPanel() {
                   {/* No counter at all until the category is settled — the
                       total genuinely is not knowable before then (§8.4). */}
                   {progressLabel && (
-                    <span className="text-xs text-gray-500">· {progressLabel}</span>
+                    <span className="text-xs text-muted2">· {progressLabel}</span>
                   )}
                   {isReviewing && (
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/8 text-gray-400">
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-veil text-muted">
                       Reviewing an earlier answer
                     </span>
                   )}
                 </div>
-                <h1 dir="auto" className="text-2xl md:text-3xl font-bold text-white mt-1.5 leading-snug">
+                <h1 dir="auto" className="text-2xl md:text-3xl font-bold text-ink mt-1.5 leading-snug">
                   {viewingStep.text}
                 </h1>
                 {/* Read aloud sits with the QUESTION, because that is what it
@@ -314,7 +314,7 @@ export function RecordPanel() {
                       <button
                         type="button"
                         onClick={skip}
-                        className="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
+                        className="inline-flex items-center gap-1.5 text-xs text-muted hover:text-ink transition-colors"
                       >
                         <SkipForward size={14} />
                         Nothing to say — next question
@@ -375,24 +375,24 @@ export function RecordPanel() {
               first time, explains itself to nobody. It costs a few lines
               of grey text and removes the need to remember. */}
           {viewingStep?.kind !== 'gate' && (
-            <dl className="text-[11px] text-gray-500 leading-relaxed border-t border-white/8 pt-3 flex flex-col gap-1">
+            <dl className="text-[11px] text-muted2 leading-relaxed border-t border-edge pt-3 flex flex-col gap-1">
               <div className="flex gap-2">
-                <dt className="text-gray-400 shrink-0">Read aloud</dt>
+                <dt className="text-muted shrink-0">Read aloud</dt>
                 <dd>hear the question spoken. Recording waits until it finishes.</dd>
               </div>
               <div className="flex gap-2">
-                <dt className="text-gray-400 shrink-0">Record</dt>
+                <dt className="text-muted shrink-0">Record</dt>
                 <dd>answer in your own words. You can watch it back before saving.</dd>
               </div>
               <div className="flex gap-2">
-                <dt className="text-gray-400 shrink-0">Add another take</dt>
+                <dt className="text-muted shrink-0">Add another take</dt>
                 <dd>
                   say more without losing what you already said — answers are kept, never
                   replaced.
                 </dd>
               </div>
               <div className="flex gap-2">
-                <dt className="text-gray-400 shrink-0">Extracted from this</dt>
+                <dt className="text-muted shrink-0">Extracted from this</dt>
                 <dd>what the archive understood, so you can catch a mistake.</dd>
               </div>
             </dl>
@@ -424,7 +424,7 @@ export function RecordPanel() {
             onSelectStep={selectStep}
           />
           {flow.free_navigation && (
-            <p className="text-[11px] text-gray-500 mt-3 px-1">
+            <p className="text-[11px] text-muted2 mt-3 px-1">
               Free navigation is on — you can open any category.
             </p>
           )}

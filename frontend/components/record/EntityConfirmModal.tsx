@@ -53,7 +53,7 @@ function PersonSelect({
       aria-label={label}
       onChange={e => onChange(e.target.value)}
       dir="auto"
-      className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white max-w-[10rem]"
+      className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-edge text-sm text-ink max-w-[10rem]"
     >
       <option value={SELF}>You</option>
       {people.map(person => (
@@ -455,8 +455,8 @@ export function EntityConfirmModal({
       <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4 animate-fade-in">
         <div className="w-full max-w-md glass-card p-6 flex flex-col items-center gap-3 text-center">
           <Check size={22} className="text-primary-400" />
-          <h2 className="text-lg font-bold text-white">Nothing to check</h2>
-          <p className="text-sm text-gray-400">
+          <h2 className="text-lg font-bold text-ink">Nothing to check</h2>
+          <p className="text-sm text-muted">
             Every question about your recordings has been answered.
           </p>
           <button onClick={onClose} className="btn-primary mt-1">Close</button>
@@ -469,7 +469,7 @@ export function EntityConfirmModal({
     `flex items-start gap-3 w-full text-left px-4 py-3 rounded-xl border transition-all duration-150 ${
       selected
         ? 'border-primary-500/60 bg-primary-500/10'
-        : 'border-white/10 hover:border-primary-500/40'
+        : 'border-edge hover:border-primary-500/40'
     }`
 
   const radio = (selected: boolean) => (
@@ -478,7 +478,7 @@ export function EntityConfirmModal({
         selected ? 'border-primary-500 bg-primary-500' : 'border-gray-500'
       }`}
     >
-      {selected && <Check size={11} className="text-white" />}
+      {selected && <Check size={11} className="text-ink" />}
     </span>
   )
 
@@ -499,7 +499,7 @@ export function EntityConfirmModal({
               <HelpCircle size={18} />
               <span className="text-sm font-semibold">Quick check</span>
             </div>
-            <h2 id="entity-confirm-heading" className="text-white text-base mt-2 leading-relaxed">
+            <h2 id="entity-confirm-heading" className="text-ink text-base mt-2 leading-relaxed">
               {questionCount === 1
                 ? 'One thing to check about this recording:'
                 : `${questionCount} things to check about this recording:`}
@@ -507,7 +507,7 @@ export function EntityConfirmModal({
             {/* The recording these questions are about. With the popup gone
                 nobody answers while the recording is fresh, so the context
                 has to travel with the question — §12. */}
-            <p dir="auto" className="text-xs text-gray-400 mt-1 italic">{pending.question_asked}</p>
+            <p dir="auto" className="text-xs text-muted mt-1 italic">{pending.question_asked}</p>
           </div>
           <button
             onClick={onClose}
@@ -554,14 +554,14 @@ export function EntityConfirmModal({
           return (
             <section
               key={`person-${group.name}`}
-              className="flex flex-col gap-3 p-4 rounded-xl border border-white/10 bg-surface-800/40"
+              className="flex flex-col gap-3 p-4 rounded-xl border border-edge bg-surface-800/40"
             >
               <div className="flex items-baseline gap-2 flex-wrap">
-                <h3 dir="auto" className="text-sm font-semibold text-white">
+                <h3 dir="auto" className="text-sm font-semibold text-ink">
                   {group.name}
                 </h3>
                 {entity?.type && (
-                  <span className="text-[11px] text-gray-500">{entity.type}</span>
+                  <span className="text-[11px] text-muted2">{entity.type}</span>
                 )}
               </div>
 
@@ -577,7 +577,7 @@ export function EntityConfirmModal({
                       heard, and it never heard them. */}
                   {entity && (
                     <label className="flex flex-col gap-1">
-                      <span className="text-[11px] text-gray-400">Name</span>
+                      <span className="text-[11px] text-muted">Name</span>
                       <input
                         type="text"
                         dir="auto"
@@ -587,8 +587,8 @@ export function EntityConfirmModal({
                         }
                         disabled={answering}
                         aria-label={`Name: ${group.name}`}
-                        className={`w-40 px-3 py-1.5 rounded-lg bg-surface-800 border text-sm text-white ${
-                          nameChanged ? 'border-primary-400' : 'border-white/10'
+                        className={`w-40 px-3 py-1.5 rounded-lg bg-surface-800 border text-sm text-ink ${
+                          nameChanged ? 'border-primary-400' : 'border-edge'
                         }`}
                       />
                       {nameChanged && (
@@ -600,7 +600,7 @@ export function EntityConfirmModal({
                   )}
                   {group.year && (
                     <label className="flex flex-col gap-1">
-                      <span className="text-[11px] text-gray-400">Year — optional</span>
+                      <span className="text-[11px] text-muted">Year — optional</span>
                       <input
                         type="text"
                         inputMode="numeric"
@@ -611,7 +611,7 @@ export function EntityConfirmModal({
                         disabled={answering}
                         placeholder="e.g. 1973"
                         aria-label={`Year for ${group.name}`}
-                        className="w-32 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
+                        className="w-32 px-3 py-1.5 rounded-lg bg-surface-800 border border-edge text-sm text-ink placeholder:text-muted2"
                       />
                     </label>
                   )}
@@ -623,7 +623,7 @@ export function EntityConfirmModal({
                   asks which rather than a yes/no about an arbitrary guess. */}
               {group.identity && (
                 <fieldset className="flex flex-col gap-2">
-                  <legend className="text-sm text-white leading-relaxed mb-1">
+                  <legend className="text-sm text-ink leading-relaxed mb-1">
                     {group.identity.question}
                   </legend>
                   {group.identity.candidates.map((c) => (
@@ -636,9 +636,9 @@ export function EntityConfirmModal({
                     >
                       {radio(identity[group.name] === c.uuid)}
                       <span>
-                        <span className="block text-sm font-medium text-white">{c.name}</span>
+                        <span className="block text-sm font-medium text-ink">{c.name}</span>
                         {c.summary && (
-                          <span className="block text-xs text-gray-400 mt-0.5">{c.summary}</span>
+                          <span className="block text-xs text-muted mt-0.5">{c.summary}</span>
                         )}
                       </span>
                     </button>
@@ -650,7 +650,7 @@ export function EntityConfirmModal({
                     className={optionClass(identity[group.name] === NEW_ENTITY)}
                   >
                     {radio(identity[group.name] === NEW_ENTITY)}
-                    <span className="flex items-center gap-1.5 text-sm font-medium text-white">
+                    <span className="flex items-center gap-1.5 text-sm font-medium text-ink">
                       <UserPlus size={14} />
                       {group.identity.candidates.length === 1
                         ? 'No, someone different'
@@ -671,7 +671,7 @@ export function EntityConfirmModal({
                       <div className="flex flex-col gap-1 pl-1">
                         <label
                           htmlFor={`distinct-${group.name}`}
-                          className="text-xs text-gray-400"
+                          className="text-xs text-muted"
                         >
                           What should I call this one, to tell them apart?
                         </label>
@@ -688,9 +688,9 @@ export function EntityConfirmModal({
                           }
                           disabled={answering}
                           placeholder={`e.g. ${group.name} ...`}
-                          className="w-64 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
+                          className="w-64 px-3 py-1.5 rounded-lg bg-surface-800 border border-edge text-sm text-ink placeholder:text-muted2"
                         />
-                        <span className="text-[11px] text-gray-500">
+                        <span className="text-[11px] text-muted2">
                           Required — otherwise they would be saved as the same person.
                         </span>
                       </div>
@@ -703,7 +703,7 @@ export function EntityConfirmModal({
                   confidence score. */}
               {group.type && (
                 <fieldset className="flex flex-col gap-2">
-                  <legend className="text-sm text-white leading-relaxed mb-1">
+                  <legend className="text-sm text-ink leading-relaxed mb-1">
                     {group.type.question}
                   </legend>
                   <div className="flex gap-2">
@@ -716,7 +716,7 @@ export function EntityConfirmModal({
                         className={`${optionClass(types[group.name] === option)} flex-1 items-center`}
                       >
                         {radio(types[group.name] === option)}
-                        <span className="text-sm font-medium text-white capitalize">{option}</span>
+                        <span className="text-sm font-medium text-ink capitalize">{option}</span>
                       </button>
                     ))}
                   </div>
@@ -728,7 +728,7 @@ export function EntityConfirmModal({
                   people's cards. Optional, unlike the two above. */}
               {group.relations.length > 0 && (
                 <fieldset className="flex flex-col gap-2">
-                  <legend className="text-sm text-white leading-relaxed mb-1">
+                  <legend className="text-sm text-ink leading-relaxed mb-1">
                     Did we get this right? — optional
                   </legend>
                   {group.relations.map((q) => {
@@ -764,7 +764,7 @@ export function EntityConfirmModal({
                       >
                         {radio(shown)}
                         <span className="flex flex-col gap-0.5 text-left">
-                          <span className="text-sm font-medium text-white">
+                          <span className="text-sm font-medium text-ink">
                             <span dir="auto">{q.from_name === SELF ? 'You' : q.from_name}</span>
                             {' is the '}
                             {q.relation_type.replace(/_/g, ' ')}
@@ -772,7 +772,7 @@ export function EntityConfirmModal({
                             <span dir="auto">{q.to_name === SELF ? 'you' : q.to_name}</span>
                           </span>
                           {q.evidence && (
-                            <span dir="auto" className="text-xs text-gray-400">
+                            <span dir="auto" className="text-xs text-muted">
                               &ldquo;{q.evidence}&rdquo;
                             </span>
                           )}
@@ -810,7 +810,7 @@ export function EntityConfirmModal({
 
                       {relationEdits[q.index] && (
                         <div className="flex flex-col gap-2 px-3 py-2.5 rounded-xl border border-primary-500/30 bg-primary-500/5">
-                          <div className="flex flex-wrap items-center gap-2 text-sm text-white">
+                          <div className="flex flex-wrap items-center gap-2 text-sm text-ink">
                             <PersonSelect
                               value={relationEdits[q.index].from_name}
                               people={correctionPeople}
@@ -823,7 +823,7 @@ export function EntityConfirmModal({
                                 }))
                               }
                             />
-                            <span className="text-gray-400">is the</span>
+                            <span className="text-muted">is the</span>
                             <select
                               value={relationEdits[q.index].relation_type}
                               disabled={answering}
@@ -837,7 +837,7 @@ export function EntityConfirmModal({
                                   },
                                 }))
                               }
-                              className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white"
+                              className="px-2.5 py-1.5 rounded-lg bg-surface-800 border border-edge text-sm text-ink"
                             >
                               {correctionTypes.map((option) => (
                                 <option key={option.value} value={option.value}>
@@ -845,7 +845,7 @@ export function EntityConfirmModal({
                                 </option>
                               ))}
                             </select>
-                            <span className="text-gray-400">of</span>
+                            <span className="text-muted">of</span>
                             <PersonSelect
                               value={relationEdits[q.index].to_name}
                               people={correctionPeople}
@@ -870,7 +870,7 @@ export function EntityConfirmModal({
                                   return next
                                 })
                               }
-                              className="text-xs text-gray-400 hover:text-white"
+                              className="text-xs text-muted hover:text-ink"
                             >
                               Cancel this fix
                             </button>
@@ -895,7 +895,7 @@ export function EntityConfirmModal({
                   one action here that spans people. */}
               {group.parentageGroup && parents.length > 0 && (
                 <fieldset className="flex flex-col gap-2">
-                  <legend className="text-sm text-white leading-relaxed mb-1">
+                  <legend className="text-sm text-ink leading-relaxed mb-1">
                     Whose child are they?
                   </legend>
                   <div className="flex flex-wrap items-center gap-2">
@@ -917,7 +917,7 @@ export function EntityConfirmModal({
                           className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
                             ticked
                               ? 'border-primary-400 bg-primary-500/15 text-white'
-                              : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
+                              : 'border-edge bg-surface-800 text-ink-soft hover:border-edge-strong'
                           }`}
                         >
                           <span dir="auto">{parent.name}</span>
@@ -941,7 +941,7 @@ export function EntityConfirmModal({
                       className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
                         otherOpen[group.name]
                           ? 'border-primary-400 bg-primary-500/15 text-white'
-                          : 'border-white/10 bg-surface-800 text-gray-400 hover:border-white/25'
+                          : 'border-edge bg-surface-800 text-muted hover:border-edge-strong'
                       }`}
                     >
                       Someone else
@@ -952,7 +952,7 @@ export function EntityConfirmModal({
                     <div className="flex flex-col gap-1">
                       <label
                         htmlFor={`other-parent-${group.name}`}
-                        className="text-xs text-gray-400"
+                        className="text-xs text-muted"
                       >
                         Then whose child are they?
                       </label>
@@ -970,13 +970,13 @@ export function EntityConfirmModal({
                         }
                         disabled={answering}
                         placeholder="a name"
-                        className="w-56 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/10 text-sm text-white placeholder:text-gray-600"
+                        className="w-56 px-3 py-1.5 rounded-lg bg-surface-800 border border-edge text-sm text-ink placeholder:text-muted2"
                       />
                     </div>
                   )}
 
                   {shared.length === 0 && !typedParent && (
-                    <span className="text-[11px] text-gray-500">
+                    <span className="text-[11px] text-muted2">
                       Skipped — nothing recorded, and we won&apos;t ask again.
                     </span>
                   )}
@@ -1005,7 +1005,7 @@ export function EntityConfirmModal({
                       is this person on the side of — but asked in the words
                       that fit. A grandparent is that parent's PARENT; an aunt
                       or uncle is their SIBLING. */}
-                  <legend className="text-sm text-white leading-relaxed mb-1">
+                  <legend className="text-sm text-ink leading-relaxed mb-1">
                     {group.sideKind === 'grandparent'
                       ? 'Whose mother or father are they?'
                       : 'Whose brother or sister are they?'}
@@ -1029,7 +1029,7 @@ export function EntityConfirmModal({
                           className={`px-2.5 py-1 rounded-lg border text-xs transition-colors ${
                             chosen
                               ? 'border-primary-400 bg-primary-500/15 text-white'
-                              : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
+                              : 'border-edge bg-surface-800 text-ink-soft hover:border-edge-strong'
                           }`}
                         >
                           <span dir="auto">{parent.name}</span>
@@ -1038,7 +1038,7 @@ export function EntityConfirmModal({
                     })}
                   </div>
                   {!sides[group.name] && (
-                    <span className="text-[11px] text-gray-500">
+                    <span className="text-[11px] text-muted2">
                       Not sure — we won&apos;t ask again
                     </span>
                   )}
@@ -1063,9 +1063,9 @@ export function EntityConfirmModal({
           return (
             <div
               key="parentage-bulk"
-              className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 rounded-xl border border-white/10 bg-surface-800/60"
+              className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 rounded-xl border border-edge bg-surface-800/60"
             >
-              <p dir="auto" className="text-xs text-gray-400 min-w-0">
+              <p dir="auto" className="text-xs text-muted min-w-0">
                 {group.question}
               </p>
               <button
@@ -1083,7 +1083,7 @@ export function EntityConfirmModal({
                 className={`shrink-0 px-4 py-2 rounded-lg border text-sm transition-colors ${
                   allShared
                     ? 'border-primary-400 bg-primary-500/15 text-white'
-                    : 'border-white/10 bg-surface-800 text-gray-300 hover:border-white/25'
+                    : 'border-edge bg-surface-800 text-ink-soft hover:border-edge-strong'
                 }`}
               >
                 {allShared ? 'Yes — all of them' : 'Yes — all of them'}
@@ -1106,11 +1106,11 @@ export function EntityConfirmModal({
             confidence: "ליאן" for "אליאן" raises nothing to answer, because a
             brand-new name has nothing similar to disambiguate against. */}
         {nameOnly.length > 0 && (
-          <fieldset className="flex flex-col gap-2 pt-1 border-t border-white/10">
-            <legend className="text-sm text-white leading-relaxed mb-1">
+          <fieldset className="flex flex-col gap-2 pt-1 border-t border-edge">
+            <legend className="text-sm text-ink leading-relaxed mb-1">
               Also picked up
             </legend>
-            <p className="text-xs text-gray-400 -mt-1 mb-1">
+            <p className="text-xs text-muted -mt-1 mb-1">
               Nothing to answer here — fix any name that was misheard.
             </p>
             <div className="flex flex-wrap gap-2">
@@ -1128,8 +1128,8 @@ export function EntityConfirmModal({
                       }
                       disabled={answering}
                       aria-label={`Name: ${group.name}`}
-                      className={`w-36 px-3 py-1.5 rounded-lg bg-surface-800 border text-sm text-white ${
-                        changed ? 'border-primary-400' : 'border-white/10'
+                      className={`w-36 px-3 py-1.5 rounded-lg bg-surface-800 border text-sm text-ink ${
+                        changed ? 'border-primary-400' : 'border-edge'
                       }`}
                     />
                     {changed && (
@@ -1145,7 +1145,7 @@ export function EntityConfirmModal({
         )}
 
         <div className="flex items-center justify-between gap-3 pt-1">
-          <span className="text-xs text-gray-400">
+          <span className="text-xs text-muted">
             {requiredCount === 0
               ? // Nothing is compulsory here — saying "0 of 0 answered" reads
                 // as an error, and saying "All answered" claims something the

@@ -26,7 +26,7 @@ export function NotificationList({
 }) {
   if (items.length === 0) {
     return (
-      <div className={`text-center text-gray-500 ${roomy ? 'py-16 text-sm' : 'py-8 text-xs'}`}>
+      <div className={`text-center text-muted2 ${roomy ? 'py-16 text-sm' : 'py-8 text-xs'}`}>
         You&apos;re all caught up.
       </div>
     )
@@ -41,8 +41,8 @@ export function NotificationList({
             <button
               type="button"
               onClick={() => onSelect(item)}
-              className={`w-full text-left flex items-start gap-3 border-b border-white/5 last:border-b-0
-                hover:bg-white/5 transition-colors ${roomy ? 'px-5 py-4' : 'px-4 py-3'}`}
+              className={`w-full text-left flex items-start gap-3 border-b border-edge last:border-b-0
+                hover:bg-veil transition-colors ${roomy ? 'px-5 py-4' : 'px-4 py-3'}`}
             >
               <Icon
                 size={roomy ? 18 : 15}
@@ -51,7 +51,7 @@ export function NotificationList({
               />
               <span className="min-w-0 flex-1">
                 <span
-                  className={`block font-medium text-white ${roomy ? 'text-sm' : 'text-[13px]'}`}
+                  className={`block font-medium text-ink ${roomy ? 'text-sm' : 'text-[13px]'}`}
                 >
                   {item.title}
                 </span>
@@ -62,7 +62,7 @@ export function NotificationList({
                   // it is English.
                   <span
                     dir="auto"
-                    className={`block text-gray-400 mt-0.5 ${
+                    className={`block text-muted mt-0.5 ${
                       roomy ? 'text-xs' : 'text-[11px] line-clamp-2'
                     }`}
                   >
