@@ -1629,11 +1629,19 @@ Nothing avatar-mode-internal changed: `ChatInterface`/`TalkInterface`,
 voices, MuseTalk, animator, gpu_client are untouched and reachable once
 the mode is on.
 
-⚠️ **Deploy note:** `0027` runs automatically via `entrypoint.sh`. No
-secrets to unset, no ordering hazard — but verify after the first deploy:
-every `sessions` row has `producer_id`, and the one real producer's
-`chat_mode` is still `video_clips_v2` (it was already; the backfill's
-WHERE clause only touches accounts with no ready avatar).
+✅ **Migration `0027` is APPLIED to live Neon (2026-08-13)** — manually,
+via `alembic upgrade head`, after live testing surfaced an empty History
+panel: the branch's code selects `sessions.producer_id` on every session
+query, and the local-uvicorn-against-Neon workflow runs no migrations
+(only Fly's `entrypoint.sh` does — the original deploy note here covered
+only that path, which was the gap). Verified afterwards: 422/422 sessions
+carry `producer_id` with **zero** mismatches against the avatar join and
+zero rows deleted; `avatar_id` nullable with the FK now `ON DELETE SET
+NULL`; `chat_mode` server default is v2; the backfill flipped exactly the
+accounts with no ready avatar (4 family + 3 empty producers), kept
+`avatar` on the one producer who owns a ready avatar, and did not touch
+the real producer (already v2). A Fly deploy will find `0027` already
+applied and no-op.
 
 ⚠️ **Not yet exercised live:** the defining smoke test — a freshly
 registered producer records, invites family, and family gets a clip
