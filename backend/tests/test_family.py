@@ -166,6 +166,58 @@ async def test_family_cannot_edit_the_tree(
     assert vocab.status_code == 403
 
 
+# ── active family members (FAMILY_UNIFIED_SHELL_PLAN §3.1) ──────────────────
+
+
+async def test_members_lists_a_redeemed_family_account(
+    client: AsyncClient, auth_headers, fresh_signup, fresh_signup_auth_headers,
+    other_producer_auth_headers,
+):
+    """One lifecycle: a pending invite becomes an active member on
+    redemption, listed from the users-table linkage with the redemption
+    stamp and the username fallback for a blank display name."""
+    created = await client.post("/api/v1/family/invites", headers=auth_headers)
+    token = created.json()["token"]
+    redeemed = await client.post(
+        "/api/v1/family/invites/redeem", json={"token": token},
+        headers=fresh_signup_auth_headers,
+    )
+    assert redeemed.status_code == 200
+
+    members = await client.get("/api/v1/family/members", headers=auth_headers)
+    assert members.status_code == 200
+    body = members.json()
+    assert len(body) == 1
+    assert body[0]["user_id"] == fresh_signup.id
+    assert body[0]["display_name"] == "newcomer"  # no full_name → username
+    assert body[0]["joined_at"] is not None
+
+    # Scoped to the asking producer — another producer sees nobody.
+    theirs = await client.get(
+        "/api/v1/family/members", headers=other_producer_auth_headers
+    )
+    assert theirs.json() == []
+
+
+async def test_members_is_sourced_from_the_linkage_not_the_invite(
+    client: AsyncClient, auth_headers, family_user
+):
+    """A linked family account with NO invite row (seeded directly) still
+    lists — the linkage is what grants access, so the list follows it."""
+    members = await client.get("/api/v1/family/members", headers=auth_headers)
+    assert members.status_code == 200
+    body = members.json()
+    assert [m["user_id"] for m in body] == [family_user.id]
+    assert body[0]["joined_at"] is None
+
+
+async def test_members_requires_producer_role(
+    client: AsyncClient, family_user_auth_headers
+):
+    resp = await client.get("/api/v1/family/members", headers=family_user_auth_headers)
+    assert resp.status_code == 403
+
+
 # ── invite creation/listing/revocation ──────────────────────────────────────
 
 

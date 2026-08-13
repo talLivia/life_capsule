@@ -642,6 +642,17 @@ class FamilyInviteResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class FamilyMemberResponse(BaseModel):
+    """An ACTIVE family account — a user whose linkage points at this
+    producer. Sourced from the users table (the linkage IS access), never
+    from invite rows, so the list can never disagree with what the account
+    can actually do (docs/FAMILY_UNIFIED_SHELL_PLAN.md §3.1)."""
+
+    user_id: str
+    display_name: str
+    joined_at: Optional[datetime] = None
+
+
 class FamilyInviteRedeemRequest(BaseModel):
     token: str = Field(..., min_length=1)
 

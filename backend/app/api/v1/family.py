@@ -22,6 +22,7 @@ from app.models import Avatar, FamilyInvite, InterviewSession, RawSegment, User
 from app.schemas import (
     FamilyInviteRedeemRequest,
     FamilyInviteResponse,
+    FamilyMemberResponse,
     TalkAvailabilityResponse,
     UserResponse,
 )
@@ -107,6 +108,38 @@ async def revoke_invite(
     invite.status = "revoked"
     await db.commit()
     logger.info(f"Family invite revoked: {invite.id}")
+
+
+@router.get("/members", response_model=List[FamilyMemberResponse])
+async def list_family_members(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """The producer's ACTIVE family accounts — the other half of the invite
+    lifecycle (pending invites → active users). Sourced from the users-table
+    linkage itself, not from redeemed invite rows: the linkage is what
+    grants access, so this list cannot drift from reality, and a future
+    revoke (unlink) removes the row here by construction. `joined_at` is the
+    redemption stamp of the account's latest redeemed invite; display name
+    falls back to username exactly as talk-availability does for the
+    producer's own name."""
+    rows = (
+        await db.execute(
+            select(User, func.max(FamilyInvite.redeemed_at))
+            .outerjoin(FamilyInvite, FamilyInvite.redeemed_by_user_id == User.id)
+            .where(User.role == "family", User.producer_id == user.id)
+            .group_by(User.id)
+            .order_by(func.max(FamilyInvite.redeemed_at).desc().nullslast())
+        )
+    ).all()
+    return [
+        FamilyMemberResponse(
+            user_id=member.id,
+            display_name=(member.full_name or "").strip() or member.username,
+            joined_at=joined_at,
+        )
+        for member, joined_at in rows
+    ]
 
 
 @router.post("/invites/redeem", response_model=UserResponse)
