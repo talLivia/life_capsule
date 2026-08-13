@@ -238,14 +238,14 @@
      contrast read as a bug rather than as care — so the record screen moved
      onto the shell's own system.
 
-     ⚠️ 2026-08-13: the dedicated /talk page is gone and the family chat
-     (FamilyChatView → VideoClipTalkInterface/TalkInterface) now mounts
-     INSIDE the shell — the exact configuration the paragraph above warns
-     about, accepted knowingly as the family's whole world is three shell
-     views (docs/FAMILY_UNIFIED_SHELL_PLAN.md §2.2, flagged for live
-     review). If it reads as broken in practice, the fix is restyling the
-     family chat onto the shell system, not resurrecting a standalone
-     route. ── */
+     ⚠️ 2026-08-13: the dedicated /talk page is gone. The v2 family chat
+     now uses the SHELL's own layout (ProducerVideoClipChat — no calm
+     classes at all), so this theme's only remaining consumer is
+     TalkInterface, the avatar-mode family chat, which mounts inside the
+     dark shell — the configuration the paragraph above warns about.
+     Avatar mode is optional and off by default; if that surface is ever
+     revisited, restyle it onto the shell system rather than resurrecting
+     a standalone route. ── */
   .calm-btn-primary {
     @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-semibold
            bg-calm-sage-600 hover:bg-calm-sage-700 text-white

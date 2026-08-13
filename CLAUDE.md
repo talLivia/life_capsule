@@ -32,11 +32,12 @@ docs/V1_REMOVAL_PLAN.md, and the `pre-v1-removal` tag for the last tree
 that had it. Measurements below that name v1 are that A/B's record, kept
 as the evidence they are.
 
-The clip mode's WS contract and frontend behaviour hook
-(`frontend/lib/useVideoClipChat.ts`) are shared by the family chat
-(`FamilyChatView` → `VideoClipTalkInterface`) and the producer's own chat
-screen, which wrap it in **different layouts** — share the logic, not the
-layout.
+The clip mode's WS contract and behaviour hook
+(`frontend/lib/useVideoClipChat.ts`) drive ONE layout for both roles:
+`ProducerVideoClipChat` (single video panel + side chat + polaroid
+gallery), mounted directly for the producer and via `FamilyChatView`
+(availability gate, `producerName` copy) for family. The separate
+/talk-style scrolling layout was removed 2026-08-13.
 
 ## video_clips_v2: selection is by utterance UNIT, not by time
 

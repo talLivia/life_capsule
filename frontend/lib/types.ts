@@ -68,7 +68,7 @@ export type WsMessage =
   | { type: 'interrupted'; message: string }
   // Original-video-clip chat mode (Prompt 13/14) — a separate contract from
   // the avatar path above, sent in response to a 'video_clip_question'
-  // outgoing message (see VideoClipTalkInterface). Never repurposes
+  // outgoing message (see ProducerVideoClipChat). Never repurposes
   // 'message'/'video_chunk': a clip response is a single finished video, not
   // a streamed sequence of lip-sync chunks.
   // `follow_up` (v2 only, optional) offers to continue with related material

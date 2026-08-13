@@ -8,21 +8,17 @@ import { TurnPhotoGallery } from '@/components/media/TurnPhotoGallery'
 import { useVideoClipChat } from '@/lib/useVideoClipChat'
 
 /**
- * The PRODUCER's in-app chat screen for the video-clip mode
- * (video_clips_v2) — the producer previewing their own story archive.
- *
- * Deliberately keeps the producer studio's ORIGINAL chat layout: a single
- * video panel on the left that updates in place, and a chat panel on the
- * right. Only the layout is bespoke — every bit of behavior (session, WS
- * contract, video_clip_response/no_story handling, clip-playback + mic gating)
- * comes from useVideoClipChat, the SAME hook the family /talk screen
- * (VideoClipTalkInterface) uses. Two layouts, one shared behavior.
- *
- * The backend picks v1 (chunk retrieval) vs v2 (full-archive reading) from the
- * producer's own chat_mode; the client contract is identical for both, so this
- * one component serves both video-clip modes.
+ * THE clip-chat screen (video_clips_v2) — one layout for both roles since
+ * 2026-08-13 (producer decision): the producer previewing their own
+ * archive, and family accounts via FamilyChatView, which passes
+ * producerName to adjust the one line of copy. A single video panel that
+ * updates in place, a chat panel on the right, and the polaroid photo
+ * gallery under the clip. All behavior (session, WS contract,
+ * video_clip_response/no_story handling, clip-playback + mic gating)
+ * comes from useVideoClipChat; the separate /talk-style scrolling layout
+ * was removed.
  */
-export function ProducerVideoClipChat() {
+export function ProducerVideoClipChat({ producerName }: { producerName?: string } = {}) {
   const {
     messages,
     inputText,
@@ -72,7 +68,11 @@ export function ProducerVideoClipChat() {
     <div className="max-w-7xl mx-auto px-6 py-10 animate-fade-in">
       <div className="mb-6">
         <h1 className="text-3xl font-black gradient-text mb-2">Live Conversation</h1>
-        <p className="text-gray-400">Ask a question and watch the matching moment from your story.</p>
+        <p className="text-gray-400">
+          {producerName
+            ? <>Ask a question and watch <span dir="auto">{producerName}</span> answer it, in their own words.</>
+            : 'Ask a question and watch the matching moment from your story.'}
+        </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 h-[calc(100vh-16rem)]">

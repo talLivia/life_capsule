@@ -44,11 +44,10 @@ const CLIP_GRACE_MS = 3000
 
 /**
  * The shared BEHAVIOR of the original-video-clip chat mode (Prompt 13/14),
- * with no layout of its own. Both the family /talk screen
- * (VideoClipTalkInterface) and the producer's in-app chat screen consume this
- * hook and render their OWN layouts around the same view-model — so the two
- * screens can look different while running identical routing / WS-contract
- * handling / playback gating.
+ * with no layout of its own. ProducerVideoClipChat consumes this hook and
+ * renders the one clip-chat layout, for the producer's own Chat view and —
+ * via FamilyChatView, since 2026-08-13 — for family accounts too (the
+ * separate /talk-style scrolling layout was removed by producer decision).
  *
  * On the SAME WebSocket contract as avatar mode (one session per
  * conversation), but sends 'video_clip_question' instead of 'text' and expects

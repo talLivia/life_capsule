@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Heart, Loader2 } from 'lucide-react'
 import { TalkInterface } from '@/components/talk/TalkInterface'
-import { VideoClipTalkInterface } from '@/components/talk/VideoClipTalkInterface'
+import { ProducerVideoClipChat } from '@/components/ProducerVideoClipChat'
 import { api } from '@/lib/api'
 import type { ApiError, TalkAvailability } from '@/lib/types'
 
@@ -83,9 +83,13 @@ export function FamilyChatView() {
   if (!availability.available) return stillPreparing
 
   // The PRODUCER's own setting picks which chat renders — every family
-  // member talking to this producer gets the same mode.
+  // member talking to this producer gets the same mode. v2 renders THE
+  // SAME layout the producer's own Chat view uses (one shared component,
+  // single video panel + side chat + the polaroid gallery under the clip)
+  // — the old scrolling /talk-style interface is gone, by producer
+  // decision 2026-08-13.
   if (availability.chat_mode === 'video_clips_v2') {
-    return <VideoClipTalkInterface producerName={availability.producer_name} />
+    return <ProducerVideoClipChat producerName={availability.producer_name} />
   }
 
   // Avatar mode renders the avatar itself; `available` implies one exists,

@@ -1672,12 +1672,17 @@ survives as history), then deletes the account — sessions, messages and
 conversations cascade. The Active-users Remove button confirms with
 "Delete account + history?" because it is permanent.
 
-⚠️ **Flagged for live review:** the calm-themed family chat now renders
-inside the dark shell — the exact configuration globals.css's own history
-warns reads as a bug (it did for /record). If it grates, restyle the
-family chat onto the shell system; never resurrect a standalone route.
-Not yet exercised live: the whole family flow end to end (invite →
-register → redeem → three views).
+**Family chat = the producer's chat layout (producer decision,
+2026-08-13, after seeing the first version live):** the v2 family chat
+renders `ProducerVideoClipChat` — the same single-video-panel + side-chat
++ polaroid-gallery component the producer's Chat view uses, with one
+`producerName` prop adjusting the single line of producer-slanted copy.
+`VideoClipTalkInterface` (the /talk-style scrolling layout) is DELETED;
+the calm theme's only remaining consumer is `TalkInterface`, the
+avatar-mode family chat (optional mode, off by default) — the
+calm-inside-shell seam now applies only there. Not yet exercised live:
+the whole family flow end to end (invite → register → redeem → three
+views).
 
 ## Known gaps / tech debt
 
