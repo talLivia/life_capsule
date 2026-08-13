@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import dynamic from 'next/dynamic'
 import Image from 'next/image'
 import { AvatarUpload } from '@/components/AvatarUpload'
@@ -8,6 +8,7 @@ import { AvatarList } from '@/components/AvatarList'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
 import { AuthModal } from '@/components/AuthModal'
 import { NotificationCenter } from '@/components/notifications/NotificationCenter'
+import { FamilyRedeem } from '@/components/FamilyRedeem'
 import { api } from '@/lib/api'
 import { toast } from 'react-hot-toast'
 import { useStore } from '@/store/useStore'
@@ -159,7 +160,7 @@ type View = 'home' | 'avatars' | 'chat' | 'voice' | 'history' | 'settings' | 're
 const FAMILY_VIEWS: View[] = ['chat', 'timeline', 'tree']
 
 export default function Home() {
-  const { isAuthenticated, user, clearAuth } = useStore()
+  const { isAuthenticated, user, clearAuth, updateUser } = useStore()
 
   // A family account uses THIS shell now (the dedicated /talk page is
   // gone — docs/FAMILY_UNIFIED_SHELL_PLAN.md): exactly three views — Chat
@@ -169,6 +170,10 @@ export default function Home() {
   // hiding is presentation; the backend's per-request 403s on every write
   // are the guarantee.
   const isFamilyUser = isAuthenticated() && user?.role === 'family'
+  // A family account with no producer linkage (never redeemed, or unlinked
+  // later) has nothing to view yet — it gets the redeem surface instead of
+  // three views that would all 403.
+  const isUnlinkedFamily = isFamilyUser && !user?.producer_id
   // The producer's own chat_mode decides which chat component their /chat view
   // renders — mirrors the family routing FamilyChatView applies. Video-clip
   // modes must NOT use the avatar-only ChatInterface (it can't handle
@@ -191,6 +196,47 @@ export default function Home() {
   useEffect(() => {
     if (isFamilyUser && !FAMILY_VIEWS.includes(view)) setView('chat')
   }, [isFamilyUser, view])
+
+  // Invite links land here now (`/?invite=<token>` — the old /talk links
+  // arrive through its redirect stub). Read post-mount, same as ?view=,
+  // to avoid a useSearchParams hydration mismatch.
+  const [inviteToken, setInviteToken] = useState<string | null>(null)
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const t = new URLSearchParams(window.location.search).get('invite')
+    if (t) setInviteToken(t)
+  }, [])
+
+  const clearInviteFromUrl = () => {
+    setInviteToken(null)
+    const url = new URL(window.location.href)
+    url.searchParams.delete('invite')
+    window.history.replaceState(null, '', url.pathname + url.search)
+  }
+
+  // A signed-in NON-family account holding an invite token redeems it once
+  // — the fresh-signup path (register defaults to producer role until
+  // redemption flips it). Self-redeem and has-own-content rejections
+  // surface as the server's own message. Family accounts skip this: the
+  // FamilyRedeem surface below owns their token.
+  const redeemAttemptedRef = useRef(false)
+  useEffect(() => {
+    if (!inviteToken || redeemAttemptedRef.current) return
+    if (!isAuthenticated() || !user || user.role === 'family') return
+    redeemAttemptedRef.current = true
+    api
+      .redeemFamilyInvite(inviteToken)
+      .then((profile) => {
+        updateUser(profile)
+        toast.success('You’re connected!', { icon: '💛' })
+      })
+      .catch((err) => {
+        const detail = err?.response?.data?.detail || err?.message
+        toast.error(detail || 'That invite code did not work')
+      })
+      .finally(clearInviteFromUrl)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inviteToken, user])
 
   // NOTE deliberately NOT bounced away: Avatar Studio stays reachable in
   // video-clip mode (its nav tab is hidden, but Settings' avatar-mode card
@@ -275,7 +321,16 @@ export default function Home() {
   return (
     <div className="min-h-screen">
       {/* ── Auth gate ── */}
-      {!isAuthenticated() && <AuthModal />}
+      {!isAuthenticated() &&
+        (inviteToken ? (
+          <AuthModal
+            defaultTab="register"
+            title="You're invited!"
+            description="Create an account to connect and start talking."
+          />
+        ) : (
+          <AuthModal />
+        ))}
 
       {/* ── Navigation ── */}
       <nav className="fixed top-0 left-0 right-0 z-50 h-16">
@@ -490,9 +545,17 @@ export default function Home() {
             useVideoClipChat hook — this is what fixes the old hang on "Finding
             a clip…" (ChatInterface, the avatar-only path, never handled
             video_clip_response). Avatar mode stays on ChatInterface. */}
+        {/* An unlinked family account: redeem first, everything else after. */}
+        {isUnlinkedFamily && (
+          <FamilyRedeem
+            initialToken={inviteToken ?? undefined}
+            onRedeemed={clearInviteFromUrl}
+          />
+        )}
+
         {/* Family chat: availability-gated, mode-routed by the LINKED
             producer's setting — the whole /talk experience, in-shell. */}
-        {view === 'chat' && isFamilyUser && <FamilyChatView />}
+        {view === 'chat' && isFamilyUser && !isUnlinkedFamily && <FamilyChatView />}
 
         {/* v2 needs no avatar anywhere — the session is producer-keyed
             (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md). */}
@@ -544,9 +607,9 @@ export default function Home() {
           </div>
         )}
 
-        {view === 'tree' && <FamilyTreePanel />}
+        {view === 'tree' && !isUnlinkedFamily && <FamilyTreePanel />}
 
-        {view === 'timeline' && <TimelinePanel />}
+        {view === 'timeline' && !isUnlinkedFamily && <TimelinePanel />}
       </main>
     </div>
   )

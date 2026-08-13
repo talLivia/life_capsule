@@ -8,7 +8,9 @@ import type { ApiError, FamilyInvite } from '@/lib/types'
 
 function buildInviteUrl(token: string): string {
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
-  return `${origin}/talk?invite=${encodeURIComponent(token)}`
+  // Invite links land on the shell now; the /talk stub still forwards any
+  // link copied before the move (FAMILY_UNIFIED_SHELL_PLAN §2.5).
+  return `${origin}/?invite=${encodeURIComponent(token)}`
 }
 
 export function FamilyInvitePanel() {
@@ -93,7 +95,7 @@ export function FamilyInvitePanel() {
       <div className="divider" />
       <p className="text-sm text-gray-400">
         Invite a family member to talk with your stories on the{' '}
-        <code className="text-gray-300">/talk</code> page. Each link works once.
+        chat. Each link works once.
       </p>
 
       <button
