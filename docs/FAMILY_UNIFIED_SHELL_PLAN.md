@@ -155,7 +155,14 @@ fed by one load: "Pending invites" (link + copy + revoke, as today) and
 one section to the other automatically because the two queries partition
 on the same fact.
 
-**3.3 🛑 Revoke/delete semantics — PROPOSED, NOT BUILT until confirmed.**
+**3.3 Revoke/delete semantics — DECIDED 2026-08-13: (b), full account
+deletion.** The producer chose deletion over the recommended unlink after
+the tradeoff was flagged; the destruction of chat history is deliberate
+and the UI's confirm step names it ("Delete account + history?"). The
+implementation tears down open WebSockets first (the §1.2 hole), nulls
+the redeemed invite's reference (the invite row survives as history), and
+lets the account cascade take sessions/messages/conversations. The
+original proposal is kept below as the record of what was considered.
 Two candidate meanings for "remove this family member's access":
 
 - **(a) Unlink (RECOMMENDED — the safer default):** set

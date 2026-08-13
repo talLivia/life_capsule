@@ -19,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.users import require_current_user
 from app.database import get_db
 from app.models import Avatar, FamilyInvite, InterviewSession, RawSegment, User
+from app.models import Session as ChatSession
+from app.websocket import websocket_manager
 from app.schemas import (
     FamilyInviteRedeemRequest,
     FamilyInviteResponse,
@@ -140,6 +142,72 @@ async def list_family_members(
         )
         for member, joined_at in rows
     ]
+
+
+@router.delete("/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_family_member(
+    member_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """Remove a family member's access by DELETING their account — the
+    producer's explicit choice over unlink-and-preserve
+    (docs/FAMILY_UNIFIED_SHELL_PLAN.md §3.3, decided 2026-08-13). Their
+    sessions, messages and conversations cascade away with the account:
+    permanent, and the UI says so before asking.
+
+    Open WebSockets are torn down FIRST — WS auth checks session ownership
+    only at the handshake, so without this an already-open socket would
+    keep answering questions for a session row that is about to vanish
+    (and then fail confusingly on its next persisted turn).
+
+    404 for both "no such account" and "not your family member" — one
+    answer, so the endpoint confirms nothing about other producers'
+    accounts. The redeemed invite row SURVIVES with its reference nulled
+    (matching the DB's own SET NULL): the invitation having been used is
+    history, not access.
+    """
+    member = (
+        await db.execute(
+            select(User).where(
+                User.id == member_id,
+                User.role == "family",
+                User.producer_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if member is None:
+        raise HTTPException(status_code=404, detail="Family member not found")
+
+    session_ids = (
+        (await db.execute(select(ChatSession.id).where(ChatSession.user_id == member.id)))
+        .scalars()
+        .all()
+    )
+    for sid in session_ids:
+        # No-ops for sessions with no live socket; cancels the in-flight
+        # turn and closes the connection for those with one.
+        await websocket_manager.disconnect(sid)
+
+    # Explicit rather than left to the DB's ON DELETE SET NULL so SQLite
+    # (tests, FKs unenforced) and Postgres agree on the resulting rows.
+    for invite in (
+        (
+            await db.execute(
+                select(FamilyInvite).where(FamilyInvite.redeemed_by_user_id == member.id)
+            )
+        )
+        .scalars()
+        .all()
+    ):
+        invite.redeemed_by_user_id = None
+
+    await db.delete(member)
+    await db.commit()
+    logger.info(
+        f"Family member removed (account deleted): {member_id} "
+        f"(producer={user.id}, sessions={len(session_ids)})"
+    )
 
 
 @router.post("/invites/redeem", response_model=UserResponse)

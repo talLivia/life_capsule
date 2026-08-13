@@ -463,6 +463,13 @@ export const api = {
     return response.data
   },
 
+  // DELETES the member's account and chat history (the producer's chosen
+  // semantics — FAMILY_UNIFIED_SHELL_PLAN §3.3). Permanent.
+  removeFamilyMember: async (userId: string) => {
+    const response = await apiClient.delete(`/api/v1/family/members/${userId}`)
+    return response.data
+  },
+
   revokeFamilyInvite: async (inviteId: string) => {
     const response = await apiClient.delete(`/api/v1/family/invites/${inviteId}`)
     return response.data

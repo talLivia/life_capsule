@@ -218,6 +218,102 @@ async def test_members_requires_producer_role(
     assert resp.status_code == 403
 
 
+# -- removing a family member (FAMILY_UNIFIED_SHELL_PLAN 3.3, decided: delete) --
+
+
+async def test_removing_a_member_deletes_their_account_and_history(
+    client: AsyncClient, db_session, test_user, family_user, auth_headers
+):
+    """The producer chose deletion over unlink: the account AND its chat
+    history go. Permanent by design; the UI warns before asking."""
+    from app.models import Conversation, Message
+    from app.models import Session as ChatSession
+
+    session = ChatSession(
+        user_id=family_user.id, producer_id=test_user.id, status="active"
+    )
+    db_session.add(session)
+    await db_session.flush()
+    db_session.add(Message(session_id=session.id, role="user", content="hi"))
+    db_session.add(Conversation(session_id=session.id, title="Hi", message_count=1))
+    await db_session.commit()
+
+    resp = await client.delete(
+        f"/api/v1/family/members/{family_user.id}", headers=auth_headers
+    )
+    assert resp.status_code == 204
+
+    from sqlalchemy import select
+
+    assert (
+        await db_session.execute(select(User).where(User.id == family_user.id))
+    ).scalar_one_or_none() is None
+    assert (
+        await db_session.execute(
+            select(ChatSession).where(ChatSession.id == session.id)
+        )
+    ).scalar_one_or_none() is None
+    assert (
+        (await db_session.execute(select(Message).where(Message.session_id == session.id)))
+        .scalars()
+        .all()
+        == []
+    )
+
+    members = await client.get("/api/v1/family/members", headers=auth_headers)
+    assert members.json() == []
+
+
+async def test_removing_a_member_keeps_their_invite_as_history(
+    client: AsyncClient, auth_headers, fresh_signup, fresh_signup_auth_headers
+):
+    created = await client.post("/api/v1/family/invites", headers=auth_headers)
+    token = created.json()["token"]
+    await client.post(
+        "/api/v1/family/invites/redeem", json={"token": token},
+        headers=fresh_signup_auth_headers,
+    )
+
+    resp = await client.delete(
+        f"/api/v1/family/members/{fresh_signup.id}", headers=auth_headers
+    )
+    assert resp.status_code == 204
+
+    invites = await client.get("/api/v1/family/invites", headers=auth_headers)
+    row = next(i for i in invites.json() if i["id"] == created.json()["id"])
+    assert row["status"] == "redeemed"  # the invitation was used: history
+    assert row["redeemed_by_user_id"] is None  # the account is gone
+
+
+async def test_cannot_remove_another_producers_member(
+    client: AsyncClient, family_user, other_producer_auth_headers
+):
+    resp = await client.delete(
+        f"/api/v1/family/members/{family_user.id}",
+        headers=other_producer_auth_headers,
+    )
+    assert resp.status_code == 404
+
+
+async def test_removing_a_non_family_account_is_404(
+    client: AsyncClient, auth_headers, other_producer
+):
+    resp = await client.delete(
+        f"/api/v1/family/members/{other_producer.id}", headers=auth_headers
+    )
+    assert resp.status_code == 404
+
+
+async def test_family_cannot_remove_members(
+    client: AsyncClient, family_user, family_user_auth_headers
+):
+    resp = await client.delete(
+        f"/api/v1/family/members/{family_user.id}",
+        headers=family_user_auth_headers,
+    )
+    assert resp.status_code == 403
+
+
 # ── invite creation/listing/revocation ──────────────────────────────────────
 
 

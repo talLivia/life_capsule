@@ -1663,12 +1663,14 @@ access panel shows the one invite lifecycle in two sections — Pending
 (copy/revoke) and Active users (`GET /family/members`, sourced from the
 account linkage so it cannot drift from real access).
 
-🛑 **Step 7 is deliberately NOT built: the remove-access action.** §3.3
-of the plan proposes unlink-and-end-sessions (account + chat history
-survive; re-invitable) over account deletion (history destroyed via the
-sessions cascade), and stops for the producer's decision. Whichever is
-chosen must also end the member's active sessions — WS auth checks
-session ownership only, so an open session outlives a bare unlink.
+**Step 7 DECIDED and built (2026-08-13): remove-access = full account
+deletion**, the producer's explicit choice over the recommended unlink
+after the tradeoff was flagged. `DELETE /family/members/{id}` tears down
+open WebSockets first (WS auth checks session ownership only at
+handshake), nulls the redeemed invite's reference (the invite row itself
+survives as history), then deletes the account — sessions, messages and
+conversations cascade. The Active-users Remove button confirms with
+"Delete account + history?" because it is permanent.
 
 ⚠️ **Flagged for live review:** the calm-themed family chat now renders
 inside the dark shell — the exact configuration globals.css's own history

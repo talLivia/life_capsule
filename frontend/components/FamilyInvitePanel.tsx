@@ -20,6 +20,10 @@ export function FamilyInvitePanel() {
   const [creating, setCreating] = useState(false)
   const [revokingId, setRevokingId] = useState<string | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  // Two-click removal: first click arms, second confirms. The copy names
+  // what it destroys — account AND chat history — because it is permanent.
+  const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null)
+  const [removingId, setRemovingId] = useState<string | null>(null)
 
   // One lifecycle, one load: an invite redeemed elsewhere moves from
   // Pending to Active on the next refresh because the two queries
@@ -69,6 +73,20 @@ export function FamilyInvitePanel() {
       toast.error((err as ApiError)?.response?.data?.detail || 'Could not revoke invite')
     } finally {
       setRevokingId(null)
+    }
+  }
+
+  const removeMember = async (member: FamilyMember) => {
+    setRemovingId(member.user_id)
+    try {
+      await api.removeFamilyMember(member.user_id)
+      toast.success(`${member.display_name} removed`)
+      setConfirmingRemove(null)
+      await load()
+    } catch (err: unknown) {
+      toast.error((err as ApiError)?.response?.data?.detail || 'Could not remove them')
+    } finally {
+      setRemovingId(null)
     }
   }
 
@@ -189,9 +207,28 @@ export function FamilyInvitePanel() {
                       </p>
                     )}
                   </div>
-                  {/* Remove-access action lands here once its semantics are
-                      decided — unlink vs delete, FAMILY_UNIFIED_SHELL_PLAN
-                      3.3. Deliberately absent until then. */}
+                  <button
+                    onClick={() =>
+                      confirmingRemove === member.user_id
+                        ? removeMember(member)
+                        : setConfirmingRemove(member.user_id)
+                    }
+                    disabled={removingId === member.user_id}
+                    className={`shrink-0 px-2.5 py-1.5 rounded-lg border text-xs transition-colors ${
+                      confirmingRemove === member.user_id
+                        ? 'border-red-400 bg-red-500/15 text-red-200'
+                        : 'border-white/10 text-gray-400 hover:border-red-400/40 hover:text-red-300'
+                    }`}
+                    title="Deletes their account and chat history — permanent"
+                  >
+                    {removingId === member.user_id ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : confirmingRemove === member.user_id ? (
+                      'Delete account + history?'
+                    ) : (
+                      'Remove'
+                    )}
+                  </button>
                 </div>
               ))}
             </div>
