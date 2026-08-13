@@ -1,7 +1,10 @@
 # life_capsule — engineering notes
 
 A family story archive. A **producer** records life-story segments at `/record`;
-their **family** talk to the archive at `/talk`. Answers are always the
+their **family** talk to the archive in the same app shell — a family
+account gets exactly three views: Chat (full), Timeline and Family tree
+(view-only; docs/FAMILY_UNIFIED_SHELL_PLAN.md — the dedicated `/talk`
+page is a redirect stub for old invite links). Answers are always the
 producer's own recorded footage — the system never generates speech on their
 behalf.
 
@@ -30,9 +33,10 @@ that had it. Measurements below that name v1 are that A/B's record, kept
 as the evidence they are.
 
 The clip mode's WS contract and frontend behaviour hook
-(`frontend/lib/useVideoClipChat.ts`) are shared by `/talk` and the
-producer's own chat screen, which wrap it in **different layouts** — share
-the logic, not the layout.
+(`frontend/lib/useVideoClipChat.ts`) are shared by the family chat
+(`FamilyChatView` → `VideoClipTalkInterface`) and the producer's own chat
+screen, which wrap it in **different layouts** — share the logic, not the
+layout.
 
 ## video_clips_v2: selection is by utterance UNIT, not by time
 

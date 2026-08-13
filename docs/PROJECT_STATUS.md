@@ -1649,6 +1649,34 @@ answer with zero rows in `avatars` — needs a running stack and should be
 run before/at merge review. The suite covers every layer of it
 individually.
 
+## Family unified shell — 2026-08-13, on branch `family-unified-shell` (stacked on `avatar-dormant`)
+
+Executed per [FAMILY_UNIFIED_SHELL_PLAN.md](FAMILY_UNIFIED_SHELL_PLAN.md),
+steps 1–6, suite green after each. Family accounts use the regular app
+shell: exactly three views (Chat full, Timeline and Family tree
+view-only), backend reads opened via `require_archive_owner` (media's
+access model applied to entities), every write still `require_producer`
+and test-pinned. `/talk` is a redirect stub honoring old invite links;
+new links generate as `/?invite=`; the shell owns register-first auth,
+auto-redeem, and the unlinked-family redeem surface. Settings' Family
+access panel shows the one invite lifecycle in two sections — Pending
+(copy/revoke) and Active users (`GET /family/members`, sourced from the
+account linkage so it cannot drift from real access).
+
+🛑 **Step 7 is deliberately NOT built: the remove-access action.** §3.3
+of the plan proposes unlink-and-end-sessions (account + chat history
+survive; re-invitable) over account deletion (history destroyed via the
+sessions cascade), and stops for the producer's decision. Whichever is
+chosen must also end the member's active sessions — WS auth checks
+session ownership only, so an open session outlives a bare unlink.
+
+⚠️ **Flagged for live review:** the calm-themed family chat now renders
+inside the dark shell — the exact configuration globals.css's own history
+warns reads as a bug (it did for /record). If it grates, restyle the
+family chat onto the shell system; never resurrect a standalone route.
+Not yet exercised live: the whole family flow end to end (invite →
+register → redeem → three views).
+
 ## Known gaps / tech debt
 
 - 🚨 **KNOWN GAP, deliberately unfixed (2026-08-10): a "עוד" question can
