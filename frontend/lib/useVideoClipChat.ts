@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'react-hot-toast'
 import { api, buildSessionWsUrl } from '@/lib/api'
 import { useContinuousVoiceInput } from '@/lib/useContinuousVoiceInput'
-import { useStore } from '@/store/useStore'
 import type { WsMessage } from '@/lib/types'
 
 export interface TalkMessage {
@@ -70,9 +69,6 @@ export function useVideoClipChat() {
   // search, rather than showing "Finding a clip…" during the STT wait.
   const [statusText, setStatusText] = useState('Finding a clip…')
   const [connected, setConnected] = useState(false)
-  // The nav badge's store flag (ConnectionStatus). Zustand setters are
-  // referentially stable, so this is safe in callback dep arrays.
-  const setWsConnected = useStore((s) => s.setWsConnected)
   // Mirrors avatar mode's TTS-playback gating — without it the mic stays hot
   // while a clip's audio plays out loud, and the clip's own audio/echo
   // re-triggers the VAD into sending new "audio" segments mid-playback. Tracks
@@ -207,11 +203,6 @@ export function useVideoClipChat() {
       socket.onopen = () => {
         reconnectAttemptsRef.current = 0
         setConnected(true)
-        // Mirror into the store for the nav's ConnectionStatus badge — the
-        // same thing ChatInterface (avatar mode) does. Display-only: nothing
-        // in the app branches on this flag, and the two chat surfaces never
-        // mount together (mode-routed), so the writers cannot fight.
-        setWsConnected(true)
       }
       socket.onmessage = (event) => {
         try {
@@ -222,7 +213,6 @@ export function useVideoClipChat() {
       }
       socket.onclose = (event) => {
         setConnected(false)
-        setWsConnected(false)
         if (event.code === 4401) {
           reconnectAttemptsRef.current = 0
           toast.error('Your session is no longer valid — starting a new conversation')
@@ -240,7 +230,7 @@ export function useVideoClipChat() {
         socket.close()
       }
     },
-    [handleWsMessage, setWsConnected]
+    [handleWsMessage]
   )
 
   useEffect(() => {
@@ -265,9 +255,6 @@ export function useVideoClipChat() {
       cancelled = true
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       wsRef.current?.close()
-      // onclose fires asynchronously; clear the badge synchronously so a
-      // mode switch or navigation never strands a stale "Connected".
-      setWsConnected(false)
       if (sessionIdRef.current) {
         api.endSession(sessionIdRef.current).catch(() => {})
       }

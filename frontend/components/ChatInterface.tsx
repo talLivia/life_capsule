@@ -168,7 +168,6 @@ function IdleAvatar({ imageUrl }: { imageUrl: string | null }) {
 }
 
 export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCreated }: ChatInterfaceProps) {
-  const setWsConnected = useStore((s) => s.setWsConnected)
 
   const [messages, setMessages] = useState<Message[]>([])
   const [inputText, setInputText] = useState('')
@@ -351,7 +350,6 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
       reconnectAttemptsRef.current = 0
       setReconnectStalled(false)
       setConnectionStatus('connected')
-      setWsConnected(true)
       if (wasFreshConnect) {
         toast.success('Connected to avatar!', { icon: '✨' })
       }
@@ -364,11 +362,9 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
     }
     websocket.onerror = () => {
       setConnectionStatus('disconnected')
-      setWsConnected(false)
     }
     websocket.onclose = (event) => {
       setConnectionStatus('disconnected')
-      setWsConnected(false)
 
       // 4401 = backend rejected the handshake (no token, bad token, or not the
       // session owner). No point reconnecting — surface a clear error instead.
@@ -393,7 +389,7 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
     wsRef.current = websocket
     setWs(websocket)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voiceId, setWsConnected])
+  }, [voiceId])
 
   const handleWebSocketMessage = useCallback((data: WsMessage) => {
     switch (data.type) {
@@ -713,7 +709,6 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
       sessionIdRef.current = null
       wsRef.current?.close()
       wsRef.current = null
-      setWsConnected(false)
 
       // Release the still-playing <video> so navigating away mid-playback
       // doesn't leak. The mic stream/AudioContext/rAF loop are owned by

@@ -6,7 +6,6 @@ import dynamic from 'next/dynamic'
 import Image from 'next/image'
 import { AvatarUpload } from '@/components/AvatarUpload'
 import { AvatarList } from '@/components/AvatarList'
-import { ConnectionStatus } from '@/components/ui/ConnectionStatus'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
 import { AuthModal } from '@/components/AuthModal'
 import { NotificationCenter } from '@/components/notifications/NotificationCenter'
@@ -308,7 +307,6 @@ export default function Home() {
 
           <div className="flex items-center gap-3">
             {/* "Record" now lives in the nav bar (left) as an in-shell view. */}
-            <ConnectionStatus />
             {/* The bell, its dropdown, the full-screen list and whatever a row
                 opens — all of it owns its own state. It needs to know about
                 the record screen for two opposite reasons: nothing may open

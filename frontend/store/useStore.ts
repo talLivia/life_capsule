@@ -45,8 +45,6 @@ interface AppState {
   setSelectedAvatar: (avatarId: string | null) => void
 
   // WebSocket
-  wsConnected: boolean
-  setWsConnected: (connected: boolean) => void
 }
 
 export const useStore = create<AppState>()(
@@ -86,9 +84,6 @@ export const useStore = create<AppState>()(
       setActiveSession: (sessionId) => set({ activeSessionId: sessionId }),
       setSelectedAvatar: (avatarId) => set({ selectedAvatarId: avatarId }),
 
-      // WebSocket
-      wsConnected: false,
-      setWsConnected: (connected) => set({ wsConnected: connected }),
     }),
     {
       name: 'avatar-system-storage',
