@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.interview import require_producer
+from app.api.v1.users import require_current_user
 from app.database import get_db
 from app.models import User
 from app.schemas import EntityMomentResponse, SetRelationRequest, TreeResponse
@@ -31,59 +32,90 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def require_archive_owner(
+    user: User = Depends(require_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """The archive this account may READ, as its owner's User row.
+
+    The same access model media.py's `_archive_owner_id` applies to photos
+    (§9.4) and sessions.py applies to conversations: a producer reads their
+    own archive; a linked family account (invite/redeem flow) reads the
+    producer they are linked to; an unlinked family account has no archive
+    to read. Returns the OWNER row, not just the id, because the timeline
+    needs the owner's recording_language.
+
+    Read-only surfaces only — every write on this router stays
+    `require_producer` (docs/FAMILY_UNIFIED_SHELL_PLAN.md §2.3).
+    """
+    if user.role == "producer":
+        return user
+    if user.role == "family" and user.producer_id:
+        owner = (
+            await db.execute(select(User).where(User.id == user.producer_id))
+        ).scalar_one_or_none()
+        if owner is not None:
+            return owner
+    raise HTTPException(
+        status_code=403, detail="This account is not linked to a story archive"
+    )
+
+
 @router.get("/tree", response_model=TreeResponse)
 async def get_family_tree(
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_producer),
+    owner: User = Depends(require_archive_owner),
 ):
-    """The producer's family tree: generation rows, edges, and anyone the
-    archive knows about but cannot place.
+    """The archive's family tree: generation rows, edges, and anyone the
+    archive knows about but cannot place. Readable by the producer and by
+    their linked family accounts (view-only — the writes below stay
+    producer-only).
 
     Always 200, even with no relations at all — an archive that has not
     captured any family yet is an empty tree, not an error, and the page says
     so rather than showing a failure.
     """
-    return await family_tree.build_tree(db, user.id)
+    return await family_tree.build_tree(db, owner.id)
 
 
 @router.get("/{entity_id}/moments", response_model=list[EntityMomentResponse])
 async def get_entity_moments(
     entity_id: str,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_producer),
+    owner: User = Depends(require_archive_owner),
 ):
     """The recordings that mention this person — clicking a name in the tree.
+    Playback is viewing, so linked family may read it too.
 
-    404 rather than an empty list when the entity is not this producer's: an
+    404 rather than an empty list when the entity is not this archive's: an
     empty list would say "this person was never mentioned", which is a
     different and misleading answer.
     """
-    from sqlalchemy import select
-
-    from app.models import Entity
-
     owned = (
         await db.execute(
-            select(Entity.id).where(Entity.id == entity_id, Entity.producer_id == user.id)
+            select(Entity.id).where(Entity.id == entity_id, Entity.producer_id == owner.id)
         )
     ).scalar_one_or_none()
     if owned is None:
         raise HTTPException(status_code=404, detail="Entity not found")
 
-    return await family_tree.get_entity_moments(db, user.id, entity_id)
+    return await family_tree.get_entity_moments(db, owner.id, entity_id)
 
 
 @router.get("/timeline")
 async def get_timeline(
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_producer),
+    owner: User = Depends(require_archive_owner),
 ):
-    """The producer's life periods, in the interview's own order.
+    """The archive's life periods, in the interview's own order. Readable by
+    the producer and by their linked family accounts.
 
     Read-only. Empty periods are hidden and counted — a category with no
     recording is a question not yet answered, not a fact about the life.
+    Summaries/titles regenerate lazily at read in the OWNER's language —
+    a family read uses the owner's recording_language, same as their own.
     """
-    return await timeline.build_timeline(db, user.id, user.recording_language)
+    return await timeline.build_timeline(db, owner.id, owner.recording_language)
 
 
 @router.get("/relation-types")

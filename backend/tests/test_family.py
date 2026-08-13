@@ -93,6 +93,79 @@ async def family_user_auth_headers(family_user):
     return {"Authorization": f"Bearer {token}"}
 
 
+# ── family read access to the archive views (FAMILY_UNIFIED_SHELL_PLAN §2.3) ─
+
+
+async def test_linked_family_can_read_the_tree_and_timeline(
+    client: AsyncClient, family_user_auth_headers
+):
+    """The unified shell gives family view-only Timeline and Family tree —
+    the reads resolve to the LINKED PRODUCER's archive via
+    require_archive_owner, the same access model media.py applies."""
+    tree = await client.get("/api/v1/entities/tree", headers=family_user_auth_headers)
+    assert tree.status_code == 200
+    assert "generations" in tree.json() or "nodes" in tree.json() or isinstance(tree.json(), dict)
+
+    tl = await client.get("/api/v1/entities/timeline", headers=family_user_auth_headers)
+    assert tl.status_code == 200
+
+
+async def test_linked_family_moments_are_scoped_to_the_linked_archive(
+    client: AsyncClient, family_user_auth_headers
+):
+    """Auth admits the linked family account (a 403 would say otherwise);
+    the entity scoping then answers 404 for an id outside the archive."""
+    resp = await client.get(
+        "/api/v1/entities/00000000-0000-0000-0000-000000000000/moments",
+        headers=family_user_auth_headers,
+    )
+    assert resp.status_code == 404
+
+
+async def test_unlinked_family_cannot_read_any_archive_view(
+    client: AsyncClient, db_session
+):
+    user = User(
+        email="family-unlinked-2@example.com",
+        username="familyunlinked2",
+        hashed_password=get_password_hash("testpassword123"),
+        role="family",
+        producer_id=None,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    headers = {"Authorization": f"Bearer {create_access_token(data={'sub': user.id})}"}
+
+    for path in ("/api/v1/entities/tree", "/api/v1/entities/timeline"):
+        resp = await client.get(path, headers=headers)
+        assert resp.status_code == 403, path
+
+
+async def test_family_cannot_edit_the_tree(
+    client: AsyncClient, family_user_auth_headers
+):
+    """View-only means the writes and the edit vocabulary stay
+    producer-only — the UI hiding is presentation, this 403 is the
+    guarantee."""
+    set_resp = await client.post(
+        "/api/v1/entities/some-entity/relations",
+        json={"relation_type": "sibling", "other_entity_id": "x", "direction": "outgoing"},
+        headers=family_user_auth_headers,
+    )
+    assert set_resp.status_code == 403
+
+    del_resp = await client.delete(
+        "/api/v1/entities/some-entity/relations/some-relation",
+        headers=family_user_auth_headers,
+    )
+    assert del_resp.status_code == 403
+
+    vocab = await client.get(
+        "/api/v1/entities/relation-types", headers=family_user_auth_headers
+    )
+    assert vocab.status_code == 403
+
+
 # ── invite creation/listing/revocation ──────────────────────────────────────
 
 
