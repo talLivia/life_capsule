@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState, type CSSProperties } from 'react'
-import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import Image from 'next/image'
 import { AvatarUpload } from '@/components/AvatarUpload'
@@ -55,6 +54,13 @@ const FamilyTreePanel = dynamic(
 const RecordPanel = dynamic(
   () => import('@/components/RecordPanel').then(m => m.RecordPanel),
   { ssr: false, loading: () => <PanelLoader label="Loading your story…" /> },
+)
+
+// The family member's chat — the /talk experience re-homed into the shell
+// (docs/FAMILY_UNIFIED_SHELL_PLAN.md §2.2).
+const FamilyChatView = dynamic(
+  () => import('@/components/FamilyChatView').then(m => m.FamilyChatView),
+  { ssr: false, loading: () => <PanelLoader label="Connecting…" /> },
 )
 
 function PanelLoader({ label }: { label: string }) {
@@ -147,29 +153,28 @@ const STATS = [
 
 type View = 'home' | 'avatars' | 'chat' | 'voice' | 'history' | 'settings' | 'record' | 'tree' | 'timeline'
 
+// The complete set of views a family account may occupy — Chat fully
+// usable, Timeline and Family tree view-only. Order here is not the nav
+// order; see navItems.
+const FAMILY_VIEWS: View[] = ['chat', 'timeline', 'tree']
+
 export default function Home() {
   const { isAuthenticated, user, clearAuth } = useStore()
-  const router = useRouter()
 
-  // Access-control fix: a family account has no legitimate use for this
-  // page at all (avatar upload, voice cloning, interview recording,
-  // producer settings) — before this, there was NO role-based redirect
-  // anywhere in the app (confirmed: AuthModal's login/register handlers
-  // never navigate, and this page's only role check just hid the
-  // "Record" nav link). A family account landing here for any reason
-  // (bookmark, browser back button, a stale link) rendered the full
-  // producer control panel with no gate at all. Redirect BEFORE the
-  // producer UI ever renders, not just after login, so every entry path
-  // is covered, not only the login flow.
+  // A family account uses THIS shell now (the dedicated /talk page is
+  // gone — docs/FAMILY_UNIFIED_SHELL_PLAN.md): exactly three views — Chat
+  // (fully usable), Timeline and Family tree (view-only). Everything else
+  // is neither rendered nor reachable, and the clamp below closes the
+  // deep-link/back-button paths the old redirect used to cover. The UI
+  // hiding is presentation; the backend's per-request 403s on every write
+  // are the guarantee.
   const isFamilyUser = isAuthenticated() && user?.role === 'family'
   // The producer's own chat_mode decides which chat component their /chat view
-  // renders — mirrors /talk's routing. Video-clip modes must NOT use the
-  // avatar-only ChatInterface (it can't handle video_clip_response).
+  // renders — mirrors the family routing FamilyChatView applies. Video-clip
+  // modes must NOT use the avatar-only ChatInterface (it can't handle
+  // video_clip_response).
   const isVideoClipMode =
     user?.chat_mode === 'video_clips_v2'
-  useEffect(() => {
-    if (isFamilyUser) router.replace('/talk')
-  }, [isFamilyUser, router])
 
   const [selectedAvatar, setSelectedAvatar] = useState<string | null>(null)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
@@ -179,6 +184,13 @@ export default function Home() {
   // arrives.
   const [resumeSessionId, setResumeSessionId] = useState<string | null>(null)
   const [view, setView] = useState<View>('home')
+
+  // Family accounts land on Chat and can only ever be on chat/tree/timeline
+  // — including via stale bookmarks, the ?view= deep link, or a mode/role
+  // change mid-session.
+  useEffect(() => {
+    if (isFamilyUser && !FAMILY_VIEWS.includes(view)) setView('chat')
+  }, [isFamilyUser, view])
 
   // NOTE deliberately NOT bounced away: Avatar Studio stays reachable in
   // video-clip mode (its nav tab is hidden, but Settings' avatar-mode card
@@ -230,7 +242,15 @@ export default function Home() {
   // modes the story clips carry the producer's real face/voice, so hide those
   // tabs entirely (the avatar is auto-resolved under the hood — see below).
   const isProducerUser = user?.role === 'producer'
-  const navItems: { id: View; icon: typeof Sparkles; label: string; disabled?: boolean }[] = [
+  const navItems: { id: View; icon: typeof Sparkles; label: string; disabled?: boolean }[] = isFamilyUser
+    ? [
+        // The family account's whole world: ask questions, browse the life,
+        // browse the people. No Record, no Settings, no History, no edits.
+        { id: 'chat' as View, icon: MessageCircle, label: 'Chat' },
+        { id: 'timeline' as View, icon: CalendarRange, label: 'Timeline' },
+        { id: 'tree' as View, icon: Network, label: 'Family' },
+      ]
+    : [
     { id: 'home', icon: Sparkles, label: 'Home' },
     // Recording lives inside the shell now (was the /record route). Producer-only.
     ...(isProducerUser ? [{ id: 'record' as View, icon: Feather, label: 'Record' }] : []),
@@ -251,17 +271,6 @@ export default function Home() {
     { id: 'history', icon: History, label: 'History' },
     { id: 'settings', icon: Settings, label: 'Settings' },
   ]
-
-  // Render nothing of the producer studio while the redirect above is in
-  // flight — router.replace fires from a useEffect (after this render),
-  // so without this the full producer UI would still flash for a frame.
-  if (isFamilyUser) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <span className="inline-block w-2 h-2 rounded-full bg-primary-500 animate-pulse" />
-      </div>
-    )
-  }
 
   return (
     <div className="min-h-screen">
@@ -481,11 +490,15 @@ export default function Home() {
             useVideoClipChat hook — this is what fixes the old hang on "Finding
             a clip…" (ChatInterface, the avatar-only path, never handled
             video_clip_response). Avatar mode stays on ChatInterface. */}
+        {/* Family chat: availability-gated, mode-routed by the LINKED
+            producer's setting — the whole /talk experience, in-shell. */}
+        {view === 'chat' && isFamilyUser && <FamilyChatView />}
+
         {/* v2 needs no avatar anywhere — the session is producer-keyed
             (docs/V2_PRIMARY_AVATAR_DORMANT_PLAN.md). */}
-        {view === 'chat' && isVideoClipMode && <ProducerVideoClipChat />}
+        {view === 'chat' && !isFamilyUser && isVideoClipMode && <ProducerVideoClipChat />}
 
-        {view === 'chat' && selectedAvatar && !isVideoClipMode && (
+        {view === 'chat' && !isFamilyUser && selectedAvatar && !isVideoClipMode && (
           <div className="max-w-7xl mx-auto px-6 py-10 animate-fade-in">
             <div className="mb-6">
               <h1 className="text-3xl font-black gradient-text mb-2">Live Conversation</h1>
@@ -501,7 +514,7 @@ export default function Home() {
         )}
 
         {/* Avatar mode, no avatar selected — redirect to Avatar Studio. */}
-        {view === 'chat' && !selectedAvatar && !isVideoClipMode && (
+        {view === 'chat' && !isFamilyUser && !selectedAvatar && !isVideoClipMode && (
           <div className="max-w-7xl mx-auto px-6 py-10 text-center">
             <p className="text-gray-400 mb-4">Please select an avatar first.</p>
             <button onClick={() => setView('avatars')} className="btn-primary">
