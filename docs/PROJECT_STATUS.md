@@ -1684,6 +1684,32 @@ calm-inside-shell seam now applies only there. Not yet exercised live:
 the whole family flow end to end (invite → register → redeem → three
 views).
 
+## Light mode — 2026-08-13, on branch `light-mode` (stacked on `family-unified-shell`)
+
+The whole color system is token-driven now: the primary/accent/surface
+Tailwind scales and new semantic tokens (ink/muted/edge/veil/nav) read
+CSS variables — `:root` holds the dark values (visuals unchanged, first
+paint stays dark), `html.light` restates them with the green/cream
+palette (page cream #F4F1E8, cards #FAFAF6 with soft shadows, CTA green
+#6B7D45, heading olive #4A5530, sage nav #8A9A6B, muted text darkened
+for AA on cream). All 33 component files swept off hardcoded dark
+utilities onto tokens; ThemeToggle (which was never removed — only
+ConnectionStatus was) now syncs html.dark/html.light with the persisted
+store choice, defaulting dark. Stacked on the family branch deliberately:
+this touches nearly every file that stack rewrote, and building it off
+main would guarantee conflicts on all of them.
+
+Deliberate interpretations (chosen, not defaulted — review live): video
+letterboxes and processing scrims are BLACK in both themes; photo-hover
+scrims and modal backdrops dim with black in both themes; polaroid
+frames stay white; the wordmark PNG (dark-surface variant, no light
+asset exists) renders on the sage nav — if it reads poorly a light
+asset is needed, which cannot be generated here. Not seen in a browser
+yet: every screen needs a visual pass in light mode — the token sweep is
+verified by build, not by eye. Status/feedback colors (badge greens,
+ambers, reds) kept their tinted-chip form in both themes; fine-tuning
+their contrast on cream is a named follow-up, not silently done.
+
 ## Known gaps / tech debt
 
 - 🚨 **KNOWN GAP, deliberately unfixed (2026-08-10): a "עוד" question can
