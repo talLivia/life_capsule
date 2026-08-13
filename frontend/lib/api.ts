@@ -456,6 +456,13 @@ export const api = {
     return response.data
   },
 
+  // Active family accounts — the redeemed half of the invite lifecycle,
+  // sourced from the account linkage itself (FAMILY_UNIFIED_SHELL_PLAN §3.1).
+  listFamilyMembers: async () => {
+    const response = await apiClient.get('/api/v1/family/members')
+    return response.data
+  },
+
   revokeFamilyInvite: async (inviteId: string) => {
     const response = await apiClient.delete(`/api/v1/family/invites/${inviteId}`)
     return response.data

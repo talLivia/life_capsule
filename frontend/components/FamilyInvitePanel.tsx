@@ -1,10 +1,10 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Gift, Copy, Loader2, X, Check } from 'lucide-react'
+import { Gift, Copy, Loader2, X, Check, Users } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
-import type { ApiError, FamilyInvite } from '@/lib/types'
+import type { ApiError, FamilyInvite, FamilyMember } from '@/lib/types'
 
 function buildInviteUrl(token: string): string {
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
@@ -15,16 +15,25 @@ function buildInviteUrl(token: string): string {
 
 export function FamilyInvitePanel() {
   const [invites, setInvites] = useState<FamilyInvite[]>([])
+  const [members, setMembers] = useState<FamilyMember[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [revokingId, setRevokingId] = useState<string | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
+  // One lifecycle, one load: an invite redeemed elsewhere moves from
+  // Pending to Active on the next refresh because the two queries
+  // partition on the same fact (invite status <-> account linkage).
   const load = async () => {
     setLoading(true)
     try {
-      const data: FamilyInvite[] = await api.listFamilyInvites()
-      setInvites(data)
+      const [invitesData, membersData] = await Promise.all([
+        api.listFamilyInvites() as Promise<FamilyInvite[]>,
+        api.listFamilyMembers() as Promise<FamilyMember[]>,
+      ])
+      setInvites(invitesData)
+      setMembers(membersData)
+      setLoadedAt(Date.now())
     } catch (err: unknown) {
       toast.error((err as ApiError)?.response?.data?.detail || 'Could not load invites')
     } finally {
@@ -73,18 +82,14 @@ export function FamilyInvitePanel() {
     }
   }
 
-  const statusBadge = (status: FamilyInvite['status']) => {
-    const styles: Record<FamilyInvite['status'], string> = {
-      pending: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-      redeemed: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-      revoked: 'bg-gray-500/10 text-gray-500 border-gray-500/20',
-    }
-    return (
-      <span className={`text-xs px-2 py-0.5 rounded-full border ${styles[status]}`}>
-        {status}
-      </span>
-    )
-  }
+  // Pending = still redeemable. Redeemed invites appear as Active users
+  // below; revoked/expired ones are dead weight and not shown. Expiry is
+  // judged at load time (a re-render must stay pure), which is when the
+  // list was fetched anyway.
+  const [loadedAt, setLoadedAt] = useState(() => Date.now())
+  const pending = invites.filter(
+    (inv) => inv.status === 'pending' && new Date(inv.expires_at).getTime() > loadedAt
+  )
 
   return (
     <div className="card flex flex-col gap-5 mt-6">
@@ -110,32 +115,29 @@ export function FamilyInvitePanel() {
       {loading ? (
         <div className="flex items-center justify-center py-8 text-gray-500 text-sm">
           <Loader2 size={16} className="animate-spin mr-2" />
-          Loading invites…
+          Loading…
         </div>
-      ) : invites.length === 0 ? (
-        <p className="text-sm text-gray-500 text-center py-4">No invites yet.</p>
       ) : (
-        <div className="flex flex-col gap-2">
-          {invites.map((invite) => (
-            <div
-              key={invite.id}
-              className="flex items-center gap-3 px-4 py-3 rounded-xl bg-surface-800/60 border border-white/8"
-            >
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  {statusBadge(invite.status)}
-                  <span className="text-xs text-gray-500">
-                    created {new Date(invite.created_at).toLocaleDateString()}
-                  </span>
-                </div>
-                {invite.status === 'pending' && (
-                  <p className="text-xs text-gray-500 mt-1 truncate">
-                    {buildInviteUrl(invite.token)}
-                  </p>
-                )}
-              </div>
-              {invite.status === 'pending' && (
-                <>
+        <>
+          {/* Pending invites: sent, not yet redeemed */}
+          <h3 className="text-sm font-semibold text-gray-300">Pending invites</h3>
+          {pending.length === 0 ? (
+            <p className="text-sm text-gray-500">No pending invites.</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {pending.map((invite) => (
+                <div
+                  key={invite.id}
+                  className="flex items-center gap-3 px-4 py-3 rounded-xl bg-surface-800/60 border border-white/8"
+                >
+                  <div className="flex-1 min-w-0">
+                    <span className="text-xs text-gray-500">
+                      created {new Date(invite.created_at).toLocaleDateString()}
+                    </span>
+                    <p className="text-xs text-gray-500 mt-1 truncate">
+                      {buildInviteUrl(invite.token)}
+                    </p>
+                  </div>
                   <button
                     onClick={() => copyLink(invite)}
                     className="btn-secondary !px-3 !py-1.5 text-xs flex-shrink-0"
@@ -156,11 +158,45 @@ export function FamilyInvitePanel() {
                       <X size={13} />
                     )}
                   </button>
-                </>
-              )}
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )}
+
+          {/* Active users: accounts that redeemed an invite */}
+          <div className="flex items-center gap-2 mt-2">
+            <Users size={14} className="text-primary-400" />
+            <h3 className="text-sm font-semibold text-gray-300">Active users</h3>
+          </div>
+          {members.length === 0 ? (
+            <p className="text-sm text-gray-500">
+              Nobody has joined yet — they appear here the moment an invite is used.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {members.map((member) => (
+                <div
+                  key={member.user_id}
+                  className="flex items-center gap-3 px-4 py-3 rounded-xl bg-surface-800/60 border border-white/8"
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-white truncate" dir="auto">
+                      {member.display_name}
+                    </p>
+                    {member.joined_at && (
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        joined {new Date(member.joined_at).toLocaleDateString()}
+                      </p>
+                    )}
+                  </div>
+                  {/* Remove-access action lands here once its semantics are
+                      decided — unlink vs delete, FAMILY_UNIFIED_SHELL_PLAN
+                      3.3. Deliberately absent until then. */}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   )

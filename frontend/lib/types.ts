@@ -555,6 +555,12 @@ export interface FamilyInvite {
   redeemed_at?: string | null
 }
 
+export interface FamilyMember {
+  user_id: string
+  display_name: string
+  joined_at?: string | null
+}
+
 // Producer-level /talk chat mode. "video_clips_v2" (Prompt 15) is the
 // full-archive-reading clip mode; the original chunk-retrieval
 // "video_clips" (v1) was removed after the A/B settled it
