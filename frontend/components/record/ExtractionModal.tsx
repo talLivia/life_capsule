@@ -148,7 +148,7 @@ export function ExtractionModal({ segmentId, title, onClose }: ExtractionModalPr
       onClick={onClose}
     >
       <div
-        className="w-full max-w-2xl glass-card flex flex-col max-h-full"
+        className="w-full max-w-2xl modal-card flex flex-col max-h-full"
         // The backdrop closes on click; the panel must not, or selecting
         // transcript text would dismiss the thing being read.
         onClick={e => e.stopPropagation()}

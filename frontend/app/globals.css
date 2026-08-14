@@ -206,6 +206,19 @@
     @apply glass-card p-6;
   }
 
+  /* Floating surfaces — modals, dropdowns — are OPAQUE in both themes.
+     glass-card's 60% surface works for in-page cards (it samples the page
+     wash), but a dialog floats over arbitrary content: in light mode 60%
+     near-white ghosts whatever sits behind it (reported live on the
+     extraction modal), and nesting backdrop-filters inside a filtered
+     overlay samples the wrong root anyway — the same lesson the tree's
+     moments dialog learned in Phase 4c. No blur, full surface, real
+     shadow. */
+  .modal-card {
+    @apply relative rounded-2xl overflow-hidden bg-surface-800
+           border border-edge shadow-glass;
+  }
+
   .card-glow {
     @apply glass-card p-6;
     background: var(--card-gradient);

@@ -1165,7 +1165,7 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
           onClick={() => setShowShortcuts(false)}
         >
           <div
-            className="w-full max-w-md mx-4 glass-card rounded-2xl p-6 animate-scale-in"
+            className="w-full max-w-md mx-4 modal-card p-6 animate-scale-in"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-4">

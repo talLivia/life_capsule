@@ -80,7 +80,7 @@ export function NotificationBell({
         <div
           role="menu"
           className="absolute right-0 top-full mt-2 w-[min(22rem,calc(100vw-2rem))] z-50
-            glass-card overflow-hidden animate-fade-in flex flex-col"
+            modal-card overflow-hidden animate-fade-in flex flex-col"
         >
           <div className="px-4 py-2.5 border-b border-edge flex items-center justify-between gap-3">
             <span className="text-xs uppercase tracking-wide font-semibold text-muted">

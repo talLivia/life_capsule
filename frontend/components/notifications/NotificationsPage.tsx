@@ -37,7 +37,7 @@ export function NotificationsPage({
 
   return (
     <div
-      className="fixed inset-0 z-[70] bg-surface-900/95 backdrop-blur-xl animate-fade-in overflow-y-auto"
+      className="fixed inset-0 z-[70] bg-surface-900 animate-fade-in overflow-y-auto"
       role="dialog"
       aria-modal="true"
       aria-labelledby="notifications-heading"

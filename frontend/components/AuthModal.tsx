@@ -133,7 +133,7 @@ export function AuthModal({ defaultTab = 'login', title, description }: AuthModa
       aria-labelledby="auth-modal-title"
       aria-describedby="auth-modal-desc"
     >
-      <div ref={dialogRef} className="w-full max-w-md mx-4 glass-card rounded-2xl p-8 animate-scale-in">
+      <div ref={dialogRef} className="w-full max-w-md mx-4 modal-card p-8 animate-scale-in">
         {/* Logo */}
         <div className="flex flex-col items-center gap-4 mb-8">
           {/* Larger here than in the nav — this is the first screen anyone

@@ -453,7 +453,7 @@ export function EntityConfirmModal({
   if (!pending || questionCount === 0) {
     return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4 animate-fade-in">
-        <div className="w-full max-w-md glass-card p-6 flex flex-col items-center gap-3 text-center">
+        <div className="w-full max-w-md modal-card p-6 flex flex-col items-center gap-3 text-center">
           <Check size={22} className="text-primary-400" />
           <h2 className="text-lg font-bold text-ink">Nothing to check</h2>
           <p className="text-sm text-muted">
@@ -489,7 +489,7 @@ export function EntityConfirmModal({
       aria-modal="true"
       aria-labelledby="entity-confirm-heading"
     >
-      <div className="w-full max-w-lg glass-card p-6 flex flex-col gap-5 max-h-[85vh] overflow-y-auto">
+      <div className="w-full max-w-lg modal-card p-6 flex flex-col gap-5 max-h-[85vh] overflow-y-auto">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             {/* No "N of M" any more. The producer picked this recording off a
