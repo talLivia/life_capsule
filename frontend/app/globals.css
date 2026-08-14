@@ -78,8 +78,12 @@
     --ink-soft: 74 74 68;
     --muted: 110 106 92;       /* darkened from #7A7668 for AA on cream */
     --muted2: 122 118 104;     /* the palette's #7A7668, for subtle text */
-    --edge: #e8e4d8;
-    --edge-strong: #d5d0be;
+    /* Clearly darker than the page cream (#F4F1E8) so every bordered
+       container — cards, panels, the tree canvas, timeline chips — reads
+       as separated at a glance (live report: the old #E8E4D8 was ~4%
+       off the page tone and vanished). One value, every surface. */
+    --edge: #d7d2c0;
+    --edge-strong: #c2bca6;
     --veil: rgba(74, 85, 48, 0.07);
     --nav-bg: rgba(138, 154, 107, 0.96);  /* sage-olive bar */
     --nav-pill: rgba(94, 112, 56, 0.30);
