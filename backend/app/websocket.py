@@ -712,7 +712,34 @@ class ConnectionManager:
                 messages.append({"role": "assistant", "content": response_text})
                 data["messages"] = messages
                 latency = (datetime.now(timezone.utc) - started_at).total_seconds()
-                await self._persist_message(session_id, "assistant", response_text, latency=latency)
+                # The engine's bookkeeping, stashed by _response_producer.
+                answer = data.pop("_pending_spoken_answer", None)
+                await self._persist_message(
+                    session_id,
+                    "assistant",
+                    response_text,
+                    latency=latency,
+                    # Same metadata record the v2 handler persists — it is
+                    # what select_units' next turn reads for already-shown
+                    # marks and the history block, in BOTH modes now.
+                    metadata=(
+                        {"shown_units": answer.shown_units}
+                        if answer and answer.shown_units
+                        else None
+                    ),
+                )
+                if answer and answer.clarify:
+                    # The spoken line asked "which one?"; the buttons arrive
+                    # as chat data (generated prose is chat-only, never TTS).
+                    await self.send_message(
+                        session_id,
+                        {
+                            "type": "clarify",
+                            "question": answer.clarify.get("question", ""),
+                            "options": answer.clarify.get("options", []),
+                            "for_question": text,
+                        },
+                    )
 
         except Exception as e:
             logger.error(f"Text error [{session_id}]: {type(e).__name__}: {e}", exc_info=True)
@@ -957,16 +984,32 @@ class ConnectionManager:
             if not group_id:
                 full_text = self._NO_PIPELINE_MSG
             else:
+                # THE SHARED ENGINE (docs/AVATAR_SHARED_ENGINE_PLAN.md): the
+                # same select_units call v2 runs — same retrieval, same
+                # coreference-via-history, same disambiguation, same
+                # never-invent — rendered as narrated text instead of a
+                # video by the spoken renderer.
+                from app.services import full_archive_retrieval, spoken_answer
+
                 try:
-                    full_text = await response_assembler.assemble_response(
-                        question=text,
-                        group_id=group_id,
-                        recording_language=recording_language,
-                        session_id=session_id,
+                    selection = await full_archive_retrieval.select_units(
+                        text, group_id, recording_language, session_id
                     )
+                    answer = await spoken_answer.render_spoken_answer(
+                        selection, group_id
+                    )
+                    full_text = answer.text
+                    # Stashed for _handle_text_input_inner: shown-units
+                    # metadata on the persisted assistant message (the same
+                    # record the v2 handler writes — it is what the next
+                    # turn's history block and already-shown marks read),
+                    # and the clarify options for the chat surface.
+                    data["_pending_spoken_answer"] = answer
                 except Exception as e:
-                    logger.error(f"response_assembler failed [{session_id}]: {e}")
-                    full_text = response_assembler.NO_STORY_FALLBACK
+                    logger.error(f"spoken answer failed [{session_id}]: {e}")
+                    # An outage is not an answer: never NO_STORY here — that
+                    # exact conflation is the documented false-statement bug.
+                    full_text = response_assembler.TRANSIENT_FAILURE_FALLBACK
 
             if session_id in self.active_connections:
                 # The whole reply is already known (retrieval, not live

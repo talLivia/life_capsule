@@ -606,6 +606,117 @@ async def test_load_session_data_resolves_producer_without_any_avatar(
 
 
 @pytest.mark.asyncio
+async def test_an_avatar_turn_runs_the_shared_engine_and_persists_shown_units(monkeypatch):
+    """AVATAR_SHARED_ENGINE_PLAN step 3: the avatar text path runs
+    select_units + the spoken renderer, speaks the verbatim unit text, and
+    persists the SAME shown_units metadata record the v2 handler writes —
+    the record the next turn's history block and already-shown marks read."""
+    from app.services import full_archive_retrieval as far
+    from app.services import spoken_answer as sa_mod
+
+    unit = far.UtteranceUnit(
+        unit_id="u1", segment_id="seg-a", index=0,
+        start_sec=0.0, end_sec=2.0, text="נולדתי בטבריה",
+    )
+    selection = far.UnitSelection(clips=[], selected_units=[unit])
+
+    async def fake_select(question, group_id, recording_language, session_id):
+        return selection
+
+    async def no_names(segment_ids, group_id):
+        return {}
+
+    monkeypatch.setattr(far, "select_units", fake_select)
+    monkeypatch.setattr(sa_mod, "_entity_names_by_segment", no_names)
+
+    m = ConnectionManager()
+    ws = _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+
+    persisted = []
+
+    async def record_persist(session_id, role, content, latency=None, metadata=None, video_url=None):
+        persisted.append({"role": role, "content": content, "metadata": metadata})
+
+    monkeypatch.setattr(m, "_persist_message", record_persist)
+
+    await m._handle_text_input_inner("s1", "איפה נולדת?")
+
+    assistant = [p for p in persisted if p["role"] == "assistant"]
+    assert len(assistant) == 1
+    assert assistant[0]["content"] == "נולדתי בטבריה"
+    assert assistant[0]["metadata"] == {
+        "shown_units": [{"key": "seg-a:0.00", "unit_id": "u1", "text": "נולדתי בטבריה"}]
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_avatar_clarify_speaks_the_fixed_line_and_sends_options(monkeypatch):
+    """Which-אמנון in avatar mode: a fixed spoken line (generated prose
+    never reaches TTS) plus a `clarify` chat event carrying the options and
+    the original question, so the UI can re-ask on a click."""
+    from app.services import full_archive_retrieval as far
+    from app.services import spoken_answer as sa_mod
+
+    clarify = {"question": "לאיזה אמנון התכוונת?", "options": ["אמנון", "אמנון נחום"]}
+    selection = far.UnitSelection(clips=[], selected_units=[], clarify=clarify)
+
+    async def fake_select(question, group_id, recording_language, session_id):
+        return selection
+
+    monkeypatch.setattr(far, "select_units", fake_select)
+
+    m = ConnectionManager()
+    ws = _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+
+    async def swallow_persist(*a, **k):
+        return None
+
+    monkeypatch.setattr(m, "_persist_message", swallow_persist)
+
+    await m._handle_text_input_inner("s1", "ספר לי על אמנון")
+
+    spoken = [msg for msg in ws.sent if msg.get("type") == "message"]
+    assert spoken and spoken[-1]["content"] == sa_mod.CLARIFY_SPOKEN_LINE
+
+    clarify_events = [msg for msg in ws.sent if msg.get("type") == "clarify"]
+    assert clarify_events == [{
+        "type": "clarify",
+        "question": "לאיזה אמנון התכוונת?",
+        "options": ["אמנון", "אמנון נחום"],
+        "for_question": "ספר לי על אמנון",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_an_engine_outage_speaks_the_transient_line_not_no_story(monkeypatch):
+    """The documented outage-as-no-story conflation, now fixed in avatar
+    mode too: a failed engine call must never claim the archive is empty."""
+    from app.services import full_archive_retrieval as far
+    from app.services.response_assembler import TRANSIENT_FAILURE_FALLBACK
+
+    async def boom(question, group_id, recording_language, session_id):
+        raise RuntimeError("engine down")
+
+    monkeypatch.setattr(far, "select_units", boom)
+
+    m = ConnectionManager()
+    ws = _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+
+    async def swallow_persist(*a, **k):
+        return None
+
+    monkeypatch.setattr(m, "_persist_message", swallow_persist)
+
+    await m._handle_text_input_inner("s1", "מי האחים שלך?")
+
+    spoken = [msg for msg in ws.sent if msg.get("type") == "message"]
+    assert spoken and spoken[-1]["content"] == TRANSIENT_FAILURE_FALLBACK
+
+
+@pytest.mark.asyncio
 async def test_a_no_story_reply_is_persisted_like_any_other_turn(monkeypatch):
     """It was not, and the gap silently broke follow-up resolution.
 
