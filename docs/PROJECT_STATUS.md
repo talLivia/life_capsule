@@ -1768,6 +1768,18 @@ CLAUDE.md/PROJECT_STATUS was taken on gemini-3.6-flash (verified
   repo-side record. `LLM_MODEL=gemini-flash-lite-latest` is still a
   moving alias — left as-is deliberately, flagged for the same treatment
   if it ever misbehaves.)
+
+  **EXTENDED 2026-08-16 (producer): ALL models pinned and consolidated.**
+  `LLM_MODEL` is now `gemini-3.5-flash-lite` (its live-verified resolution
+  on pin day), and .env gained a single "MODEL VERSIONS — ALL PINNED"
+  section that inventories every model the app calls: the two Gemini chat
+  models (env), `gemini-embedding-001` (config default; changing it
+  invalidates stored embeddings), Deepgram `nova-3` (config default),
+  local Whisper `medium`/`large-v3-turbo`, and the edge-tts voice map
+  (tts.py). The audit found exactly two floating aliases ever existed —
+  both now pinned; everything else was already version-stable. Policy:
+  upgrades are deliberate edits of that one section, dated, gated on
+  `prompt_regression.py` (and the relevant evals) before adoption.
 - **Every "the model does X" measurement is stale again**: the 586-token
   thinking floor, breadth behavior, clarify stability (3/3), latency —
   all measured on 3.6. Re-run `prompt_regression.py` against its saved

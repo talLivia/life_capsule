@@ -127,11 +127,17 @@ This is accepted deliberately — but the REASON has changed, and the old one
 here was measurably false by 2026-08-01. Corrected rather than deleted,
 because the way it went stale is the lesson:
 
-**⚠️ `gemini-flash-latest` and `gemini-flash-lite-latest` are moving aliases.**
-They resolve to `gemini-3.6-flash` and `gemini-3.5-flash-lite` *today*
-(`response.model_version` reports it — check there, don't assume). Anything
-measured about "the model" expires silently when the alias moves. Everything
-below is dated for that reason.
+**⚠️ `gemini-flash-latest` and `gemini-flash-lite-latest` are moving
+aliases — and for exactly that reason the app no longer uses them.** The
+warning proved out on 2026-08-13: flash-latest silently re-pointed to a
+two-day-old gemini-3.7-flash whose launch crunch 503'd 11/40 archive
+reads. Since 2026-08-16 every model is PINNED to an explicit version in
+.env's MODEL VERSIONS section (gemini-3.6-flash / gemini-3.5-flash-lite —
+what the aliases resolved to when the measurements below were made, each
+verified live via `response.model_version`). Upgrading a model is a
+deliberate, dated edit of that one section, gated on a
+`prompt_regression.py` pass. Everything below is dated for the same
+reason it always was: it describes a specific model version.
 
 This section previously claimed flash-lite had **0 thinking tokens**, was
 **6/6 identical everywhere**, **lost the wife-pronoun follow-up**, and
