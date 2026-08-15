@@ -33,6 +33,7 @@ appropriate user-facing messages.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import AsyncGenerator, Dict, List, Optional
 
@@ -170,6 +171,28 @@ def _map_openai_exception(exc: Exception) -> LLMError:
     ):
         return LLMUnavailable(str(exc))
     return LLMError(str(exc))
+
+
+# ── 503-only retry for Gemini ────────────────────────────────────────────────
+# Measured 2026-08-16 (40-call control run on untouched code): Gemini's
+# "high demand" shedding is BURSTY — 11/40 calls 503'd, 10 of them inside one
+# ~60s window with successes interleaved seconds apart. A retry therefore has
+# real odds: in that sample one retry recovers ~6/11 failures and a second
+# recovers ~10/11 (deep-burst neighbors fail back-to-back, so the second
+# attempt with a longer backoff is what catches them).
+#
+# SCOPED STRICTLY TO 503/UNAVAILABLE: overload is the one error where "the
+# same request seconds later" is genuinely a different draw. Everything else
+# keeps failing honestly on the first attempt — a 429 means back OFF, not
+# retry; auth/4xx mean the request is wrong and will be wrong again.
+_OVERLOAD_RETRIES = 2  # extra attempts after the first (3 total)
+_OVERLOAD_BACKOFF_SECONDS = (2.0, 4.0)
+# Patchable seam so tests don't sleep through real backoffs.
+_sleep = asyncio.sleep
+
+
+def _is_gemini_overload(exc: Exception) -> bool:
+    return isinstance(exc, genai_errors.APIError) and getattr(exc, "code", None) == 503
 
 
 def _map_gemini_exception(exc: Exception) -> LLMError:
@@ -373,19 +396,32 @@ class LLMService:
                 thinking_budget=thinking_budget
             )
         config = genai_types.GenerateContentConfig(**config_kwargs)
-        try:
-            response = await self.client.aio.models.generate_content(
-                model=model or self.model,
-                contents=self._gemini_contents(messages),
-                config=config,
-            )
-        except Exception as e:
-            mapped = _map_gemini_exception(e)
-            logger.error(
-                "gemini_call_failed",
-                extra={"error_type": type(e).__name__, "mapped": type(mapped).__name__},
-            )
-            raise mapped from e
+        response = None
+        for attempt in range(1 + _OVERLOAD_RETRIES):
+            if attempt:
+                await _sleep(_OVERLOAD_BACKOFF_SECONDS[attempt - 1])
+            try:
+                response = await self.client.aio.models.generate_content(
+                    model=model or self.model,
+                    contents=self._gemini_contents(messages),
+                    config=config,
+                )
+                break
+            except Exception as e:
+                # 503 overload only, and only while attempts remain — see the
+                # retry constants above for the measured reasoning.
+                if _is_gemini_overload(e) and attempt < _OVERLOAD_RETRIES:
+                    logger.warning(
+                        f"gemini 503 (attempt {attempt + 1} of {1 + _OVERLOAD_RETRIES}); "
+                        f"retrying in {_OVERLOAD_BACKOFF_SECONDS[attempt]}s"
+                    )
+                    continue
+                mapped = _map_gemini_exception(e)
+                logger.error(
+                    "gemini_call_failed",
+                    extra={"error_type": type(e).__name__, "mapped": type(mapped).__name__},
+                )
+                raise mapped from e
 
         text = getattr(response, "text", None)
         if not text:

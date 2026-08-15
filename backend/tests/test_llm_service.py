@@ -15,6 +15,7 @@ LLM_PROVIDER selects — verified here for all three.
 """
 
 import pytest
+from google.genai import errors as genai_errors
 
 from app.services.llm import _DETERMINISTIC_SEED, LLM_CALL_TIMEOUT_SECONDS, LLMService
 
@@ -179,3 +180,149 @@ def test_gemini_usage_log_handles_absent_cache_field():
 
     record = next(r for r in records if r.msg == "llm_usage")
     assert record.cache_read_tokens == 0
+
+
+# ── 503-only retry (measured burst behavior, 2026-08-16 control run) ─────────
+
+
+def _gemini_service(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "test-key")
+    return LLMService()
+
+
+class _Fake503(genai_errors.ServerError):
+    def __init__(self):
+        Exception.__init__(self, "503 UNAVAILABLE. high demand")
+        self.code = 503
+
+
+class _Fake429(genai_errors.ClientError):
+    def __init__(self):
+        Exception.__init__(self, "429 RESOURCE_EXHAUSTED")
+        self.code = 429
+
+
+class _FakeResp:
+    text = "ok"
+    usage_metadata = None
+
+
+def _scripted_generate(outcomes, calls):
+    """generate_content stub that raises/returns per the outcomes script."""
+
+    async def fake(model, contents, config):
+        calls.append(1)
+        outcome = outcomes[len(calls) - 1]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    return fake
+
+
+@pytest.fixture
+def no_backoff(monkeypatch):
+    """Retries shouldn't actually sleep in tests; record the backoffs."""
+    from app.services import llm as llm_module
+
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(llm_module, "_sleep", fake_sleep)
+    return slept
+
+
+@pytest.mark.asyncio
+async def test_first_try_success_makes_exactly_one_call(monkeypatch, no_backoff):
+    service = _gemini_service(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        service.client.aio.models, "generate_content",
+        _scripted_generate([_FakeResp()], calls),
+    )
+    out = await service.generate_response(
+        [{"role": "user", "content": "hi"}], system_prompt="sys"
+    )
+    assert out == "ok"
+    assert len(calls) == 1
+    assert no_backoff == []  # no retry, no sleep
+
+
+@pytest.mark.asyncio
+async def test_one_503_then_success_retries_once(monkeypatch, no_backoff):
+    service = _gemini_service(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        service.client.aio.models, "generate_content",
+        _scripted_generate([_Fake503(), _FakeResp()], calls),
+    )
+    out = await service.generate_response(
+        [{"role": "user", "content": "hi"}], system_prompt="sys"
+    )
+    assert out == "ok"
+    assert len(calls) == 2
+    assert no_backoff == [2.0]
+
+
+@pytest.mark.asyncio
+async def test_two_503s_then_success_uses_the_second_retry(monkeypatch, no_backoff):
+    """The deep-burst case the control run showed one retry cannot cover —
+    back-to-back 503s recovered only by the second, longer-backoff attempt."""
+    service = _gemini_service(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        service.client.aio.models, "generate_content",
+        _scripted_generate([_Fake503(), _Fake503(), _FakeResp()], calls),
+    )
+    out = await service.generate_response(
+        [{"role": "user", "content": "hi"}], system_prompt="sys"
+    )
+    assert out == "ok"
+    assert len(calls) == 3
+    assert no_backoff == [2.0, 4.0]
+
+
+@pytest.mark.asyncio
+async def test_three_503s_exhaust_and_raise_unavailable(monkeypatch, no_backoff):
+    """Exhaustion surfaces LLMUnavailable — which _read_archive_for_ranges
+    maps to read_failed, and the renderers map to the transient-failure
+    line (each link pinned by its own test: the read_failed select_units
+    test and test_spoken_answer's transient-line test)."""
+    from app.services.llm import LLMUnavailable
+
+    service = _gemini_service(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        service.client.aio.models, "generate_content",
+        _scripted_generate([_Fake503(), _Fake503(), _Fake503()], calls),
+    )
+    with pytest.raises(LLMUnavailable):
+        await service.generate_response(
+            [{"role": "user", "content": "hi"}], system_prompt="sys"
+        )
+    assert len(calls) == 3  # first try + exactly two retries, never more
+
+
+@pytest.mark.asyncio
+async def test_non_503_errors_never_retry(monkeypatch, no_backoff):
+    """Scoping guarantee: a 429 means back off, not hammer — one attempt,
+    fail honestly, no sleep."""
+    from app.services.llm import LLMRateLimited
+
+    service = _gemini_service(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        service.client.aio.models, "generate_content",
+        _scripted_generate([_Fake429()], calls),
+    )
+    with pytest.raises(LLMRateLimited):
+        await service.generate_response(
+            [{"role": "user", "content": "hi"}], system_prompt="sys"
+        )
+    assert len(calls) == 1
+    assert no_backoff == []
