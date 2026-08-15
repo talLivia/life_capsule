@@ -1425,6 +1425,37 @@ def _expand_about_passages(
     return out
 
 
+def _group_selected_runs(
+    selected: List[UtteranceUnit],
+) -> List[List[UtteranceUnit]]:
+    """Group already-resolved units into CONTIGUOUS RUNS of original speech.
+
+    THE shared definition of "continuous" for every renderer — the video
+    path merges each run into one clip, the spoken path (avatar mode) joins
+    a run's texts as flowing speech and places bridges only BETWEEN runs —
+    so what counts as uninterrupted can never drift between the two
+    (docs/AVATAR_SHARED_ENGINE_PLAN.md §1.2).
+
+    A unit joins the current run iff it has the same segment AND the next
+    global index relative to the PREVIOUS unit in selection order, strictly
+    forward — a reversed pair (u2 then u1) is two runs, and index adjacency
+    across a segment boundary never merges (global indices are contiguous
+    across recordings; segments are not)."""
+    runs: List[List[UtteranceUnit]] = []
+    prev: Optional[UtteranceUnit] = None
+    for unit in selected:
+        if (
+            prev is not None
+            and unit.segment_id == prev.segment_id
+            and unit.index == prev.index + 1
+        ):
+            runs[-1].append(unit)
+        else:
+            runs.append([unit])
+        prev = unit
+    return runs
+
+
 def resolve_units_to_clips(
     unit_ids: List[str], units: List[UtteranceUnit]
 ) -> List[ExpandedClip]:
@@ -1438,10 +1469,10 @@ def resolve_units_to_clips(
     one boundary mechanism now.
 
     Unknown ids are dropped with a warning. The model's stitch order is
-    preserved; a unit that IMMEDIATELY follows the previous selected one (same
-    recording, next index) extends it into a single continuous clip, so a run
-    of consecutive units plays as one uninterrupted piece and non-consecutive
-    selections stay separate pieces."""
+    preserved; a run of consecutive units (per _group_selected_runs, the
+    grouping shared with the spoken renderer) plays as one uninterrupted
+    clip — intra-run pauses included, so they play naturally — and
+    non-consecutive selections stay separate pieces."""
     by_id = {u.unit_id: u for u in units}
 
     selected: List[UtteranceUnit] = []
@@ -1456,35 +1487,17 @@ def resolve_units_to_clips(
         seen.add(uid)
         selected.append(unit)
 
-    clips: List[ExpandedClip] = []
-    prev: Optional[UtteranceUnit] = None
-    for unit in selected:
-        if (
-            prev is not None
-            and unit.segment_id == prev.segment_id
-            and unit.index == prev.index + 1
-        ):
-            # Consecutive in the original speech — extend rather than emit a
-            # second clip, so the pause between them plays naturally.
-            clips[-1] = ExpandedClip(
-                raw_segment_id=clips[-1].raw_segment_id,
-                start_sec=clips[-1].start_sec,
-                end_sec=unit.end_sec,
-                source_chunk_id=clips[-1].source_chunk_id,
-            )
-        else:
-            clips.append(
-                ExpandedClip(
-                    raw_segment_id=unit.segment_id,
-                    start_sec=unit.start_sec,
-                    end_sec=unit.end_sec,
-                    # No single source chunk in this mode — a clip can span
-                    # several. Marked so it's never mistaken for a v1 chunk id.
-                    source_chunk_id=f"archive-read:{unit.segment_id}",
-                )
-            )
-        prev = unit
-    return clips
+    return [
+        ExpandedClip(
+            raw_segment_id=run[0].segment_id,
+            start_sec=run[0].start_sec,
+            end_sec=run[-1].end_sec,
+            # No single source chunk in this mode — a clip can span several.
+            # Marked so it's never mistaken for a v1 chunk id.
+            source_chunk_id=f"archive-read:{run[0].segment_id}",
+        )
+        for run in _group_selected_runs(selected)
+    ]
 
 
 async def read_and_validate_ranges(

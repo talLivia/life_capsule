@@ -403,6 +403,86 @@ def test_resolve_units_preserves_model_order_and_dedupes():
     assert all(c.source_chunk_id.startswith("archive-read:") for c in clips)
 
 
+def _reference_resolve_units_to_clips(unit_ids, units):
+    """FROZEN copy of resolve_units_to_clips as it stood BEFORE the
+    _group_selected_runs extraction (AVATAR_SHARED_ENGINE_PLAN §1.2) — the
+    oracle proving the split changed nothing. Deliberately verbatim, not
+    simplified: the old implementation itself is the spec."""
+    by_id = {u.unit_id: u for u in units}
+
+    selected = []
+    seen = set()
+    for uid in unit_ids:
+        unit = by_id.get(uid)
+        if unit is None:
+            continue
+        if uid in seen:
+            continue
+        seen.add(uid)
+        selected.append(unit)
+
+    clips = []
+    prev = None
+    for unit in selected:
+        if (
+            prev is not None
+            and unit.segment_id == prev.segment_id
+            and unit.index == prev.index + 1
+        ):
+            clips[-1] = ar.ExpandedClip(
+                raw_segment_id=clips[-1].raw_segment_id,
+                start_sec=clips[-1].start_sec,
+                end_sec=unit.end_sec,
+                source_chunk_id=clips[-1].source_chunk_id,
+            )
+        else:
+            clips.append(
+                ar.ExpandedClip(
+                    raw_segment_id=unit.segment_id,
+                    start_sec=unit.start_sec,
+                    end_sec=unit.end_sec,
+                    source_chunk_id=f"archive-read:{unit.segment_id}",
+                )
+            )
+        prev = unit
+    return clips
+
+
+def test_resolve_units_matches_the_pre_extraction_oracle():
+    """The §1.2 equivalence proof: the post-split implementation must equal
+    the frozen pre-split implementation elementwise over every named edge
+    case — including reversed adjacency, which no other test pins — plus
+    every 2- and 3-permutation of the fixture's five units."""
+    from itertools import permutations
+
+    units = _units_fixture()
+    ids = [u.unit_id for u in units]
+
+    cases = [
+        [],
+        ["nope"],
+        ["u1"],
+        ["u1", "u2"],
+        ["u1", "u2", "u3"],
+        ["u1", "u3"],
+        ["u2", "u1"],          # reversed adjacency — two clips, directional check
+        ["u3", "u4"],          # cross-segment index adjacency — never merges
+        ["u4", "u1", "u4"],    # duplicate dropped entirely
+        ["u1", "u1"],
+        ["u5", "u4"],
+        ["u1", "nope", "u2"],  # unknown id must not break a run
+        ids,                    # everything, in file order
+        list(reversed(ids)),
+    ]
+    cases += [list(p) for p in permutations(ids, 2)]
+    cases += [list(p) for p in permutations(ids, 3)]
+
+    for seq in cases:
+        assert ar.resolve_units_to_clips(seq, units) == _reference_resolve_units_to_clips(
+            seq, units
+        ), seq
+
+
 # ── _load_archive (DB-backed) ────────────────────────────────────────────────
 
 
