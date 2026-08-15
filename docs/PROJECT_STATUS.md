@@ -1757,9 +1757,17 @@ CLAUDE.md/PROJECT_STATUS was taken on gemini-3.6-flash (verified
   of a two-day-old model** (measured: 11/40 calls shed in bursts on
   untouched code; Google's own error text calls the spikes temporary).
   Mitigated in code: the archive-read call now retries 503s twice with
-  backoff (llm.py, tested). Escape hatch if storms persist: pin
-  `ARCHIVE_READ_MODEL=gemini-3.6-flash` in .env — a deliberate producer
-  decision, since it also changes model behavior.
+  backoff (llm.py, tested). **DECIDED 2026-08-16 (producer): the model is
+  now PINNED — `ARCHIVE_READ_MODEL=gemini-3.6-flash` in .env**, verified
+  live via response.model_version after restart. Pinning trades automatic
+  upgrades for the guarantee that no silent alias move changes model
+  behavior or stability again; upgrading to a newer flash is now an
+  explicit, dated decision with a prompt_regression pass, not something
+  that happens to the archive overnight. (.env is untracked, so the pin
+  itself lives on the machine; the examples and this entry are the
+  repo-side record. `LLM_MODEL=gemini-flash-lite-latest` is still a
+  moving alias — left as-is deliberately, flagged for the same treatment
+  if it ever misbehaves.)
 - **Every "the model does X" measurement is stale again**: the 586-token
   thinking floor, breadth behavior, clarify stability (3/3), latency —
   all measured on 3.6. Re-run `prompt_regression.py` against its saved

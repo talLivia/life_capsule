@@ -547,7 +547,8 @@ class LLMService:
 
         It is 0 on every call today: Gemini's IMPLICIT caching does not fire on
         the archive-read call — measured 0/12 hits at ~3,610 prompt tokens on
-        gemini-3.6-flash (what `gemini-flash-latest` currently resolves to),
+        gemini-3.6-flash (now PINNED explicitly — the `gemini-flash-latest`
+        alias moved to 3.7 on 2026-08-13 and was dropped for exactly that),
         with the archive in the system instruction AND with it moved into the
         contents prefix. Nothing in this codebase creates an EXPLICIT cache.
 
