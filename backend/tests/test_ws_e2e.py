@@ -76,12 +76,11 @@ async def test_ws_full_turn_streams_events(monkeypatch):
     from app import websocket as wsmod
 
     # Stub the heavy pipeline so a turn completes instantly, deterministically.
-    # `_response_producer` now calls response_assembler.assemble_response()
-    # (Prompts 6-9's retrieval + relevance scoring + bridge-phrase assembly
-    # against the storyteller's own archive) — mocked here at that single
-    # entry point, since its own internals (topic classification, graph
-    # traversal, scoring) are covered by test_response_assembler.py and
-    # friends, not this WS-plumbing test.
+    # `_response_producer` now runs the SHARED ENGINE (select_units) + the
+    # spoken renderer (AVATAR_SHARED_ENGINE_PLAN step 3) — mocked at the
+    # engine seam, since selection's internals are covered by
+    # test_full_archive_retrieval.py and rendering by test_spoken_answer.py,
+    # not this WS-plumbing test.
     TEST_REPLY = "This is the assembled, retrieval-based reply."
 
     async def fake_resolve_image(avatar):
@@ -102,6 +101,27 @@ async def test_ws_full_turn_streams_events(monkeypatch):
 
     async def fake_upload(data, key, content_type="video/mp4", metadata=None):
         return f"http://test/{key}"
+
+    from app.services import full_archive_retrieval as far
+    from app.services import spoken_answer as sa_mod
+
+    async def fake_select_units(question, group_id, recording_language, session_id):
+        return far.UnitSelection(
+            clips=[],
+            selected_units=[
+                far.UtteranceUnit(
+                    unit_id="u1",
+                    segment_id="seg-e2e",
+                    index=0,
+                    start_sec=0.0,
+                    end_sec=2.0,
+                    text=TEST_REPLY,
+                )
+            ],
+        )
+
+    async def fake_no_names(segment_ids, group_id):
+        return {}
 
     async def fake_assemble_response(question, group_id, recording_language, session_id):
         return TEST_REPLY
@@ -127,6 +147,8 @@ async def test_ws_full_turn_streams_events(monkeypatch):
     from app.services import response_assembler
 
     monkeypatch.setattr(response_assembler, "assemble_response", fake_assemble_response)
+    monkeypatch.setattr(far, "select_units", fake_select_units)
+    monkeypatch.setattr(sa_mod, "_entity_names_by_segment", fake_no_names)
 
     # _animate_from_queue calls gpu_client.synthesize()/.animate(), which
     # (with GPU_SERVICE_URL unset, the default) call these exact shared
