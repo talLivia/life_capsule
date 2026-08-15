@@ -1710,6 +1710,41 @@ verified by build, not by eye. Status/feedback colors (badge greens,
 ambers, reds) kept their tinted-chip form in both themes; fine-tuning
 their contrast on cream is a named follow-up, not silently done.
 
+## Avatar mode on the shared engine — 2026-08-15, on branch `avatar-shared-engine` (stacked on `light-mode`)
+
+Executed per [AVATAR_SHARED_ENGINE_PLAN.md](AVATAR_SHARED_ENGINE_PLAN.md)
+as refined (steps 1-4), suite green after each. One engine, two
+renderers: `_group_selected_runs` extracted from `resolve_units_to_clips`
+in place (equivalence proven by a frozen-copy oracle test over ~90
+sequences; the five pre-existing behavioral tests untouched — the only
+edit to working v2 code in the whole change); `spoken_answer.py` renders
+UnitSelection as narrated text (verbatim run texts, fixed bridge banks
+with archive-validated entity injection, never-invent held by a
+mechanical residue test); the avatar WS path runs
+select_units + the renderer, persists the same shown_units metadata
+record as v2 (avatar turns now have shown-unit memory and history
+coherence), speaks a fixed clarify line with options as a `clarify` chat
+event, and answers outages with TRANSIENT_FAILURE_FALLBACK instead of
+no-story; ChatInterface renders the clarify buttons (re-ask =
+`original — option`, the clip UI's shape). Follow-up offers are carried
+but not yet surfaced in avatar mode (plan phase-1 scoping).
+
+Honest note in `e5b9ed9`: step 3's commit initially landed with one red
+test (the WS e2e still mocked the old seam) because a tail pipe
+swallowed pytest's exit code; fixed in the next commit and the gate now
+checks PIPESTATUS.
+
+🛑 **Step 5 (retiring `retrieve`/`primary_match`/`expand_graph`,
+`relevance_scorer`, `assemble_response`) is deliberately NOT executed** —
+the plan gates it on a live avatar-mode turn on the new path, which
+needs avatar mode enabled on an account with a ready avatar (it is
+dormant-by-default) plus a real engine call. The superseded code is
+unreachable from production paths but still present and tested. Run the
+live turn, then execute step 5 per the plan's table (kept-names rule:
+`_recent_turns`, `_render_turn_for_history`, `COREFERENCE_HISTORY_TURNS`,
+`_parse_json_array`; banks stay in `response_assembler`; the visited-set
+removal stays deferred).
+
 ## Known gaps / tech debt
 
 - 🚨 **KNOWN GAP, deliberately unfixed (2026-08-10): a "עוד" question can

@@ -2,8 +2,10 @@
 
 **Written 2026-08-15; re-verified the same day at the request's risk
 points — sections 1.1, 1.2 and 5a plus the two locked decisions in
-section 5 are that pass's product. Investigation only — nothing has been
-changed.**
+section 5 are that pass's product. EXECUTED the same day on branch
+`avatar-shared-engine`, steps 1-4 (through the ChatInterface clarify
+affordance), suite green; step 5 remains gated on the live avatar-mode
+turn, step 6's docs updated for what landed. See PROJECT_STATUS.md.**
 The referenced AVATAR_ON_V2_ENGINE_INVESTIGATION.md does not exist; this
 is the investigation, done fresh against branch `light-mode` (the current
 stack tip). Line numbers are from that tree and will drift; function
