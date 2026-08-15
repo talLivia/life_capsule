@@ -1745,6 +1745,27 @@ live turn, then execute step 5 per the plan's table (kept-names rule:
 `_parse_json_array`; banks stay in `response_assembler`; the visited-set
 removal stays deferred).
 
+## ⚠️ `gemini-flash-latest` MOVED to gemini-3.7-flash — detected 2026-08-16
+
+Exactly the silent-expiry event CLAUDE.md's moving-alias warning predicts:
+`response.model_version` now reports **gemini-3.7-flash** (released
+2026-08-13, per Google's changelog) where every dated measurement in
+CLAUDE.md/PROJECT_STATUS was taken on gemini-3.6-flash (verified
+2026-08-01). Two consequences:
+
+- **The 503 storms of 2026-08-15/16 are the launch-window capacity crunch
+  of a two-day-old model** (measured: 11/40 calls shed in bursts on
+  untouched code; Google's own error text calls the spikes temporary).
+  Mitigated in code: the archive-read call now retries 503s twice with
+  backoff (llm.py, tested). Escape hatch if storms persist: pin
+  `ARCHIVE_READ_MODEL=gemini-3.6-flash` in .env — a deliberate producer
+  decision, since it also changes model behavior.
+- **Every "the model does X" measurement is stale again**: the 586-token
+  thinking floor, breadth behavior, clarify stability (3/3), latency —
+  all measured on 3.6. Re-run `prompt_regression.py` against its saved
+  baseline before trusting or re-tuning any prompt behavior, and re-date
+  what changed.
+
 ## Known gaps / tech debt
 
 - 🚨 **KNOWN GAP, deliberately unfixed (2026-08-10): a "עוד" question can
