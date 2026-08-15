@@ -1,6 +1,9 @@
 # Avatar mode on the v2 engine — investigation and plan
 
-**Written 2026-08-15. Investigation only — nothing has been changed.**
+**Written 2026-08-15; re-verified the same day at the request's risk
+points — sections 1.1, 1.2 and 5a plus the two locked decisions in
+section 5 are that pass's product. Investigation only — nothing has been
+changed.**
 The referenced AVATAR_ON_V2_ENGINE_INVESTIGATION.md does not exist; this
 is the investigation, done fresh against branch `light-mode` (the current
 stack tip). Line numbers are from that tree and will drift; function
@@ -48,13 +51,85 @@ cache, ffmpeg assembly/upload (`video_clip_assembler`), and the
 back into selection.
 
 One genuinely shared post-selection computation to factor rather than
-duplicate: `resolve_units_to_clips` (:1428) merges CONSECUTIVE selected
-units (same segment, adjacent global index) into single clips. The text
-renderer needs the identical grouping — consecutive units join as flowing
-speech; only between non-consecutive runs does a bridge belong. Extract
-the run-grouping into a small shared helper (`_group_selected_runs`)
-consumed by both renderers, so "what counts as contiguous" can never
-drift between video and speech.
+duplicate: the consecutive-unit merging inside `resolve_units_to_clips`
+(:1428). Sections 1.1-1.2 below (added by the 2026-08-15 re-verification
+pass) pin its exact behavior and the provably-behavior-preserving
+extraction.
+
+### 1.1 Behavioral spec of `resolve_units_to_clips` — documented before touching
+
+Inputs: `unit_ids` (the model's stitch order — may contain unknown ids
+and duplicates) and `units` (the archive's full unit list). Output:
+`List[ExpandedClip]` (a value-comparable dataclass: `raw_segment_id`,
+`start_sec`, `end_sec`, `source_chunk_id`). Every case, verified against
+the code and the five existing tests (test_full_archive_retrieval.py
+:369-403):
+
+1. **Empty input → `[]`.** Unknown id → dropped with one warning log,
+   never a clip (`["nope"] → []`).
+2. **Duplicate id → only the FIRST occurrence survives**; later
+   repetitions are skipped entirely (no clip, no extension) — a repeated
+   id would duplicate footage. `["u4","u1","u4"]` → seg-b clip, seg-a
+   clip.
+3. **Order is the model's stitch order, never re-sorted** —
+   `["u4","u1"]` keeps seg-b before seg-a.
+4. **Merge rule:** a unit EXTENDS the previously emitted clip iff it has
+   the same `segment_id` AND `index == previous-selected-unit.index + 1`
+   — adjacency is judged against the previous unit IN SELECTION ORDER,
+   strictly forward. A chain u1,u2,u3 is one clip spanning
+   `u1.start_sec → u3.end_sec`; intra-run pauses are INCLUDED (they play
+   naturally).
+5. **Non-consecutive, same segment** (`["u1","u3"]`) → two clips.
+   **Reversed adjacency** (`["u2","u1"]`) → two clips (the +1 check is
+   directional). ⚠️ No existing test pins the reversed case — the oracle
+   battery in 1.2 adds it.
+6. **Cross-segment index adjacency** (`["u3","u4"]`, consecutive global
+   ints but different recordings) → two clips; merging would splice
+   unrelated footage (pinned by its own test).
+7. **Clip fields:** `raw_segment_id`/`start_sec` from the run's head
+   unit, `end_sec` from its last, `source_chunk_id` the synthetic
+   `archive-read:{segment_id}` marker taken from the head and retained
+   through extensions.
+8. Upstream interaction: `select_units` (:1599) separately computes
+   `selected_units` via `dict.fromkeys` — a dedupe consistent with rule
+   2, so the renderer-facing unit list and the clip list can never
+   disagree about which units participate.
+
+### 1.2 The extraction — shape, and the proof it changes nothing
+
+**Shape (refined, lower-risk than the original sketch):** the split
+happens IN PLACE in `full_archive_retrieval.py` — no new module, no
+signature change, no import churn:
+
+- `_group_selected_runs(selected: List[UtteranceUnit]) ->
+  List[List[UtteranceUnit]]` — the pure grouping (rules 4-6) over
+  already-resolved units. This is what the spoken renderer consumes,
+  fed straight from `UnitSelection.selected_units`.
+- `resolve_units_to_clips` keeps its name, signature, id-resolution
+  loop, dedupe, and warning exactly as-is, then maps
+  `_group_selected_runs(...)`'s runs to `ExpandedClip`s (rule 7) — a
+  ~10-line body over the helper.
+
+**Proof of behavior preservation — the old implementation is the
+oracle:** the function is deterministic and LLM-free (its own
+docstring's claim), so unit-level equality IS the whole proof — no live
+data, no credits, unlike V1's retrieve() diff-reading, because this seam
+is pure code. In the SAME commit as the split:
+
+1. The five existing tests pass UNMODIFIED — they are the primary pins.
+2. A new oracle test embeds a frozen copy of the pre-extraction function
+   body (`_reference_resolve_units_to_clips`) and asserts elementwise
+   equality of new vs. reference over: every named case above (including
+   the un-pinned reversed-adjacency and `["u1","nope","u2"]`
+   interleaving), plus ALL 2- and 3-permutations of the fixture's five
+   units generated programmatically (80 sequences, milliseconds to run).
+3. `select_units` is not edited at all in this step.
+
+Exhaustive call-site trace (grepped, not assumed):
+`resolve_units_to_clips` has exactly ONE production caller —
+`select_units:1600` — plus its five direct tests.
+`read_and_validate_ranges` and every eval script reach it only THROUGH
+`select_units`, so the one-caller proof covers them.
 
 ## 2. What v2 has that avatar lacks — and what adoption inherits for free
 
@@ -182,10 +257,10 @@ build green. ⚠️ Avatar mode is dormant-by-default now: there is no
 avatar-mode producer to live-test against without enabling the mode on a
 test account (the activation gate requires a ready avatar).
 
-**Step 1 — factor the shared run-grouping.** Extract
-`_group_selected_runs(units) -> List[List[UtteranceUnit]]` from
-`resolve_units_to_clips`; the clip builder consumes it (behavior
-byte-identical, pinned by existing clip tests + one new equality test).
+**Step 1 — factor the shared run-grouping** per 1.2: the in-place
+split, the untouched five tests, and the oracle-equality battery, all in
+one commit. This is the ONLY edit to working v2 code in the entire build
+phase (steps 1-4) — see 5a.
 
 **Step 2 — the spoken renderer.** `app/services/spoken_answer.py`:
 `render_spoken_answer(selection, group_id)` per §3, with the bridge bank
@@ -222,8 +297,8 @@ avatar-mode turn on the new path (credits + enabling the mode):
 | `retrieval_service._recent_turns`, `_render_turn_for_history`, `COREFERENCE_HISTORY_TURNS`, `_parse_json_array` | **KEEP, names frozen** — the engine imports the first three; eval scripts monkeypatch `_recent_turns` by name; `_parse_json_array` still feeds `_extract_entity_names…` today and remains generally used |
 | `relevance_scorer` (whole module) | DELETE — `score_candidates`' only consumer is `assemble_response` |
 | `response_assembler.assemble_response`, `_fetch_transcripts`, `_entity_names_for`, `_shared_entity_name` | DELETE |
-| `NO_STORY_FALLBACK`, `TRANSIENT_FAILURE_FALLBACK`, `no_story_about`, both template banks | **KEEP** — v2 imports them; the spoken renderer inherits the bridge bank (move both banks into `spoken_answer.py` and re-export, or leave in place — decide at step 2, one home either way) |
-| Redis visited-set (`get_visited`/`add_visited`) | loses its LAST READER (`retrieve():487`). v1-removal §3.3 deferred this exact decision "if avatar mode is ever removed" — this is that trigger one step early. Recommend: delete the reads AND the two writes (v2's belt-and-braces write included) in this step, with its own commit |
+| `NO_STORY_FALLBACK`, `TRANSIENT_FAILURE_FALLBACK`, `no_story_about`, both template banks | **KEEP, IN PLACE — decided (re-verification pass)**: the banks stay in `response_assembler`; `spoken_answer` imports them. Nothing moves, so v2's imports are never disturbed |
+| Redis visited-set (`get_visited`/`add_visited`) | loses its LAST READER (`retrieve():487`). **Refined (re-verification pass): DEFERRED out of this plan.** Deleting the v2-side write (full_archive_retrieval:1766) would be the plan's only other edit to working v2 code, for zero functional gain (Redis no-ops without a server). Delete the avatar-side read/write with their modules in this step; leave the v2 write and record the full visited-set removal as its own later cleanup |
 | Query-time embedding use | ends entirely (`_embed_question_for_primary_match` was the last). `embeddings.py` and the stored columns STAY — ingestion writes them, and dropping columns is its own decision (do not fold in) |
 
 **Step 6 — docs pass.** CLAUDE.md's mode table ("LLM reply → TTS" becomes
@@ -257,7 +332,28 @@ property: the whole thing lives on the renderer side of the seam).
    mode deliberately enabled on an account with a ready avatar first.
    The engine swap cannot be smoke-tested from the default path.
 
+## 5a. Complete enumeration of edits to working v2 code (re-verification pass)
+
+Demanded explicitly before approval, and the answer is short:
+
+1. **The 1.2 in-place split** of `resolve_units_to_clips` — required,
+   oracle-proven, one file, one function.
+2. **Nothing else.** The visited-set write removal was the only other
+   candidate and is now deferred (the section-5 table). The bridge banks
+   stay where they are. `select_units`, `assemble_video_clip_response_v2`,
+   `UnitSelection`, the prompt, `_expand_about_passages`,
+   `_no_story_line`, and the WS v2 handler
+   (`_handle_video_clip_question_inner`) are all untouched in place.
+
+Everything avatar-side is ADDITIVE: `spoken_answer.py` is a new module
+calling `select_units` + `_group_selected_runs` + the existing banks;
+the `websocket.py` edits are confined to the avatar path
+(`_response_producer`, avatar-turn `shown_units` persistence); the
+ChatInterface affordances are additions. Step 5's deletions remove only
+avatar-superseded code, under the kept-names rule for the four shared
+symbols.
+
 What this plan deliberately does NOT do: touch the engine prompt (zero
-prompt-regression exposure), change v2 in any way, or revisit avatar
-mode's on/off status — it makes the dormant mode cheaper to keep, not
-more prominent.
+prompt-regression exposure), change v2 behavior in any way (one
+oracle-proven internal split aside), or revisit avatar mode's on/off
+status — it makes the dormant mode cheaper to keep, not more prominent.
