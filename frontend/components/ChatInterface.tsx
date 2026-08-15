@@ -181,6 +181,12 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
   const [avatarImageUrl, setAvatarImageUrl] = useState<string | null>(null)
   // Streaming token accumulator — shown as a live bubble while LLM is generating
   const [streamingContent, setStreamingContent] = useState('')
+  // "Which אמנון did you mean?" — options for the pending clarify, if any.
+  const [clarify, setClarify] = useState<{
+    question: string
+    options: string[]
+    forQuestion: string
+  } | null>(null)
   const [language, setLanguage] = useState('en')
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
 
@@ -413,6 +419,18 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
         break
       }
 
+      case 'clarify':
+        // The engine could not tell which same-named person was meant.
+        // The avatar has already spoken the fixed ask; these buttons are
+        // how the listener answers — clicking re-asks the ORIGINAL
+        // question with the person named, through the normal text path.
+        setClarify({
+          question: data.question,
+          options: data.options,
+          forQuestion: data.for_question,
+        })
+        break
+
       case 'message': {
         const content = data.content
         setStreamingContent('')
@@ -504,6 +522,7 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
       return
     }
     const emotion = detectEmotion(inputText)
+    setClarify(null)
     ws.send(JSON.stringify({ type: 'text', text: inputText }))
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
@@ -1069,6 +1088,42 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
         )}
 
         <div className="border-t border-edge px-4 py-3">
+          {clarify && (
+            <div className="mb-3 px-2 flex flex-col gap-2">
+              <p dir="auto" className="text-xs text-ink-soft">{clarify.question}</p>
+              <div className="flex flex-wrap gap-2">
+                {clarify.options.map((option) => (
+                  <button
+                    key={option}
+                    onClick={() => {
+                      // Same re-ask shape as the clip UI's chooseClarification:
+                      // the ORIGINAL question with the person named, sent
+                      // through the normal text path.
+                      const question = clarify.forQuestion
+                        ? `${clarify.forQuestion} — ${option}`
+                        : option
+                      setClarify(null)
+                      if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'text', text: question }))
+                        setMessages(prev => [...prev, {
+                          id: Date.now().toString(),
+                          role: 'user',
+                          content: question,
+                          timestamp: new Date(),
+                          emotion: detectEmotion(question),
+                        }])
+                        setIsTyping(true)
+                      }
+                    }}
+                    dir="auto"
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium text-ink-soft bg-surface-700 border border-edge hover:bg-surface-600 hover:border-primary-500/40 transition-all active:scale-95"
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {!micMuted && (
             <div className="flex items-center gap-2 mb-3 px-2">
               <span
