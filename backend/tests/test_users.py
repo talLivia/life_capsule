@@ -150,6 +150,22 @@ async def test_a_new_account_defaults_to_video_clips_v2(
 
 
 @pytest.mark.asyncio
+async def test_login_forgives_mobile_keyboard_noise(client: AsyncClient, test_user):
+    """A trailing space or capitalized first letter — what phone keyboards
+    and autofill routinely add — must not turn correct credentials into a
+    silent 401 (live report 2026-08-15). The lookup normalizes; stored
+    emails are never rewritten."""
+    for noisy in ("Test@example.com", "test@example.com ", " TEST@EXAMPLE.COM "):
+        resp = await client.post(
+            "/api/v1/users/login",
+            data={"username": noisy, "password": "testpassword123"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert resp.status_code == 200, noisy
+        assert resp.json()["access_token"]
+
+
+@pytest.mark.asyncio
 async def test_update_profile_rejects_the_retired_v1_chat_mode(
     client: AsyncClient, test_user, auth_headers
 ):

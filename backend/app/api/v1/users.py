@@ -6,7 +6,7 @@ import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -196,7 +196,17 @@ async def login(
     not readable by JS, so XSS can't steal it).
     """
     try:
-        result = await db.execute(select(User).where(User.email == form_data.username))
+        # Normalize before matching: mobile keyboards and autofill routinely
+        # append a trailing space or capitalize the first letter, and an
+        # exact-match lookup turns that invisible character into a silent
+        # 401 (live report, 2026-08-15: correct credentials "not working"
+        # from a phone). Case-insensitive matching is safe: emails are
+        # unique case-insensitively in the live data (verified before this
+        # change). Stored emails are NOT rewritten — only the lookup bends.
+        identifier = (form_data.username or "").strip().lower()
+        result = await db.execute(
+            select(User).where(func.lower(User.email) == identifier)
+        )
         user = result.scalar_one_or_none()
 
         # Reject empty passwords explicitly — the demo user is seeded with an
