@@ -1726,8 +1726,26 @@ record as v2 (avatar turns now have shown-unit memory and history
 coherence), speaks a fixed clarify line with options as a `clarify` chat
 event, and answers outages with TRANSIENT_FAILURE_FALLBACK instead of
 no-story; ChatInterface renders the clarify buttons (re-ask =
-`original — option`, the clip UI's shape). Follow-up offers are carried
-but not yet surfaced in avatar mode (plan phase-1 scoping).
+`original — option`, the clip UI's shape).
+
+**Follow-up surfacing + voice yes/no answering landed 2026-08-17**
+(`6167b6c`), closing the phase-1 "carried but not surfaced" gap — after
+the flowing-conversation investigation (plan §7, `419a75f`) confirmed
+the streaming/barge-in/mic-gating substrate composes cleanly with it.
+The spoken renderer appends a FIXED offer line after an answer that
+carries a follow-up (the generated question stays chat-only, sent as a
+`follow_up` WS event with כן/לא buttons); the WS layer arms a one-shot
+`pending_prompt` after a completed turn, and the next input — spoken or
+typed, both converge on `_handle_text_input_inner` — runs
+`_match_pending_prompt`: whole-utterance yes/no word-sets for offers
+(so "לא סיפרת לי על..." can never misread as a decline), whole-word
+longest-option containment for clarify. A match sends the byte-identical
+question the button sends; a voice decline speaks a fixed ack with no
+engine call; anything unmatched clears the prompt and routes fresh. No
+LLM interprets anything — never-invent held structurally on both the
+input and output side. Known limits (accepted): a bare spoken "כן" sits
+near the 320ms VAD floor (buttons are the fallback), and the prompt is
+per-connection (reconnect degrades to buttons-only).
 
 Honest note in `e5b9ed9`: step 3's commit initially landed with one red
 test (the WS e2e still mocked the old seam) because a tail pipe
