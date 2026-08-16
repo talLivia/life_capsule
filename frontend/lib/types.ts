@@ -103,6 +103,11 @@ export type WsMessage =
   // line already asked "which one?"; this event carries the options and the
   // original question so the UI can re-ask on a click.
   | { type: 'clarify'; question: string; options: string[]; for_question: string }
+  // Avatar mode's follow-up offer: the voice spoke the fixed offer line;
+  // this carries the generated question (chat-only, never TTS). Answerable
+  // by voice ("כן"/"לא" — deterministic server-side matching) or by the
+  // buttons this event renders.
+  | { type: 'follow_up'; question: string }
   // The lookup itself failed. Deliberately NOT 'video_clip_no_story': that
   // one asserts the archive has nothing, and an outage cannot support that
   // claim. Carries the question so it can be retried verbatim.

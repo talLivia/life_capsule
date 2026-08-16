@@ -75,6 +75,17 @@ CROSS_RECORDING_BRIDGES_GENERIC = [
 # WS layer's job), where generated text is allowed — same rule v2 applies.
 CLARIFY_SPOKEN_LINE = "יש לי סיפורים על כמה אנשים בשם הזה — למי התכוונת?"
 
+# Spoken at the END of an answer whose selection carries a follow-up
+# suggestion. Fixed for the same reason as CLARIFY_SPOKEN_LINE: the
+# follow-up QUESTION itself is generated prose, so it travels as chat text
+# (websocket sends a `follow_up` event) — the voice only ever offers.
+FOLLOW_UP_OFFER_LINE = "יש לי עוד סיפור שקשור לזה — רוצה לשמוע?"
+
+# Spoken when the listener declines the offer by VOICE. A click dismisses
+# silently (v2 parity — the click is its own feedback), but a spoken "לא"
+# answered by dead air is a broken voice interaction.
+FOLLOW_UP_DECLINE_ACK = "בסדר."
+
 
 @dataclass
 class SpokenAnswer:
@@ -151,8 +162,13 @@ async def render_spoken_answer(
         return SpokenAnswer(text=CLARIFY_SPOKEN_LINE, clarify=selection.clarify)
 
     if not selection.selected_units:
+        no_story_line = selection.no_story_text or NO_STORY_FALLBACK
         return SpokenAnswer(
-            text=selection.no_story_text or NO_STORY_FALLBACK,
+            text=(
+                f"{no_story_line} {FOLLOW_UP_OFFER_LINE}"
+                if selection.follow_up
+                else no_story_line
+            ),
             no_story=True,
             # The offer survives an empty answer — same rule as the video
             # renderer, same reason.
@@ -171,6 +187,11 @@ async def render_spoken_answer(
         if i:
             parts.append(_bridge_for(i - 1, runs[i - 1], run, names_by_segment))
         parts.append(" ".join(u.text for u in run))
+    if selection.follow_up:
+        # The offer rides the SAME utterance as the answer, so it plays
+        # inside the same mic-suppression window and the mic reopens right
+        # after it — the sequencing that makes a spoken yes/no answerable.
+        parts.append(FOLLOW_UP_OFFER_LINE)
 
     return SpokenAnswer(
         text=" ".join(parts),

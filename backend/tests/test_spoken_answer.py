@@ -79,18 +79,39 @@ async def test_cross_recording_bridge_falls_back_to_generic_without_names(no_ent
 @pytest.mark.asyncio
 async def test_the_verbatim_invariant_holds_mechanically(no_entities):
     """Strip every unit text and every bank phrase from the output — nothing
-    may remain. This is the test that keeps never-invent structural."""
-    answer = await sa.render_spoken_answer(_selection([U1, U2, U4, U7]), "prod-1")
+    may remain. This is the test that keeps never-invent structural.
+    Includes a follow_up so the fixed offer line is covered by the same
+    invariant."""
+    answer = await sa.render_spoken_answer(
+        _selection([U1, U2, U4, U7], follow_up={"question": "רוצה לשמוע על הצבא?"}),
+        "prod-1",
+    )
     residue = answer.text
     for u in (U1, U2, U4, U7):
         residue = residue.replace(u.text, "")
     for bank in (
         sa.SAME_RECORDING_BRIDGES,
         sa.CROSS_RECORDING_BRIDGES_GENERIC,
+        [sa.FOLLOW_UP_OFFER_LINE],
     ):
         for phrase in bank:
             residue = residue.replace(phrase, "")
     assert residue.strip() == "", f"unexplained residue: {residue!r}"
+    # The generated follow-up QUESTION must never leak into speech.
+    assert "רוצה לשמוע על הצבא" not in answer.text
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_appends_the_fixed_offer_line_last(no_entities):
+    """The offer rides the same utterance as the answer (so the mic reopens
+    right after it) and is always the FIXED line — the generated question
+    travels as chat data only."""
+    answer = await sa.render_spoken_answer(
+        _selection([U1, U2], follow_up={"question": "רוצה לשמוע על הצבא?"}),
+        "prod-1",
+    )
+    assert answer.text == f"נולדתי בטבריה וגדלתי שם עד גיל שש {sa.FOLLOW_UP_OFFER_LINE}"
+    assert answer.follow_up == {"question": "רוצה לשמוע על הצבא?"}
 
 
 @pytest.mark.asyncio
@@ -132,7 +153,7 @@ async def test_no_story_prefers_the_tailored_line_and_keeps_the_offer(no_entitie
         "prod-1",
     )
     assert answer.no_story
-    assert answer.text == "זה כל מה שיש לי על אמנון"
+    assert answer.text == f"זה כל מה שיש לי על אמנון {sa.FOLLOW_UP_OFFER_LINE}"
     assert answer.follow_up == follow_up
 
 

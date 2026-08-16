@@ -187,6 +187,10 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
     options: string[]
     forQuestion: string
   } | null>(null)
+  // The follow-up offer the voice just made ("רוצה לשמוע?") — the generated
+  // question is chat-only. Answerable by voice (server-side matcher) or by
+  // these buttons; either path sends the identical question string.
+  const [followUp, setFollowUp] = useState<{ question: string } | null>(null)
   const [language, setLanguage] = useState('en')
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
 
@@ -416,6 +420,11 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
         }])
         setStreamingContent('')
         setIsTyping(true)
+        // A spoken input consumes any pending prompt server-side (matched
+        // or fallen through as a fresh question) — the cards must not
+        // outlive the state they represent.
+        setClarify(null)
+        setFollowUp(null)
         break
       }
 
@@ -429,6 +438,12 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
           options: data.options,
           forQuestion: data.for_question,
         })
+        break
+
+      case 'follow_up':
+        // The voice already spoke the fixed offer line; this is the
+        // generated question it offered, as chat data with yes/no buttons.
+        setFollowUp({ question: data.question })
         break
 
       case 'message': {
@@ -523,6 +538,7 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
     }
     const emotion = detectEmotion(inputText)
     setClarify(null)
+    setFollowUp(null)
     ws.send(JSON.stringify({ type: 'text', text: inputText }))
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
@@ -1121,6 +1137,44 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
                     {option}
                   </button>
                 ))}
+              </div>
+            </div>
+          )}
+          {followUp && (
+            <div className="mb-3 px-2 flex flex-col gap-2">
+              <p dir="auto" className="text-xs text-ink-soft">{followUp.question}</p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => {
+                    // Same send as v2's acceptFollowUp: the offered question
+                    // goes out through the normal text path — identical to
+                    // what a spoken "כן" resolves to server-side.
+                    const question = followUp.question
+                    setFollowUp(null)
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({ type: 'text', text: question }))
+                      setMessages(prev => [...prev, {
+                        id: Date.now().toString(),
+                        role: 'user',
+                        content: question,
+                        timestamp: new Date(),
+                        emotion: detectEmotion(question),
+                      }])
+                      setIsTyping(true)
+                    }
+                  }}
+                  dir="auto"
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium text-ink-soft bg-surface-700 border border-edge hover:bg-surface-600 hover:border-primary-500/40 transition-all active:scale-95"
+                >
+                  כן, ספר לי
+                </button>
+                <button
+                  onClick={() => setFollowUp(null)}
+                  dir="auto"
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium text-muted bg-surface-700 border border-edge hover:bg-surface-600 transition-all active:scale-95"
+                >
+                  לא, תודה
+                </button>
               </div>
             </div>
           )}

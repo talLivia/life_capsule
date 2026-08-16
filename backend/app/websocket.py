@@ -152,6 +152,74 @@ MAX_CONTEXT_MESSAGES = 60
 # Soft TTL for an idle (disconnected/abandoned) session in seconds.
 STALE_SESSION_TTL_SECS = 60 * 60 * 2  # 2 hours
 
+# ── pending-prompt voice answering (avatar mode) ─────────────────────────────
+#
+# When a spoken turn ends with a follow-up offer or a clarify ask, the next
+# utterance may be the ANSWER to that prompt rather than a fresh question.
+# The mapping is deterministic string matching ONLY — a spoken "כן" produces
+# the byte-identical outgoing question a button click sends, and anything
+# that doesn't match falls through as a fresh question (clearing the prompt,
+# exactly like typing a new question over v2's clarify buttons). No LLM is
+# ever consulted: the matcher selects among server-known actions, it never
+# interprets. docs/AVATAR_SHARED_ENGINE_PLAN.md §7.
+#
+# Matching is on the FULL normalized utterance for yes/no — "לא סיפרת לי על
+# הצבא" must never read as a decline — and on whole-word literal option
+# containment for clarify (longest option first, so "אמנון נחום" beats its
+# prefix "אמנון").
+
+_YES_UTTERANCES = {
+    "כן", "כן בבקשה", "בטח", "בטח שכן", "בסדר", "אוקיי", "אוקי", "סבבה",
+    "יאללה", "בוודאי", "ודאי", "למה לא", "ברור", "כמובן", "אשמח", "אשמח לשמוע",
+    "רוצה", "אני רוצה", "אני רוצה לשמוע", "רוצה לשמוע", "ספר", "ספר לי", "ספרי לי",
+    "yes", "yeah", "sure", "ok", "okay", "of course", "please", "yes please",
+}
+_NO_UTTERANCES = {
+    "לא", "לא תודה", "לא עכשיו", "לא צריך", "אולי אחר כך", "אולי מאוחר יותר",
+    "די", "מספיק", "עזוב", "עזבי", "תודה", "זה מספיק",
+    "no", "no thanks", "no thank you", "not now", "nope",
+}
+
+
+def _normalize_utterance(text: str) -> str:
+    """Punctuation → spaces, collapsed whitespace, lowercased (no-op for
+    Hebrew, correct for English). What both sides of every match see."""
+    cleaned = re.sub(r"[^\w\s]", " ", text or "", flags=re.UNICODE)
+    return re.sub(r"\s+", " ", cleaned).strip().lower()
+
+
+def _match_pending_prompt(text: str, pending: dict) -> Optional[dict]:
+    """The deterministic voice→action mapping. Returns
+    {"action": "ask", "text": <outgoing question>} — byte-identical to the
+    corresponding button's send — or {"action": "dismiss"}, or None (no
+    match: route as a fresh question)."""
+    spoken = _normalize_utterance(text)
+    if not spoken:
+        return None
+
+    kind = pending.get("kind")
+    if kind == "follow_up":
+        if spoken in _YES_UTTERANCES:
+            return {"action": "ask", "text": pending["question"]}
+        if spoken in _NO_UTTERANCES:
+            return {"action": "dismiss"}
+        return None
+
+    if kind == "clarify":
+        # Whole-word containment so "דן" can't fire inside "ירדן"; longest
+        # option first so the fuller name wins when one contains another.
+        padded = f" {spoken} "
+        for option in sorted(pending.get("options", []), key=len, reverse=True):
+            normalized = _normalize_utterance(option)
+            if normalized and f" {normalized} " in padded:
+                return {
+                    "action": "ask",
+                    "text": f"{pending['original']} — {option}",
+                }
+        return None
+
+    return None
+
 
 class ConnectionManager:
     """Manage WebSocket connections and the real-time avatar pipeline."""
@@ -671,6 +739,24 @@ class ConnectionManager:
         try:
             data = self.session_data.get(session_id, {})
             data["last_activity"] = started_at
+
+            # A prompt armed by the PREVIOUS turn (follow-up offer / clarify
+            # ask) is consumed by exactly one input — this one. A match
+            # rewrites `text` into the same outgoing question the button
+            # sends (so persistence and the engine's history see the real
+            # question, while the transcription bubble honestly shows what
+            # was said); a decline forces a fixed spoken ack with no engine
+            # call; no match falls through as a fresh question.
+            pending = data.pop("pending_prompt", None)
+            if pending:
+                from app.services import spoken_answer as sa_mod
+
+                match = _match_pending_prompt(text, pending)
+                if match and match["action"] == "ask":
+                    text = match["text"]
+                elif match and match["action"] == "dismiss":
+                    data["_forced_reply"] = sa_mod.FOLLOW_UP_DECLINE_ACK
+
             messages: list[dict] = data.get("messages", [])
             messages.append({"role": "user", "content": text})
 
@@ -740,6 +826,30 @@ class ConnectionManager:
                             "for_question": text,
                         },
                     )
+                    # Arm voice answering: the next utterance may NAME one
+                    # of these options instead of clicking it. Armed only
+                    # here, after a COMPLETED turn — an interrupted turn
+                    # whose ask was never fully spoken never arms a prompt.
+                    data["pending_prompt"] = {
+                        "kind": "clarify",
+                        "options": answer.clarify.get("options", []),
+                        "original": text,
+                    }
+                elif answer and answer.follow_up and answer.follow_up.get("question"):
+                    # The voice spoke the fixed OFFER line; the generated
+                    # follow-up question itself is chat-only (never TTS) —
+                    # same split as clarify.
+                    await self.send_message(
+                        session_id,
+                        {
+                            "type": "follow_up",
+                            "question": answer.follow_up["question"],
+                        },
+                    )
+                    data["pending_prompt"] = {
+                        "kind": "follow_up",
+                        "question": answer.follow_up["question"],
+                    }
 
         except Exception as e:
             logger.error(f"Text error [{session_id}]: {type(e).__name__}: {e}", exc_info=True)
@@ -980,8 +1090,16 @@ class ConnectionManager:
         group_id = data.get("producer_id")
         recording_language = data.get("producer_recording_language", "en")
 
+        forced_reply = data.pop("_forced_reply", None)
+
         with span("response.produce"):
-            if not group_id:
+            if forced_reply:
+                # A voice-declined follow-up offer: speak the fixed ack and
+                # skip the engine entirely — "לא" is an answer to the OFFER,
+                # not a question for the archive. Fixed template, so the
+                # never-invent rule holds trivially.
+                full_text = forced_reply
+            elif not group_id:
                 full_text = self._NO_PIPELINE_MSG
             else:
                 # THE SHARED ENGINE (docs/AVATAR_SHARED_ENGINE_PLAN.md): the

@@ -26,6 +26,7 @@ from app.websocket import (
     MAX_TEXT_INPUT_LEN,
     ConnectionManager,
     _drain_chunks,
+    _match_pending_prompt,
 )
 
 # ── chunker (first-frame latency) ───────────────────────────────────────────
@@ -795,3 +796,239 @@ async def test_a_failed_read_is_sent_as_its_own_message_type(monkeypatch):
     # Carries the question so the client can retry it verbatim.
     assert failed[0]["question"] == "מה עוד?"
     assert not [msg for msg in ws.sent if msg["type"] == "video_clip_no_story"]
+
+
+# ── pending-prompt voice answering (AVATAR_SHARED_ENGINE_PLAN §7) ───────────
+#
+# A spoken "כן" must produce the byte-identical outgoing question a button
+# click sends, via deterministic string matching only — and anything that
+# doesn't match must fall through as a fresh question, clearing the prompt.
+
+
+_FOLLOW_UP_PENDING = {"kind": "follow_up", "question": "רוצה לשמוע על הצבא?"}
+_CLARIFY_PENDING = {
+    "kind": "clarify",
+    "options": ["אמנון", "אמנון נחום"],
+    "original": "ספר לי על אמנון",
+}
+
+
+def test_a_whole_utterance_yes_asks_the_offered_question():
+    for spoken in ("כן", "כן!", "בטח.", "אשמח לשמוע", "yes please"):
+        assert _match_pending_prompt(spoken, _FOLLOW_UP_PENDING) == {
+            "action": "ask",
+            "text": "רוצה לשמוע על הצבא?",
+        }, spoken
+
+
+def test_a_whole_utterance_no_dismisses():
+    for spoken in ("לא", "לא תודה.", "לא עכשיו", "no thanks"):
+        assert _match_pending_prompt(spoken, _FOLLOW_UP_PENDING) == {
+            "action": "dismiss"
+        }, spoken
+
+
+def test_yes_no_words_inside_a_longer_utterance_never_match():
+    """The load-bearing misfire guard: a fresh question CONTAINING לא or כן
+    is a fresh question. Matching is whole-utterance only."""
+    for spoken in (
+        "לא סיפרת לי על הצבא",
+        "כן אבל קודם ספר לי על אמא שלך",
+        "מה זאת אומרת לא?",
+    ):
+        assert _match_pending_prompt(spoken, _FOLLOW_UP_PENDING) is None, spoken
+
+
+def test_a_spoken_clarify_option_wins_longest_first():
+    """Naming the fuller option must not be swallowed by its prefix, and the
+    outgoing text is exactly the button's re-ask shape."""
+    match = _match_pending_prompt("על אמנון נחום בבקשה", _CLARIFY_PENDING)
+    assert match == {"action": "ask", "text": "ספר לי על אמנון — אמנון נחום"}
+    # The bare shorter option still matches on its own.
+    assert _match_pending_prompt("אמנון", _CLARIFY_PENDING) == {
+        "action": "ask",
+        "text": "ספר לי על אמנון — אמנון",
+    }
+
+
+def test_clarify_options_match_whole_words_only():
+    """'דן' must not fire inside 'ירדן'."""
+    pending = {"kind": "clarify", "options": ["דן"], "original": "ספר לי על דן"}
+    assert _match_pending_prompt("ספר לי על ירדן", pending) is None
+
+
+def test_yes_and_no_do_not_apply_to_a_clarify_prompt():
+    """A clarify asks WHICH — a bare כן answers nothing and routes fresh."""
+    assert _match_pending_prompt("כן", _CLARIFY_PENDING) is None
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_turn_arms_the_prompt_and_sends_the_chat_event(monkeypatch):
+    """A completed turn with a follow-up speaks the FIXED offer line at the
+    end, sends the generated question as a `follow_up` chat event (never
+    TTS), and arms pending_prompt for the next utterance."""
+    from app.services import full_archive_retrieval as far
+    from app.services import spoken_answer as sa_mod
+
+    unit = far.UtteranceUnit(
+        unit_id="u1", segment_id="seg-a", index=0,
+        start_sec=0.0, end_sec=2.0, text="נולדתי בטבריה",
+    )
+    selection = far.UnitSelection(
+        clips=[], selected_units=[unit],
+        follow_up={"question": "רוצה לשמוע על הצבא?", "unit_ids": ["u9"]},
+    )
+
+    async def fake_select(question, group_id, recording_language, session_id):
+        return selection
+
+    async def no_names(segment_ids, group_id):
+        return {}
+
+    monkeypatch.setattr(far, "select_units", fake_select)
+    monkeypatch.setattr(sa_mod, "_entity_names_by_segment", no_names)
+
+    m = ConnectionManager()
+    ws = _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+
+    async def swallow_persist(*a, **k):
+        return None
+
+    monkeypatch.setattr(m, "_persist_message", swallow_persist)
+
+    await m._handle_text_input_inner("s1", "איפה נולדת?")
+
+    spoken = [msg for msg in ws.sent if msg.get("type") == "message"]
+    assert spoken and spoken[-1]["content"] == (
+        f"נולדתי בטבריה {sa_mod.FOLLOW_UP_OFFER_LINE}"
+    )
+    events = [msg for msg in ws.sent if msg.get("type") == "follow_up"]
+    assert events == [{"type": "follow_up", "question": "רוצה לשמוע על הצבא?"}]
+    assert m.session_data["s1"]["pending_prompt"] == {
+        "kind": "follow_up",
+        "question": "רוצה לשמוע על הצבא?",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_spoken_yes_asks_the_follow_up_question_itself(monkeypatch):
+    """With the prompt armed, 'כן' reaches the engine as the OFFERED
+    question — and that question is what persists as the user turn, so
+    history and coreference read the real question, not 'כן'."""
+    from app.services import full_archive_retrieval as far
+
+    asked = []
+
+    async def fake_select(question, group_id, recording_language, session_id):
+        asked.append(question)
+        return far.UnitSelection(clips=[], selected_units=[])
+
+    monkeypatch.setattr(far, "select_units", fake_select)
+
+    m = ConnectionManager()
+    _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+    m.session_data["s1"]["pending_prompt"] = dict(_FOLLOW_UP_PENDING)
+
+    persisted = []
+
+    async def record_persist(session_id, role, content, latency=None, metadata=None, video_url=None):
+        persisted.append({"role": role, "content": content})
+
+    monkeypatch.setattr(m, "_persist_message", record_persist)
+
+    await m._handle_text_input_inner("s1", "כן")
+
+    assert asked == ["רוצה לשמוע על הצבא?"]
+    user_rows = [p for p in persisted if p["role"] == "user"]
+    assert user_rows == [{"role": "user", "content": "רוצה לשמוע על הצבא?"}]
+    assert "pending_prompt" not in m.session_data["s1"]
+
+
+@pytest.mark.asyncio
+async def test_a_spoken_no_speaks_the_fixed_ack_without_the_engine(monkeypatch):
+    """'לא' answers the OFFER, not the archive: the fixed ack is spoken and
+    the engine is never called."""
+    from app.services import full_archive_retrieval as far
+    from app.services import spoken_answer as sa_mod
+
+    async def must_not_run(question, group_id, recording_language, session_id):
+        raise AssertionError("a declined offer must never reach the engine")
+
+    monkeypatch.setattr(far, "select_units", must_not_run)
+
+    m = ConnectionManager()
+    ws = _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+    m.session_data["s1"]["pending_prompt"] = dict(_FOLLOW_UP_PENDING)
+
+    async def swallow_persist(*a, **k):
+        return None
+
+    monkeypatch.setattr(m, "_persist_message", swallow_persist)
+
+    await m._handle_text_input_inner("s1", "לא תודה")
+
+    spoken = [msg for msg in ws.sent if msg.get("type") == "message"]
+    assert spoken and spoken[-1]["content"] == sa_mod.FOLLOW_UP_DECLINE_ACK
+    assert "pending_prompt" not in m.session_data["s1"]
+
+
+@pytest.mark.asyncio
+async def test_an_unmatched_utterance_clears_the_prompt_and_routes_fresh(monkeypatch):
+    """Anything that isn't a yes/no is a fresh question — same rule as v2,
+    where typing a new question abandons the clarify buttons."""
+    from app.services import full_archive_retrieval as far
+
+    asked = []
+
+    async def fake_select(question, group_id, recording_language, session_id):
+        asked.append(question)
+        return far.UnitSelection(clips=[], selected_units=[])
+
+    monkeypatch.setattr(far, "select_units", fake_select)
+
+    m = ConnectionManager()
+    _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+    m.session_data["s1"]["pending_prompt"] = dict(_FOLLOW_UP_PENDING)
+
+    async def swallow_persist(*a, **k):
+        return None
+
+    monkeypatch.setattr(m, "_persist_message", swallow_persist)
+
+    await m._handle_text_input_inner("s1", "מי האחים שלך?")
+
+    assert asked == ["מי האחים שלך?"]
+    assert "pending_prompt" not in m.session_data["s1"]
+
+
+@pytest.mark.asyncio
+async def test_a_spoken_clarify_name_reasks_like_the_button(monkeypatch):
+    """Saying the person's name after a clarify sends the button's exact
+    re-ask: original question — option."""
+    from app.services import full_archive_retrieval as far
+
+    asked = []
+
+    async def fake_select(question, group_id, recording_language, session_id):
+        asked.append(question)
+        return far.UnitSelection(clips=[], selected_units=[])
+
+    monkeypatch.setattr(far, "select_units", fake_select)
+
+    m = ConnectionManager()
+    _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+    m.session_data["s1"]["pending_prompt"] = dict(_CLARIFY_PENDING)
+
+    async def swallow_persist(*a, **k):
+        return None
+
+    monkeypatch.setattr(m, "_persist_message", swallow_persist)
+
+    await m._handle_text_input_inner("s1", "אמנון נחום")
+
+    assert asked == ["ספר לי על אמנון — אמנון נחום"]
