@@ -188,9 +188,11 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
     forQuestion: string
   } | null>(null)
   // The follow-up offer the voice just made ("רוצה לשמוע?") — the generated
-  // question is chat-only. Answerable by voice (server-side matcher) or by
-  // these buttons; either path sends the identical question string.
-  const [followUp, setFollowUp] = useState<{ question: string } | null>(null)
+  // question arrives as its own assistant bubble (v2's presentation), and
+  // this state marks WHICH bubble still has its כן/לא live. Answerable by
+  // voice (server-side matcher) or by the buttons; either path sends the
+  // identical question string.
+  const [followUp, setFollowUp] = useState<{ question: string; messageId: string } | null>(null)
   const [language, setLanguage] = useState('en')
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
 
@@ -440,11 +442,22 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
         })
         break
 
-      case 'follow_up':
-        // The voice already spoke the fixed offer line; this is the
-        // generated question it offered, as chat data with yes/no buttons.
-        setFollowUp({ question: data.question })
+      case 'follow_up': {
+        // The voice already spoke the fixed generic offer line; the SPECIFIC
+        // generated question shows here, as its own assistant bubble with
+        // כן/לא attached — v2's exact presentation (a separate message whose
+        // content IS the question, useVideoClipChat's follow-up shape).
+        const id = `followup-${Date.now()}`
+        setMessages(prev => [...prev, {
+          id,
+          role: 'assistant',
+          content: data.question,
+          timestamp: new Date(),
+          emotion: detectEmotion(data.question),
+        }])
+        setFollowUp({ question: data.question, messageId: id })
         break
+      }
 
       case 'message': {
         const content = data.content
@@ -1019,6 +1032,43 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
                         }`}
                       >
                         {message.content}
+                        {/* Live follow-up offer: this bubble IS the specific
+                            generated question; כן sends it verbatim — the
+                            same string a spoken "כן" resolves to server-side. */}
+                        {followUp?.messageId === message.id && (
+                          <div className="flex items-center gap-2 mt-2.5">
+                            <button
+                              onClick={() => {
+                                const question = followUp.question
+                                setFollowUp(null)
+                                if (ws && ws.readyState === WebSocket.OPEN) {
+                                  ws.send(JSON.stringify({ type: 'text', text: question }))
+                                  setMessages(prev => [...prev, {
+                                    id: Date.now().toString(),
+                                    role: 'user',
+                                    content: question,
+                                    timestamp: new Date(),
+                                    emotion: detectEmotion(question),
+                                  }])
+                                  setIsTyping(true)
+                                }
+                              }}
+                              className="px-3 py-1 rounded-lg text-xs font-medium text-ink
+                                         bg-gradient-to-br from-primary-600 to-accent-600
+                                         hover:shadow-glow transition-all active:scale-95"
+                            >
+                              כן
+                            </button>
+                            <button
+                              onClick={() => setFollowUp(null)}
+                              className="px-3 py-1 rounded-lg text-xs font-medium text-ink-soft
+                                         bg-surface-700 border border-edge hover:bg-surface-600
+                                         transition-all active:scale-95"
+                            >
+                              לא
+                            </button>
+                          </div>
+                        )}
                         {/* Hover action menu — only on persisted messages (have a real DB id) */}
                         <div className={`absolute -top-2 ${isUser ? '-left-2' : '-right-2'} flex items-center gap-1
                                          opacity-0 group-hover:opacity-100 transition-opacity`}>
@@ -1137,44 +1187,6 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
                     {option}
                   </button>
                 ))}
-              </div>
-            </div>
-          )}
-          {followUp && (
-            <div className="mb-3 px-2 flex flex-col gap-2">
-              <p dir="auto" className="text-xs text-ink-soft">{followUp.question}</p>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => {
-                    // Same send as v2's acceptFollowUp: the offered question
-                    // goes out through the normal text path — identical to
-                    // what a spoken "כן" resolves to server-side.
-                    const question = followUp.question
-                    setFollowUp(null)
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                      ws.send(JSON.stringify({ type: 'text', text: question }))
-                      setMessages(prev => [...prev, {
-                        id: Date.now().toString(),
-                        role: 'user',
-                        content: question,
-                        timestamp: new Date(),
-                        emotion: detectEmotion(question),
-                      }])
-                      setIsTyping(true)
-                    }
-                  }}
-                  dir="auto"
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium text-ink-soft bg-surface-700 border border-edge hover:bg-surface-600 hover:border-primary-500/40 transition-all active:scale-95"
-                >
-                  כן, ספר לי
-                </button>
-                <button
-                  onClick={() => setFollowUp(null)}
-                  dir="auto"
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium text-muted bg-surface-700 border border-edge hover:bg-surface-600 transition-all active:scale-95"
-                >
-                  לא, תודה
-                </button>
               </div>
             </div>
           )}
