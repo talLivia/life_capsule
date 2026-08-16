@@ -359,3 +359,68 @@ What this plan deliberately does NOT do: touch the engine prompt (zero
 prompt-regression exposure), change v2 behavior in any way (one
 oracle-proven internal split aside), or revisit avatar mode's on/off
 status — it makes the dormant mode cheaper to keep, not more prominent.
+
+## 7. Flowing conversation + the pending-prompt design (investigated 2026-08-17)
+
+The question: does live/flowing conversation already exist in the (legacy)
+avatar pipeline, and how does follow-up surfacing / voice yes-no answering
+fit into it? Findings, verified against the running code:
+
+**A flowing-conversation substrate exists and survived the engine swap
+untouched** — it all lives downstream of retrieval, which is exactly why
+step 1-4 didn't touch it:
+
+- **Sentence-queue streaming** (`_animate_from_queue` + the chunker in
+  `_response_producer`): the first video chunk plays at the first clause
+  boundary while later sentences are still in TTS — the answer *flows*, it
+  doesn't arrive as one block.
+- **Barge-in** (`interrupt_active_turn`, called by BOTH dispatchers before
+  every new turn): speaking or typing mid-reply cancels the in-flight turn.
+  Test-pinned behavior.
+- **Hands-free mic loop** (`useContinuousVoiceInput`): VAD-gated continuous
+  listening, suppressed while `isProcessing || showVideo` — the mic reopens
+  exactly when the avatar finishes speaking. This sequencing is what makes a
+  spoken offer answerable: the offer is the LAST thing spoken, and the mic
+  opens right after.
+- **What does NOT exist**: any server-side conversational state beyond
+  message history. Turns are stateless; the v2 clarify state lives only in
+  the frontend. `pending_prompt` (below) is therefore the FIRST server-held
+  turn-to-turn state — kept deliberately minimal (one dict in
+  `session_data`, consumed by the next input, lost on reconnect by design).
+
+**How the pending-prompt design composes with each flow mechanism:**
+
+- *Barge-in mid-answer*: `pending_prompt` is set at the END of a completed
+  turn (after persist, inside `_handle_text_input_inner`). A cancelled turn
+  never reaches that line, so an interrupted answer — whose offer was never
+  fully spoken — never arms a prompt. Falls out of the ordering; no special
+  case.
+- *Barge-in after the answer* (prompt armed): the new input pops the prompt
+  and runs the deterministic matcher. Yes/no matches only on the FULL
+  normalized utterance, so a barge-in question containing "לא" ("לא סיפרת
+  לי על...") can never read as a decline — it falls through, clears the
+  prompt, and routes as the fresh question it is. Mirrors v2, where typing
+  a new question abandons the clarify buttons.
+- *Mic gating*: no interaction needed — the offer is appended to the
+  answer's TTS text, so it plays inside the same `showVideo` window, and
+  the mic reopens after it.
+- *Reconnect*: `session_data` is rebuilt, the prompt is gone → next
+  utterance routes as a fresh question; the frontend card survives (the
+  reconnect loop doesn't unmount ChatInterface), so BUTTONS still work —
+  they send literal question text through the normal path, needing no
+  server state. Graceful degradation, voice-only.
+- *STT floor*: a bare "כן" is ~300-500ms against `MIN_SPEECH_MS = 320` —
+  the shortest possible answers may occasionally be dropped by VAD. The
+  buttons are the always-working fallback; the yes-sets include longer
+  natural forms ("כן בבקשה", "בטח") that clear the floor comfortably.
+
+**Never-invent position**: the matcher is pure string normalization against
+fixed word-sets and literal option names — it only ever *selects among
+server-known actions*, mapping a spoken "כן" to the byte-identical outgoing
+question a button click sends. The spoken offer and the decline
+acknowledgment are fixed template lines (CLARIFY_SPOKEN_LINE precedent);
+the model-generated follow-up question text remains chat-only, never TTS.
+
+**Asymmetry, deliberate**: voice-"לא" gets a spoken fixed acknowledgment
+(dead air is a broken voice interaction); clicking לא dismisses silently
+(v2 parity — a click is its own visible feedback).
