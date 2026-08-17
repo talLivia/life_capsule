@@ -50,13 +50,24 @@ const NEGATIVE_SPEECH_THRESHOLD = 0.35
 // enough not to cut the speaker off at a natural mid-sentence pause, short
 // enough not to feel laggy.
 const REDEMPTION_MS = 1000
-// Anything shorter than this isn't an utterance — Silero fires
-// `onVADMisfire` instead of `onSpeechEnd`, so a cough or a door closing never
-// becomes a turn. This is the length of a stretch the MODEL classified as
-// speech, not cumulative time above a loudness line, so noise can't
-// accumulate its way past it. Known limit: a bare clipped "כן" sits near
-// this floor — longer natural forms clear it comfortably.
-const MIN_SPEECH_MS = 320
+// TWO-TIER SPEECH FLOOR (2026-08-18, after live testing showed a natural-
+// pace "כן" being discarded — Silero counts 32ms frames over the 0.5
+// threshold, and a short plosive+vowel word clears it for only ~5-8 frames,
+// under the old single 320ms bar unless artificially elongated):
+//
+//   HARD floor (library `minSpeechMs`): below this, vad-web fires
+//   `onVADMisfire` and we never see the audio. Set LOW — 6 frames — so a
+//   normal-speed one-word answer survives the library.
+//
+//   GENERAL floor (enforced in onSpeechEnd): the old 320ms bar, applied
+//   only when NO follow-up/clarify prompt is pending. In general chat a
+//   sub-320ms blip is far more likely noise than a question; while a
+//   prompt card is showing, a one-word answer is exactly what's expected,
+//   so anything the hard floor kept passes. Measured as the delivered
+//   audio's wall duration minus the pre-speech pad (a slightly laxer
+//   metric than Silero's counted speech frames — deliberate).
+const HARD_MISFIRE_FLOOR_MS = 192
+const GENERAL_SPEECH_FLOOR_MS = 320
 // Audio Silero prepends from BEFORE the detected onset, so the word's first
 // phoneme is in the payload even though detection necessarily lags it.
 const PRE_SPEECH_PAD_MS = 500
@@ -145,11 +156,15 @@ export interface ContinuousVoiceInput {
  * as WAV and calls `onSegment` with base64 audio. `connected` gates sending
  * (no point while the WS is down); `avatarBusy` gates which utterances
  * count — see the half-duplex rules in the header comment.
+ * `expectShortReply` relaxes the general speech floor while a
+ * follow-up/clarify prompt is pending, where a one-word answer is the
+ * expected input rather than probable noise.
  */
 export function useContinuousVoiceInput(
   connected: boolean,
   avatarBusy: boolean,
-  onSegment: (base64Audio: string) => void
+  onSegment: (base64Audio: string) => void,
+  expectShortReply: boolean = false
 ): ContinuousVoiceInput {
   const [micMuted, setMicMuted] = useState(false)
   const [isListening, setIsListening] = useState(false)
@@ -179,6 +194,7 @@ export function useContinuousVoiceInput(
   const maxSpeechTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const micMutedRef = useRef(false)
   const connectedRef = useRef(false)
+  const expectShortReplyRef = useRef(false)
   const resumeOnGestureRef = useRef<(() => void) | null>(null)
   const onSegmentRef = useRef(onSegment)
 
@@ -211,6 +227,9 @@ export function useContinuousVoiceInput(
     connectedRef.current = connected
     refreshListening()
   }, [connected, refreshListening])
+  useEffect(() => {
+    expectShortReplyRef.current = expectShortReply
+  }, [expectShortReply])
 
   // Acquire the mic once, for the whole conversation — reusing the same
   // loopback-safe device-selection fix already applied in VideoRecorder.tsx
@@ -372,7 +391,7 @@ export function useContinuousVoiceInput(
           positiveSpeechThreshold: POSITIVE_SPEECH_THRESHOLD,
           negativeSpeechThreshold: NEGATIVE_SPEECH_THRESHOLD,
           redemptionMs: REDEMPTION_MS,
-          minSpeechMs: MIN_SPEECH_MS,
+          minSpeechMs: HARD_MISFIRE_FLOOR_MS,
           preSpeechPadMs: PRE_SPEECH_PAD_MS,
           onSpeechStart: () => {
             if (micMutedRef.current) return  // muted speech never becomes a turn
@@ -432,6 +451,25 @@ export function useContinuousVoiceInput(
               }
               console.info(
                 '[voice] tail-overlap utterance accepted, overlapMs=', beforeClear
+              )
+            }
+            // Two-tier floor: wall duration of the delivered speech, pad
+            // excluded (16 samples per ms at 16kHz).
+            const speechMs = Math.round(
+              Math.max(0, audio.length - PRE_SPEECH_PAD_MS * 16) / 16
+            )
+            if (speechMs < GENERAL_SPEECH_FLOOR_MS) {
+              if (!expectShortReplyRef.current) {
+                console.info(
+                  '[voice] utterance dropped:', speechMs,
+                  'ms < general floor', GENERAL_SPEECH_FLOOR_MS,
+                  'ms (no prompt pending)'
+                )
+                return
+              }
+              console.info(
+                '[voice] short utterance accepted under prompt context:',
+                speechMs, 'ms (hard floor', HARD_MISFIRE_FLOOR_MS, 'ms)'
               )
             }
             const b64 = encodeWavBase64(audio, VAD_SAMPLE_RATE)

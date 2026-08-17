@@ -644,7 +644,15 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
   }, [])
 
   const { micMuted, setMicMuted, isListening, hearingSpeech, micLevel, micUnavailable } =
-    useContinuousVoiceInput(connectionStatus === 'connected', isProcessing || showVideo, sendAudioSegment)
+    useContinuousVoiceInput(
+      connectionStatus === 'connected',
+      isProcessing || showVideo,
+      sendAudioSegment,
+      // A one-word answer is the EXPECTED input while a follow-up/clarify
+      // card is up — relaxes the hook's general speech floor to its hard
+      // floor for exactly that window (two-tier floor, 2026-08-18).
+      followUp !== null || clarify !== null
+    )
 
   useEffect(() => {
     if (!micUnavailable) return
