@@ -813,28 +813,30 @@ _CLARIFY_PENDING = {
 }
 
 
-def test_a_whole_utterance_yes_asks_the_offered_question():
-    for spoken in ("כן", "כן!", "בטח.", "אשמח לשמוע", "yes please"):
+def test_a_bare_yes_is_the_zero_latency_fast_path():
+    for spoken in ("כן", "כן!", "בטח.", "כן בבקשה", "okay"):
         assert _match_pending_prompt(spoken, _FOLLOW_UP_PENDING) == {
             "action": "ask",
             "text": "רוצה לשמוע על הצבא?",
         }, spoken
 
 
-def test_a_whole_utterance_no_dismisses():
+def test_a_bare_no_is_the_zero_latency_fast_path():
     for spoken in ("לא", "לא תודה.", "לא עכשיו", "no thanks"):
         assert _match_pending_prompt(spoken, _FOLLOW_UP_PENDING) == {
             "action": "dismiss"
         }, spoken
 
 
-def test_yes_no_words_inside_a_longer_utterance_never_match():
-    """The load-bearing misfire guard: a fresh question CONTAINING לא or כן
-    is a fresh question. Matching is whole-utterance only."""
+def test_longer_utterances_leave_the_fast_path_undecided():
+    """The deterministic layer must never guess on natural phrasing — a
+    reply CONTAINING לא or כן returns None so the caller can consult the
+    bounded classifier instead."""
     for spoken in (
         "לא סיפרת לי על הצבא",
         "כן אבל קודם ספר לי על אמא שלך",
         "מה זאת אומרת לא?",
+        "לא, תספר לי עוד על המשפחה שלך",
     ):
         assert _match_pending_prompt(spoken, _FOLLOW_UP_PENDING) is None, spoken
 
@@ -975,9 +977,10 @@ async def test_a_spoken_no_speaks_the_fixed_ack_without_the_engine(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_an_unmatched_utterance_clears_the_prompt_and_routes_fresh(monkeypatch):
-    """Anything that isn't a yes/no is a fresh question — same rule as v2,
-    where typing a new question abandons the clarify buttons."""
+async def test_an_unrelated_reply_clears_the_prompt_and_routes_fresh(monkeypatch):
+    """A reply the classifier labels unrelated is a fresh question — same
+    rule as v2, where typing a new question abandons the clarify buttons."""
+    from app import websocket as wsmod
     from app.services import full_archive_retrieval as far
 
     asked = []
@@ -986,7 +989,13 @@ async def test_an_unmatched_utterance_clears_the_prompt_and_routes_fresh(monkeyp
         asked.append(question)
         return far.UnitSelection(clips=[], selected_units=[])
 
+    async def fake_classify(offered_question, utterance):
+        assert offered_question == "רוצה לשמוע על הצבא?"
+        assert utterance == "מי האחים שלך?"
+        return "unrelated"
+
     monkeypatch.setattr(far, "select_units", fake_select)
+    monkeypatch.setattr(wsmod, "_classify_prompt_reply", fake_classify)
 
     m = ConnectionManager()
     _wire_session(m)
@@ -1031,3 +1040,183 @@ async def test_a_spoken_clarify_name_reasks_like_the_button(monkeypatch):
     await m._handle_text_input_inner("s1", "אמנון נחום")
 
     assert asked == ["ספר לי על אמנון — אמנון נחום"]
+
+
+# ── the hybrid classifier layer (follow-up offers only) ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_classifier_accept_asks_the_offered_question(monkeypatch):
+    """A phrased acceptance the word-list can't know ('אה כן, למה לא בעצם')
+    resolves to the byte-identical offered question — the classifier only
+    picked the label, never wrote the text."""
+    from app import websocket as wsmod
+    from app.services import full_archive_retrieval as far
+
+    asked = []
+
+    async def fake_select(question, group_id, recording_language, session_id):
+        asked.append(question)
+        return far.UnitSelection(clips=[], selected_units=[])
+
+    async def fake_classify(offered_question, utterance):
+        return "accept"
+
+    monkeypatch.setattr(far, "select_units", fake_select)
+    monkeypatch.setattr(wsmod, "_classify_prompt_reply", fake_classify)
+
+    m = ConnectionManager()
+    _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+    m.session_data["s1"]["pending_prompt"] = dict(_FOLLOW_UP_PENDING)
+
+    persisted = []
+
+    async def record_persist(session_id, role, content, latency=None, metadata=None, video_url=None):
+        persisted.append({"role": role, "content": content})
+
+    monkeypatch.setattr(m, "_persist_message", record_persist)
+
+    await m._handle_text_input_inner("s1", "אה כן, למה לא בעצם")
+
+    assert asked == ["רוצה לשמוע על הצבא?"]
+    assert [p for p in persisted if p["role"] == "user"] == [
+        {"role": "user", "content": "רוצה לשמוע על הצבא?"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_classifier_decline_speaks_the_ack_without_the_engine(monkeypatch):
+    from app import websocket as wsmod
+    from app.services import full_archive_retrieval as far
+    from app.services import spoken_answer as sa_mod
+
+    async def must_not_run(question, group_id, recording_language, session_id):
+        raise AssertionError("a declined offer must never reach the engine")
+
+    async def fake_classify(offered_question, utterance):
+        return "decline"
+
+    monkeypatch.setattr(far, "select_units", must_not_run)
+    monkeypatch.setattr(wsmod, "_classify_prompt_reply", fake_classify)
+
+    m = ConnectionManager()
+    ws = _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+    m.session_data["s1"]["pending_prompt"] = dict(_FOLLOW_UP_PENDING)
+
+    async def swallow_persist(*a, **k):
+        return None
+
+    monkeypatch.setattr(m, "_persist_message", swallow_persist)
+
+    await m._handle_text_input_inner("s1", "לא בא לי כרגע, תודה רבה")
+
+    spoken = [msg for msg in ws.sent if msg.get("type") == "message"]
+    assert spoken and spoken[-1]["content"] == sa_mod.FOLLOW_UP_DECLINE_ACK
+
+
+@pytest.mark.asyncio
+async def test_a_bare_yes_never_pays_for_the_classifier(monkeypatch):
+    """The fast path must resolve without the LLM round-trip."""
+    from app import websocket as wsmod
+    from app.services import full_archive_retrieval as far
+
+    asked = []
+
+    async def fake_select(question, group_id, recording_language, session_id):
+        asked.append(question)
+        return far.UnitSelection(clips=[], selected_units=[])
+
+    async def must_not_classify(offered_question, utterance):
+        raise AssertionError("bare 'כן' must not reach the classifier")
+
+    monkeypatch.setattr(far, "select_units", fake_select)
+    monkeypatch.setattr(wsmod, "_classify_prompt_reply", must_not_classify)
+
+    m = ConnectionManager()
+    _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+    m.session_data["s1"]["pending_prompt"] = dict(_FOLLOW_UP_PENDING)
+
+    async def swallow_persist(*a, **k):
+        return None
+
+    monkeypatch.setattr(m, "_persist_message", swallow_persist)
+
+    await m._handle_text_input_inner("s1", "כן")
+
+    assert asked == ["רוצה לשמוע על הצבא?"]
+
+
+@pytest.mark.asyncio
+async def test_clarify_prompts_never_consult_the_classifier(monkeypatch):
+    """The classifier is scoped to follow-up offers; an unmatched reply to
+    a clarify routes fresh with zero LLM involvement."""
+    from app import websocket as wsmod
+    from app.services import full_archive_retrieval as far
+
+    asked = []
+
+    async def fake_select(question, group_id, recording_language, session_id):
+        asked.append(question)
+        return far.UnitSelection(clips=[], selected_units=[])
+
+    async def must_not_classify(offered_question, utterance):
+        raise AssertionError("clarify must never reach the classifier")
+
+    monkeypatch.setattr(far, "select_units", fake_select)
+    monkeypatch.setattr(wsmod, "_classify_prompt_reply", must_not_classify)
+
+    m = ConnectionManager()
+    _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+    m.session_data["s1"]["pending_prompt"] = dict(_CLARIFY_PENDING)
+
+    async def swallow_persist(*a, **k):
+        return None
+
+    monkeypatch.setattr(m, "_persist_message", swallow_persist)
+
+    await m._handle_text_input_inner("s1", "מה השעה עכשיו?")
+
+    assert asked == ["מה השעה עכשיו?"]
+
+
+@pytest.mark.asyncio
+async def test_classify_prompt_reply_normalizes_valid_labels(monkeypatch):
+    from app import websocket as wsmod
+    from app.services.llm import llm_service
+
+    replies = iter([' "Accept" ', "decline.", "UNRELATED"])
+
+    async def fake_generate(messages, system_prompt=None, temperature=None, **kw):
+        assert temperature == 0
+        assert "OFFER: רוצה לשמוע על הצבא?" in messages[0]["content"]
+        return next(replies)
+
+    monkeypatch.setattr(llm_service, "generate_response", fake_generate)
+
+    assert await wsmod._classify_prompt_reply("רוצה לשמוע על הצבא?", "טוב") == "accept"
+    assert await wsmod._classify_prompt_reply("רוצה לשמוע על הצבא?", "טוב") == "decline"
+    assert await wsmod._classify_prompt_reply("רוצה לשמוע על הצבא?", "טוב") == "unrelated"
+
+
+@pytest.mark.asyncio
+async def test_classify_prompt_reply_fails_open_on_error_and_garbage(monkeypatch):
+    """Any failure means the status-quo action (fresh question), never a
+    wrong accept/decline."""
+    from app import websocket as wsmod
+    from app.services.llm import llm_service
+
+    async def boom(*a, **kw):
+        raise RuntimeError("llm down")
+
+    monkeypatch.setattr(llm_service, "generate_response", boom)
+    assert await wsmod._classify_prompt_reply("שאלה?", "משהו") == "unrelated"
+
+    async def garbage(*a, **kw):
+        return "maybe yes? hard to say"
+
+    monkeypatch.setattr(llm_service, "generate_response", garbage)
+    assert await wsmod._classify_prompt_reply("שאלה?", "משהו") == "unrelated"

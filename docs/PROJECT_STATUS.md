@@ -1756,6 +1756,31 @@ units via `_validate_follow_up`), never story content. The mechanical
 verbatim-invariant test now strips exactly (unit texts + banks + that
 one question) and still demands zero residue.
 
+**Hybrid follow-up reply understanding, 2026-08-18** (producer-directed
+after the word-list missed natural Hebrew twice in one live session —
+"כן, תספר לי" and "לא, תספר לי עוד..."): a bare whole-utterance "כן"/"לא"
+still resolves deterministically with zero latency; anything else on a
+pending follow-up goes to `_classify_prompt_reply` — ONE temperature=0
+flash-lite call (the `_classify_topic` pattern) choosing among exactly
+three labels: accept (send the byte-identical offered question), decline
+(fixed ack, no engine), unrelated (route the whole utterance as a fresh
+question). Fail-OPEN to unrelated on any error/garbage — the failure
+mode is the pre-classifier status quo, never a wrong action. Clarify
+prompts stay literal-option matching (names either appear or the
+engine's own disambiguation handles the paraphrase). No existing prompt
+was edited — zero drift exposure.
+
+**Voice capture rebuilt on Silero-delivered audio, 2026-08-18**
+(`f817476`): vad-web's onSpeechEnd now supplies the utterance itself
+(16kHz + 500ms pre-speech pad, WAV-encoded client-side; Deepgram and
+the ffmpeg/Whisper fallback both sniff the container so the backend is
+untouched). Retires the MediaRecorder segment loop and both of its
+capture-loss modes (one-shot onSpeechStart swallow, clipped segment
+starts). Half-duplex kept, with one deliberate exception: an utterance
+that began ≤1.2s before playback ended is accepted — answering on the
+question's tail is the point of the feature; anything earlier is
+treated as the avatar's own audio (the clip-replayed-as-question guard).
+
 **Mic auto-reopen bug fixed 2026-08-17** (found live: hands-free voice
 required clicking the stop button after every answer). Root cause: the
 server's per-sentence "Animating…" status re-set `isProcessing` while

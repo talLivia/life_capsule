@@ -156,29 +156,79 @@ STALE_SESSION_TTL_SECS = 60 * 60 * 2  # 2 hours
 #
 # When a spoken turn ends with a follow-up offer or a clarify ask, the next
 # utterance may be the ANSWER to that prompt rather than a fresh question.
-# The mapping is deterministic string matching ONLY — a spoken "כן" produces
-# the byte-identical outgoing question a button click sends, and anything
-# that doesn't match falls through as a fresh question (clearing the prompt,
-# exactly like typing a new question over v2's clarify buttons). No LLM is
-# ever consulted: the matcher selects among server-known actions, it never
-# interprets. docs/AVATAR_SHARED_ENGINE_PLAN.md §7.
+# Two layers decide, for a FOLLOW-UP offer (docs/AVATAR_SHARED_ENGINE_PLAN
+# §7, revised 2026-08-18 after the word-list provably missed natural Hebrew
+# twice in one live session — "כן, תספר לי" and "לא, תספר לי עוד..."):
 #
-# Matching is on the FULL normalized utterance for yes/no — "לא סיפרת לי על
-# הצבא" must never read as a decline — and on whole-word literal option
-# containment for clarify (longest option first, so "אמנון נחום" beats its
-# prefix "אמנון").
+#   1. Bare-word fast path: an utterance that IS a plain yes/no (whole
+#      normalized utterance against the tiny sets below) resolves with zero
+#      latency and no model involvement.
+#   2. Everything else goes to `_classify_prompt_reply` — one temperature=0
+#      LLM call (the `_classify_topic` pattern) choosing among exactly three
+#      LABELS, never generating output text: accept / decline / unrelated.
+#      Any error or unparseable reply fails OPEN to "unrelated", which is
+#      the pre-classifier behavior: route the whole utterance as a fresh
+#      question, prompt dismissed — the failure mode is the status quo,
+#      never a wrong action.
+#
+# Either way the ACTION stays deterministic: accept sends the byte-identical
+# offered question a button click sends; decline speaks the fixed ack.
+#
+# CLARIFY prompts deliberately stay literal-option matching only (whole-word
+# containment, longest option first, so "אמנון נחום" beats its prefix
+# "אמנון") — the options are proper names: a name either appears in the
+# reply or the engine's own disambiguation handles the paraphrase.
 
 _YES_UTTERANCES = {
-    "כן", "כן בבקשה", "בטח", "בטח שכן", "בסדר", "אוקיי", "אוקי", "סבבה",
-    "יאללה", "בוודאי", "ודאי", "למה לא", "ברור", "כמובן", "אשמח", "אשמח לשמוע",
-    "רוצה", "אני רוצה", "אני רוצה לשמוע", "רוצה לשמוע", "ספר", "ספר לי", "ספרי לי",
-    "yes", "yeah", "sure", "ok", "okay", "of course", "please", "yes please",
+    "כן", "כן בבקשה", "בטח", "ברור", "כמובן",
+    "yes", "sure", "ok", "okay",
 }
 _NO_UTTERANCES = {
-    "לא", "לא תודה", "לא עכשיו", "לא צריך", "אולי אחר כך", "אולי מאוחר יותר",
-    "די", "מספיק", "עזוב", "עזבי", "תודה", "זה מספיק",
-    "no", "no thanks", "no thank you", "not now", "nope",
+    "לא", "לא תודה", "לא עכשיו",
+    "no", "no thanks", "nope",
 }
+
+_PROMPT_REPLY_LABELS = {"accept", "decline", "unrelated"}
+
+_PROMPT_REPLY_SYSTEM_PROMPT = """\
+The assistant just offered to tell the listener more, phrased as a question \
+(the OFFER). The listener replied (the REPLY), usually in Hebrew. Classify \
+the REPLY as exactly one of three labels:
+
+accept — the listener wants the offered material, however phrased \
+(e.g. "כן, תספר לי", "אה בטח, למה לא", "ספר לי על זה").
+decline — the listener is closing the offer and asking for NOTHING else \
+(e.g. "לא בא לי כרגע", "אולי אחר כך, תודה").
+unrelated — the reply contains its own request, question, or topic, even if \
+it starts with a yes or a no (e.g. "לא, תספר לי על הצבא", "מה לגבי אמא שלך?", \
+"לא סיפרת לי על הבית") — the conversation should just answer it.
+
+Answer with one word only: accept, decline, or unrelated."""
+
+
+async def _classify_prompt_reply(offered_question: str, utterance: str) -> str:
+    """Bounded 3-label classification, never generation — the model picks
+    which server-known action runs; every output string stays byte-identical
+    to what the buttons send. Fail-OPEN to \"unrelated\" (= the fresh-question
+    fall-through that was the only behavior before this call existed)."""
+    from app.services.llm import llm_service
+
+    try:
+        raw = await llm_service.generate_response(
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"OFFER: {offered_question}\nREPLY: {utterance}",
+                }
+            ],
+            system_prompt=_PROMPT_REPLY_SYSTEM_PROMPT,
+            temperature=0,
+        )
+    except Exception as e:
+        logger.warning(f"prompt-reply classification failed (fail-open): {e}")
+        return "unrelated"
+    label = (raw or "").strip().strip('"').strip("'").strip(".").lower()
+    return label if label in _PROMPT_REPLY_LABELS else "unrelated"
 
 
 def _normalize_utterance(text: str) -> str:
@@ -189,10 +239,11 @@ def _normalize_utterance(text: str) -> str:
 
 
 def _match_pending_prompt(text: str, pending: dict) -> Optional[dict]:
-    """The deterministic voice→action mapping. Returns
-    {"action": "ask", "text": <outgoing question>} — byte-identical to the
-    corresponding button's send — or {"action": "dismiss"}, or None (no
-    match: route as a fresh question)."""
+    """The deterministic layer: the bare-word fast path for follow-ups and
+    the ONLY matching clarify gets. Returns {"action": "ask", "text":
+    <outgoing question>} — byte-identical to the corresponding button's
+    send — or {"action": "dismiss"}, or None (no deterministic match; for a
+    follow-up the caller then consults `_classify_prompt_reply`)."""
     spoken = _normalize_utterance(text)
     if not spoken:
         return None
@@ -752,6 +803,17 @@ class ConnectionManager:
                 from app.services import spoken_answer as sa_mod
 
                 match = _match_pending_prompt(text, pending)
+                if match is None and pending.get("kind") == "follow_up":
+                    # Not a bare yes/no — let the bounded classifier decide
+                    # which server-known action this reply selects (it never
+                    # generates text; "unrelated" = the old fall-through).
+                    label = await _classify_prompt_reply(
+                        pending.get("question", ""), text
+                    )
+                    if label == "accept":
+                        match = {"action": "ask", "text": pending["question"]}
+                    elif label == "decline":
+                        match = {"action": "dismiss"}
                 if match and match["action"] == "ask":
                     text = match["text"]
                 elif match and match["action"] == "dismiss":
