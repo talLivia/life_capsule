@@ -3,18 +3,21 @@
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import {
+  Clapperboard,
   Feather,
   Gift,
   Loader2,
   PanelRightClose,
   PanelRightOpen,
   PartyPopper,
+  Play,
   Plus,
   ShieldOff,
   SkipForward,
 } from 'lucide-react'
 import { GateStep } from '@/components/record/GateStep'
 import { InterviewAccordion } from '@/components/record/InterviewAccordion'
+import { PresenterVideo } from '@/components/record/PresenterVideo'
 import { ReadAloudButton } from '@/components/record/ReadAloudButton'
 import { RecordingList } from '@/components/record/RecordingList'
 import { CategoryPhotoZone } from '@/components/media/CategoryPhotoZone'
@@ -43,9 +46,12 @@ import type { RawSegment } from '@/lib/types'
  */
 
 /** Takes for the question on screen. The flow knows HOW MANY takes exist, but
- *  the player needs the rows themselves, which only the segments list has. */
+ *  the player needs the rows themselves, which only the segments list has.
+ *  `takesLoaded` marks the first fetch settling — the presenter video must
+ *  not auto-play on the takes==[] that merely means "not fetched yet". */
 function useTakesFor(sessionId: string | undefined, questionId: string | undefined) {
   const [takes, setTakes] = useState<RawSegment[]>([])
+  const [takesLoaded, setTakesLoaded] = useState(false)
 
   const load = useCallback(async () => {
     if (!sessionId || !questionId) {
@@ -57,14 +63,17 @@ function useTakesFor(sessionId: string | undefined, questionId: string | undefin
       setTakes(segments.filter(s => s.question_id === questionId))
     } catch {
       setTakes([])
+    } finally {
+      setTakesLoaded(true)
     }
   }, [sessionId, questionId])
 
   useEffect(() => {
+    setTakesLoaded(false)
     load()
   }, [load])
 
-  return { takes, reloadTakes: load }
+  return { takes, takesLoaded, reloadTakes: load }
 }
 
 export function RecordPanel() {
@@ -79,7 +88,7 @@ export function RecordPanel() {
   } = useInterviewFlow()
 
   const questionId = viewingStep?.kind === 'question' ? viewingStep.id : undefined
-  const { takes, reloadTakes } = useTakesFor(flow?.interview_session_id, questionId)
+  const { takes, takesLoaded, reloadTakes } = useTakesFor(flow?.interview_session_id, questionId)
 
   // Opening the recorder on a question that ALREADY has takes. Cleared when
   // the step changes, so navigating back lands on the takes rather than a
@@ -104,6 +113,69 @@ export function RecordPanel() {
     setReadingAloud(false)
     setCapturing(false)
   }, [viewingStep?.id])
+
+  // ── Presenter videos (docs/PRESENTER_VIDEOS_PLAN.md) ─────────────────
+  // One presigned URL per frozen question id, fetched once per page load.
+  // A null map (endpoint down) degrades to today's TTS Read-aloud flow.
+  const [presenter, setPresenter] = useState<{
+    intro: string | null
+    questions: Record<string, string>
+  } | null>(null)
+  useEffect(() => {
+    if (!isProducer) return
+    api.getPresenterVideos().then(setPresenter).catch(() => setPresenter(null))
+  }, [isProducer])
+
+  const presenterUrl = questionId ? presenter?.questions?.[questionId] : undefined
+  // `watchingQuestion` is the mode switch for the shared slot: presenter
+  // video vs recorder/takes. `presenterFailed` is per-question — a video
+  // that cannot play must never block recording, so failure falls back to
+  // the Read-aloud flow (the plan's §3 failure path).
+  const [watchingQuestion, setWatchingQuestion] = useState(false)
+  const [presenterFailed, setPresenterFailed] = useState(false)
+  useEffect(() => {
+    setWatchingQuestion(false)
+    setPresenterFailed(false)
+  }, [viewingStep?.id])
+  // Auto-play only once takes have LOADED and are empty — a question that
+  // already has answers keeps the takes list as its default view — and
+  // never yank the slot away from a camera that is already capturing.
+  useEffect(() => {
+    if (
+      takesLoaded &&
+      takes.length === 0 &&
+      presenterUrl &&
+      !presenterFailed &&
+      !capturing &&
+      viewingStep?.kind === 'question'
+    ) {
+      setWatchingQuestion(true)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [takesLoaded, takes.length, presenterUrl, presenterFailed, viewingStep?.id])
+
+  // The Intro walkthrough — never a flow step, never sent anywhere: a
+  // client-side explainer that auto-opens once (localStorage flag) and is
+  // one click away after.
+  const introUrl = presenter?.intro ?? null
+  const [introOpen, setIntroOpen] = useState(false)
+  const [introFailed, setIntroFailed] = useState(false)
+  useEffect(() => {
+    if (!introUrl || introFailed) return
+    try {
+      if (!window.localStorage.getItem('presenter_intro_seen')) setIntroOpen(true)
+    } catch {
+      /* storage unavailable — the card button still opens it */
+    }
+  }, [introUrl, introFailed])
+  const closeIntro = () => {
+    setIntroOpen(false)
+    try {
+      window.localStorage.setItem('presenter_intro_seen', '1')
+    } catch {
+      /* fine — it will auto-open again next visit */
+    }
+  }
 
   /**
    * Finishing a recording goes straight to the next question.
@@ -264,7 +336,27 @@ export function RecordPanel() {
             panelOpen ? 'lg:col-span-3' : 'w-full max-w-3xl mx-auto'
           }`}
         >
-          {viewingStep?.kind === 'gate' ? (
+          {introOpen && introUrl ? (
+            // The Intro walkthrough takes over the shared slot; nothing
+            // else about the flow moves — closing it lands exactly where
+            // the producer already was.
+            <div>
+              <h1 className="text-2xl md:text-3xl font-bold text-ink leading-snug">
+                How recording works
+              </h1>
+              <div className="mt-4">
+                <PresenterVideo
+                  src={introUrl}
+                  onFinished={closeIntro}
+                  onUnavailable={() => {
+                    setIntroFailed(true)
+                    setIntroOpen(false)
+                  }}
+                  finishLabel="Close and start recording"
+                />
+              </div>
+            </div>
+          ) : viewingStep?.kind === 'gate' ? (
             <GateStep
               step={viewingStep}
               onAnswer={value => answerGate(viewingStep.id, value)}
@@ -300,11 +392,26 @@ export function RecordPanel() {
                     remember not to be. */}
                 {!capturing && (
                   <div className="mt-2 flex items-center gap-4">
-                    <ReadAloudButton
-                      key={viewingStep.id}
-                      questionId={viewingStep.id}
-                      onPlayingChange={setReadingAloud}
-                    />
+                    {/* TTS Read-aloud survives only where the presenter
+                        video can't play — the plan's failure path, not a
+                        parallel control. */}
+                    {(!presenterUrl || presenterFailed) && (
+                      <ReadAloudButton
+                        key={viewingStep.id}
+                        questionId={viewingStep.id}
+                        onPlayingChange={setReadingAloud}
+                      />
+                    )}
+                    {presenterUrl && !presenterFailed && !watchingQuestion && (
+                      <button
+                        type="button"
+                        onClick={() => setWatchingQuestion(true)}
+                        className="inline-flex items-center gap-1.5 text-xs text-muted hover:text-ink transition-colors"
+                      >
+                        <Play size={14} />
+                        Watch the question again
+                      </button>
+                    )}
                     {/* Nothing is written and nothing is retired — the
                         question stays unanswered and one click away in the
                         accordion. Worded as "not now" because that is exactly
@@ -324,7 +431,20 @@ export function RecordPanel() {
                 )}
               </div>
 
-              {showRecorder ? (
+              {watchingQuestion && presenterUrl && !presenterFailed ? (
+                // The presenter reads the question in the recorder's slot;
+                // the camera exists only after this unmounts, so the
+                // presenter's voice can never land in a take.
+                <PresenterVideo
+                  key={viewingStep.id}
+                  src={presenterUrl}
+                  onFinished={() => setWatchingQuestion(false)}
+                  onUnavailable={() => {
+                    setPresenterFailed(true)
+                    setWatchingQuestion(false)
+                  }}
+                />
+              ) : showRecorder ? (
                 <VideoRecorder
                   key={`${viewingStep.id}-${takes.length}`}
                   sessionId={flow.interview_session_id}
@@ -340,21 +460,23 @@ export function RecordPanel() {
                 <RecordingList recordings={takes} onDeleted={handleAccepted} />
               )}
 
-              <div className="flex flex-wrap items-center gap-3">
-                {!showRecorder && (
-                  <button onClick={() => setAddingTake(true)} className="btn-secondary">
-                    <Plus size={16} />
-                    {takes.length === 1 ? 'Add another answer' : 'Add another take'}
-                  </button>
-                )}
-                <SegmentUpload
-                  sessionId={flow.interview_session_id}
-                  questionIndex={openCategory?.steps.findIndex(s => s.id === viewingStep.id) ?? 0}
-                  questionId={viewingStep.id}
-                  questionText={viewingStep.text}
-                  onAccepted={handleAccepted}
-                />
-              </div>
+              {!watchingQuestion && (
+                <div className="flex flex-wrap items-center gap-3">
+                  {!showRecorder && (
+                    <button onClick={() => setAddingTake(true)} className="btn-secondary">
+                      <Plus size={16} />
+                      {takes.length === 1 ? 'Add another answer' : 'Add another take'}
+                    </button>
+                  )}
+                  <SegmentUpload
+                    sessionId={flow.interview_session_id}
+                    questionIndex={openCategory?.steps.findIndex(s => s.id === viewingStep.id) ?? 0}
+                    questionId={viewingStep.id}
+                    questionText={viewingStep.text}
+                    onAccepted={handleAccepted}
+                  />
+                </div>
+              )}
             </>
           ) : null}
 
@@ -377,8 +499,8 @@ export function RecordPanel() {
           {viewingStep?.kind !== 'gate' && (
             <dl className="text-[11px] text-muted2 leading-relaxed border-t border-edge pt-3 flex flex-col gap-1">
               <div className="flex gap-2">
-                <dt className="text-muted shrink-0">Read aloud</dt>
-                <dd>hear the question spoken. Recording waits until it finishes.</dd>
+                <dt className="text-muted shrink-0">The question video</dt>
+                <dd>plays first; when it ends (or you skip), the recorder appears in its place.</dd>
               </div>
               <div className="flex gap-2">
                 <dt className="text-muted shrink-0">Record</dt>
@@ -415,6 +537,20 @@ export function RecordPanel() {
             panelOpen ? 'lg:col-span-2' : 'hidden'
           }`}
         >
+          {/* The Intro walkthrough — a one-time explainer, replayable on
+              demand. Purely client-side: never a step, never counted. */}
+          {introUrl && !introFailed && (
+            <button
+              type="button"
+              onClick={() => setIntroOpen(true)}
+              className="w-full mb-3 flex items-center gap-2 px-3 py-2.5 rounded-xl
+                         bg-surface-800/60 border border-edge hover:border-primary-500/40
+                         hover:bg-surface-700/60 transition-all text-left"
+            >
+              <Clapperboard size={15} className="text-primary-400 shrink-0" />
+              <span className="text-xs font-medium text-ink-soft">How recording works</span>
+            </button>
+          )}
           <InterviewAccordion
             freeNavigation={flow.free_navigation}
             categories={flow.categories}

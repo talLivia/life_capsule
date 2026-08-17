@@ -147,6 +147,32 @@ async def question_audio(question_id: str, user: User = Depends(require_producer
     )
 
 
+@router.get("/presenter-videos")
+async def presenter_videos(user: User = Depends(require_producer)):
+    """Presigned URLs for the pre-recorded presenter videos, keyed by
+    CONVENTION: presenter/{question_id}.mp4 plus presenter/intro.mp4.
+
+    Deliberately no mapping file (docs/PRESENTER_VIDEOS_PLAN.md §2): every
+    key derives from the frozen question ids this process already loads,
+    and completeness is enforced by scripts/upload_presenter_videos.py at
+    upload time, not here. A URL for a video that was never uploaded 404s
+    on fetch; the UI treats that as no-video and falls back to Read-aloud.
+
+    TTL is 6h — presigning is local CPU (no storage round-trip), and the
+    client fetches this once per /record page load; a sitting longer than
+    the TTL degrades to the same Read-aloud fallback until a reload.
+    """
+    ids = interview_config.all_question_ids(user.recording_language)
+    questions = {
+        qid: await storage_service.serving_url(
+            f"presenter/{qid}.mp4", ttl_seconds=21600
+        )
+        for qid in ids
+    }
+    intro = await storage_service.serving_url("presenter/intro.mp4", ttl_seconds=21600)
+    return {"intro": intro, "questions": questions}
+
+
 @router.get("/session", response_model=InterviewSessionState)
 async def get_interview_session(
     db: AsyncSession = Depends(get_db),
