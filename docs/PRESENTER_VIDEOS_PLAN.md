@@ -43,37 +43,37 @@ shared slot), one new `PresenterVideo.tsx`, `InterviewAccordion.tsx` (the
 Intro entry point). `VideoRecorder` itself is untouched. `ReadAloudButton`
 stays as the fallback (see §5).
 
-## 2. Config: a NEW file, not an extension of interview_questions.json
+## 2. No mapping at all: keys by convention (REVISED 2026-08-18)
 
-`interview_questions.json` is a **generated** file (by
-`scripts/convert_interview_content.py`, from
-`docs/interview_content_source.json`) with frozen ids and a schema built
-for interview *content*. Presenter videos are presentation *assets* that
-will land incrementally and be re-recorded independently of wording —
-wiring them into the generated file means teaching the converter about
-videos and regenerating content to swap a video. Separate file, keyed by
-the frozen ids:
+First draft proposed a separate mapping file, rationalized partly by
+incremental rollout. **Premise corrected: all 129 videos exist today and
+ship together.** Re-examined, the right simplification is not moving the
+mapping into `interview_questions.json` — it is **deleting the mapping**:
 
-```json
-{
-  "schema_version": 1,
-  "intro": { "key": "presenter/intro.mp4" },
-  "questions": {
-    "childhood_q01": { "key": "presenter/childhood_q01.mp4" },
-    "childhood_q02": { "key": "presenter/childhood_q02.mp4" }
-  }
-}
-```
+  * The storage key is derived from the frozen question id by
+    convention: `presenter/{question_id}.mp4`, plus
+    `presenter/intro.mp4`. A mapping earns its existence only when keys
+    can't be derived (per-language variants, versioned re-takes); none
+    of that exists at launch, and a mapping can be introduced the day it
+    does without unwinding anything.
+  * One new endpoint, `GET /api/v1/interview/presenter-videos`, loads
+    the question ids it already has (from `interview_questions.json`)
+    and returns `{intro: url, questions: {id: url}}` with **presigned
+    serving URLs** (`storage_service.serving_url(key)` — the bucket is
+    private, raw keys can't go to the client). No config to read, no
+    config to drift.
+  * Completeness is enforced at UPLOAD time, not runtime: the script in
+    §5 refuses to upload unless the local set covers every question id
+    plus the intro — a missing file fails loudly with the list of
+    missing ids, before anything lands.
 
-Location: `backend/app/presenter_videos.json`, served by one new
-endpoint `GET /api/v1/interview/presenter-videos` that returns
-`{intro: url|null, questions: {id: url}}` with **presigned serving URLs**
-(`storage_service.serving_url(key)` — the pattern every other stored
-asset already uses; raw keys can't go to the client because the bucket is
-private). A question absent from the file simply has no video — the UI
-falls back to Read-aloud, which is what makes incremental rollout of 129
-videos safe. `values are objects, not bare strings`, so later per-video
-metadata (duration, language) needs no schema break.
+Why NOT a `video_key` field inside `interview_questions.json`, even with
+all videos ready: that file is **generated** (by
+`scripts/convert_interview_content.py`) — hand-editing it gets wiped on
+regeneration, and teaching the converter means coupling the content
+pipeline to asset presence forever. When every key is mechanical, a
+field that always holds `presenter/{its own id}.mp4` is 129 lines of
+redundancy with a maintenance cost and no information.
 
 ## 3. The interaction: one slot, two modes, in RecordPanel
 
@@ -103,6 +103,21 @@ already owns the slot's contents — recorder vs takes list):
   * Questions with existing takes keep the takes list as the default
     view (unchanged), with the "watch the question again" link available.
 
+**TTS Read-aloud is demoted to the failure path, not deleted (REVISED
+2026-08-18).** With all 129 videos at launch there is no *rollout*
+fallback — but two real scenarios still want a net: a future
+content-regeneration adds a NEW question id whose video hasn't been
+produced yet, and a runtime playback failure (expired URL on a stale
+tab, codec/network error). In both, blocking recording on a broken
+video would be the real harm. So: ReadAloudButton disappears from the
+normal flow entirely — it renders only when a question has no video URL
+or the player's `onError` fires, exactly where it used to render, with
+its two voice-never-in-the-recording invariants intact. Not kept as a
+parallel "accessibility option": the presenter video IS the audio
+reading of the question, so a second speaker button next to a working
+video is redundant chrome. The backend TTS endpoint and warm script
+stay as-is (they cost nothing and are the net's other half).
+
 Why one swapping slot rather than two stacked components: the request is
 "same screen space", the slot is already conditionally occupied
 (recorder vs takes), and stacking would run camera and video
@@ -129,21 +144,26 @@ visit, or gate the first recording, that's a different (heavier) design
 
 ## 5. Storage/upload: bulk script, not an upload UI
 
-130 files, produced offline, uploaded roughly once. The presign→PUT
-browser pattern (`/interview/segments/presign`, `/media/presign`) earns
-its complexity for end-user uploads; for a one-time producer-side batch
-it's ceremony. Proposal: `scripts/upload_presenter_videos.py` —
+130 files, produced offline, all ready now. The presign→PUT browser
+pattern (`/interview/segments/presign`, `/media/presign`) earns its
+complexity for end-user uploads; for a one-time producer-side batch it's
+ceremony. Proposal: `scripts/upload_presenter_videos.py` —
 
   * reads a local directory where files are named by frozen id
     (`childhood_q01.mp4`, …, `intro.mp4`);
-  * validates every name against `interview_questions.json` ids (typos
-    fail loudly, BEFORE upload);
-  * uploads via `storage_service.upload_file` to `presenter/<id>.mp4`;
-  * regenerates `presenter_videos.json` from what actually uploaded.
+  * validates the set BOTH ways against `interview_questions.json`
+    before uploading anything: unknown filenames fail loudly (typos),
+    and missing ids fail loudly (completeness — the runtime has no
+    mapping, so the script is where "every question has a video" is
+    enforced);
+  * uploads via `storage_service.upload_file` to `presenter/<id>.mp4`.
 
 Re-running is idempotent (same keys, overwrites); replacing one video is
-dropping one file in the directory and re-running. No new upload
-endpoints, no new auth surface.
+dropping one file in the directory and re-running with
+`--allow-partial` (replacement runs shouldn't require all 130 files
+present locally — the flag skips the completeness check, never the
+typo check). No new upload endpoints, no new auth surface, no config
+file to regenerate.
 
 ## 6. Scope + branch
 
@@ -169,6 +189,7 @@ the same disjointness reason.
 2. Already-answered questions: takes list stays the default with a
    "watch the question again" link (recommended), or presenter video
    again on every visit?
-3. During rollout, unmapped questions fall back to today's TTS
-   Read-aloud (recommended) — or should the button disappear entirely
-   once presenter videos exist?
+3. ~~TTS fallback during rollout~~ — RESOLVED by the 2026-08-18
+   revision: no rollout, so no rollout fallback; Read-aloud survives
+   only as the missing-video/playback-failure degradation path (§3) and
+   is invisible in the normal day-one flow.
