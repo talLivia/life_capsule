@@ -1747,6 +1747,15 @@ input and output side. Known limits (accepted): a bare spoken "כן" sits
 near the 320ms VAD floor (buttons are the fallback), and the prompt is
 per-connection (reconnect degrades to buttons-only).
 
+**DECIDED 2026-08-17 (producer): the spoken offer is the generated
+question itself**, verbatim — the same text the chat card shows — not a
+fixed generic line. This is a deliberate, narrowly-scoped exception to
+"generated prose never reaches TTS": it covers ONLY the follow-up offer
+question (meta-conversation, engine-validated against real un-shown
+units via `_validate_follow_up`), never story content. The mechanical
+verbatim-invariant test now strips exactly (unit texts + banks + that
+one question) and still demands zero residue.
+
 Honest note in `e5b9ed9`: step 3's commit initially landed with one red
 test (the WS e2e still mocked the old seam) because a tail pipe
 swallowed pytest's exit code; fixed in the next commit and the gate now

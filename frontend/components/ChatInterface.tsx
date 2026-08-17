@@ -443,10 +443,10 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
         break
 
       case 'follow_up': {
-        // The voice already spoke the fixed generic offer line; the SPECIFIC
-        // generated question shows here, as its own assistant bubble with
-        // כן/לא attached — v2's exact presentation (a separate message whose
-        // content IS the question, useVideoClipChat's follow-up shape).
+        // The voice spoke this same generated question aloud; it shows here
+        // as its own assistant bubble with כן/לא attached — v2's exact
+        // presentation (a separate message whose content IS the question,
+        // useVideoClipChat's follow-up shape).
         const id = `followup-${Date.now()}`
         setMessages(prev => [...prev, {
           id,

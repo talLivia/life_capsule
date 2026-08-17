@@ -78,12 +78,13 @@ async def test_cross_recording_bridge_falls_back_to_generic_without_names(no_ent
 
 @pytest.mark.asyncio
 async def test_the_verbatim_invariant_holds_mechanically(no_entities):
-    """Strip every unit text and every bank phrase from the output — nothing
-    may remain. This is the test that keeps never-invent structural.
-    Includes a follow_up so the fixed offer line is covered by the same
-    invariant."""
+    """Strip every unit text, every bank phrase, and the one engine-validated
+    follow-up question from the output — nothing may remain. This is the
+    test that keeps never-invent structural (the follow-up question is the
+    single scoped exception, producer-decided 2026-08-17)."""
+    follow_up = {"question": "רוצה לשמוע על הצבא?"}
     answer = await sa.render_spoken_answer(
-        _selection([U1, U2, U4, U7], follow_up={"question": "רוצה לשמוע על הצבא?"}),
+        _selection([U1, U2, U4, U7], follow_up=follow_up),
         "prod-1",
     )
     residue = answer.text
@@ -92,25 +93,23 @@ async def test_the_verbatim_invariant_holds_mechanically(no_entities):
     for bank in (
         sa.SAME_RECORDING_BRIDGES,
         sa.CROSS_RECORDING_BRIDGES_GENERIC,
-        [sa.FOLLOW_UP_OFFER_LINE],
+        [follow_up["question"]],
     ):
         for phrase in bank:
             residue = residue.replace(phrase, "")
     assert residue.strip() == "", f"unexplained residue: {residue!r}"
-    # The generated follow-up QUESTION must never leak into speech.
-    assert "רוצה לשמוע על הצבא" not in answer.text
 
 
 @pytest.mark.asyncio
-async def test_a_follow_up_appends_the_fixed_offer_line_last(no_entities):
+async def test_a_follow_up_speaks_the_generated_question_itself_last(no_entities):
     """The offer rides the same utterance as the answer (so the mic reopens
-    right after it) and is always the FIXED line — the generated question
-    travels as chat data only."""
+    right after it) and speaks the engine's generated question VERBATIM —
+    the same text the chat card shows, no separate generic phrasing."""
     answer = await sa.render_spoken_answer(
         _selection([U1, U2], follow_up={"question": "רוצה לשמוע על הצבא?"}),
         "prod-1",
     )
-    assert answer.text == f"נולדתי בטבריה וגדלתי שם עד גיל שש {sa.FOLLOW_UP_OFFER_LINE}"
+    assert answer.text == "נולדתי בטבריה וגדלתי שם עד גיל שש רוצה לשמוע על הצבא?"
     assert answer.follow_up == {"question": "רוצה לשמוע על הצבא?"}
 
 
@@ -153,7 +152,7 @@ async def test_no_story_prefers_the_tailored_line_and_keeps_the_offer(no_entitie
         "prod-1",
     )
     assert answer.no_story
-    assert answer.text == f"זה כל מה שיש לי על אמנון {sa.FOLLOW_UP_OFFER_LINE}"
+    assert answer.text == f"זה כל מה שיש לי על אמנון {follow_up['question']}"
     assert answer.follow_up == follow_up
 
 

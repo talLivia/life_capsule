@@ -864,9 +864,10 @@ def test_yes_and_no_do_not_apply_to_a_clarify_prompt():
 
 @pytest.mark.asyncio
 async def test_a_follow_up_turn_arms_the_prompt_and_sends_the_chat_event(monkeypatch):
-    """A completed turn with a follow-up speaks the FIXED offer line at the
-    end, sends the generated question as a `follow_up` chat event (never
-    TTS), and arms pending_prompt for the next utterance."""
+    """A completed turn with a follow-up speaks the generated question
+    itself at the end (the same text the chat card shows), sends it as a
+    `follow_up` chat event, and arms pending_prompt for the next
+    utterance."""
     from app.services import full_archive_retrieval as far
     from app.services import spoken_answer as sa_mod
 
@@ -900,9 +901,7 @@ async def test_a_follow_up_turn_arms_the_prompt_and_sends_the_chat_event(monkeyp
     await m._handle_text_input_inner("s1", "איפה נולדת?")
 
     spoken = [msg for msg in ws.sent if msg.get("type") == "message"]
-    assert spoken and spoken[-1]["content"] == (
-        f"נולדתי בטבריה {sa_mod.FOLLOW_UP_OFFER_LINE}"
-    )
+    assert spoken and spoken[-1]["content"] == "נולדתי בטבריה רוצה לשמוע על הצבא?"
     events = [msg for msg in ws.sent if msg.get("type") == "follow_up"]
     assert events == [{"type": "follow_up", "question": "רוצה לשמוע על הצבא?"}]
     assert m.session_data["s1"]["pending_prompt"] == {

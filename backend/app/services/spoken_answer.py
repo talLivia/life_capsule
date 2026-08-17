@@ -11,14 +11,18 @@ between non-contiguous runs so a spoken answer doesn't jump-cut; it then
 goes to TTS → MuseTalk unchanged (websocket._response_producer).
 
 NEVER-INVENT, structurally: the output text is exactly (unit texts) +
-(phrases from the banks below), nothing else. The banks follow the two
-precedents in response_assembler (BRIDGE_PHRASE_TEMPLATES,
-NO_MORE_STORY_ABOUT_TEMPLATES): the phrase never varies with what happened
-in any recording, and the only injected value is an entity name the archive
-really holds, fetched from entity_store — never model output. Phrase choice
-is a stable function of position, so identical selections always speak
-identical words. A constrained-LLM bridge upgrade is a recorded follow-up
-(plan §3), deliberately not built first.
+(phrases from the banks below) + at most one engine-validated follow-up
+question, nothing else. The banks follow the two precedents in
+response_assembler (BRIDGE_PHRASE_TEMPLATES, NO_MORE_STORY_ABOUT_TEMPLATES):
+the phrase never varies with what happened in any recording, and the only
+injected value is an entity name the archive really holds, fetched from
+entity_store — never model output. Phrase choice is a stable function of
+position, so identical selections always speak identical words. The ONE
+scoped exception is the spoken follow-up offer (see the note above
+FOLLOW_UP_DECLINE_ACK): by producer decision it speaks the engine's
+generated question verbatim — meta-conversation, never story content. A
+constrained-LLM bridge upgrade is a recorded follow-up (plan §3),
+deliberately not built first.
 
 Branch ordering mirrors the video renderer exactly: read-failed before
 clarify before no-story before an answer — an outage is not an answer, and
@@ -75,11 +79,13 @@ CROSS_RECORDING_BRIDGES_GENERIC = [
 # WS layer's job), where generated text is allowed — same rule v2 applies.
 CLARIFY_SPOKEN_LINE = "יש לי סיפורים על כמה אנשים בשם הזה — למי התכוונת?"
 
-# Spoken at the END of an answer whose selection carries a follow-up
-# suggestion. Fixed for the same reason as CLARIFY_SPOKEN_LINE: the
-# follow-up QUESTION itself is generated prose, so it travels as chat text
-# (websocket sends a `follow_up` event) — the voice only ever offers.
-FOLLOW_UP_OFFER_LINE = "יש לי עוד סיפור שקשור לזה — רוצה לשמוע?"
+# The follow-up OFFER is spoken using the engine's own generated question,
+# verbatim — the same text the chat card shows (DECIDED by the producer,
+# 2026-08-17, replacing a fixed generic offer line). This is a deliberate,
+# narrowly-scoped exception to "generated prose never reaches TTS": it
+# applies ONLY to the offer question, which is meta-conversation about the
+# archive rather than story content, and only after _validate_follow_up has
+# tied it to real, un-shown units. Story text itself remains verbatim-only.
 
 # Spoken when the listener declines the offer by VOICE. A click dismisses
 # silently (v2 parity — the click is its own feedback), but a spoken "לא"
@@ -165,7 +171,7 @@ async def render_spoken_answer(
         no_story_line = selection.no_story_text or NO_STORY_FALLBACK
         return SpokenAnswer(
             text=(
-                f"{no_story_line} {FOLLOW_UP_OFFER_LINE}"
+                f"{no_story_line} {selection.follow_up['question']}"
                 if selection.follow_up
                 else no_story_line
             ),
@@ -191,7 +197,9 @@ async def render_spoken_answer(
         # The offer rides the SAME utterance as the answer, so it plays
         # inside the same mic-suppression window and the mic reopens right
         # after it — the sequencing that makes a spoken yes/no answerable.
-        parts.append(FOLLOW_UP_OFFER_LINE)
+        # The spoken words are the generated question itself, matching the
+        # chat card exactly (see the scoped exception noted above).
+        parts.append(selection.follow_up["question"])
 
     return SpokenAnswer(
         text=" ".join(parts),

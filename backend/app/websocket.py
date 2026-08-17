@@ -836,9 +836,9 @@ class ConnectionManager:
                         "original": text,
                     }
                 elif answer and answer.follow_up and answer.follow_up.get("question"):
-                    # The voice spoke the fixed OFFER line; the generated
-                    # follow-up question itself is chat-only (never TTS) —
-                    # same split as clarify.
+                    # The voice spoke the generated question itself (the
+                    # renderer's scoped exception); this event carries the
+                    # SAME text so the chat card mirrors what was said.
                     await self.send_message(
                         session_id,
                         {
