@@ -18,47 +18,63 @@ import { pickPreferredAudioDevice } from '@/lib/audioDevices'
 // speech vs non-speech from spectral/temporal structure, which is the thing
 // level was only ever a poor proxy for.
 //
-// Silero decides ONLY when speech starts and stops. Everything else is
-// unchanged and deliberately kept as a safety net around it: the mic is still
-// acquired through the loopback-safe device check (and refused outright if
-// there's no real input), MediaRecorder is still the transport so the backend
-// keeps receiving the same base64 webm, playback still aborts an in-flight
-// segment, micMuted still gates, and the max-duration ceiling still applies.
+// SILERO IS ALSO THE TRANSPORT now, not just the detector: onSpeechEnd hands
+// us the utterance's own audio (16 kHz mono, with pre-speech padding), which
+// we encode as WAV and send. This replaced the MediaRecorder segment loop
+// (2026-08-17) because that loop had two structural ways to LOSE speech that
+// a flowing conversation produces constantly:
+//   1. The one-shot swallow: onSpeechStart fires once per utterance; if it
+//      fired while the avatar was still audible (the user answering on the
+//      question's tail), the busy guard dropped it, it never re-fired, and
+//      the whole utterance was discarded as "no speech".
+//   2. Clipped starts: each send/recycle restarted the recorder, losing the
+//      first ~150-300 ms of the next utterance — truncated Hebrew onsets
+//      transcribe garbled or empty.
+// With Silero delivering the audio there is no recorder to restart and no
+// segment to mark: every classified utterance arrives whole, padded, and is
+// judged ONCE, at its end, by the guards in onSpeechEnd.
 //
-// Half-duplex: the mic is gated while the storyteller's clip plays, rather
-// than true barge-in.
+// Half-duplex is still the model: speech that lives entirely inside the
+// avatar's turn is dropped (audio captured while the storyteller is talking
+// is never the user's question — see the tail-overlap rule below for the one
+// deliberate exception). The mic is acquired through the loopback-safe
+// device check and refused outright if there's no real input, and micMuted
+// still gates everything.
 const MODEL_ASSET_PATH = '/vad/'  // self-hosted; never a CDN fetch (offline dev)
 // Silero speech probability thresholds. The library's own defaults, kept
 // rather than invented: 0.5 to enter speech, 0.35 to leave it (hysteresis, so
 // a brief dip mid-word doesn't end the turn).
 const POSITIVE_SPEECH_THRESHOLD = 0.5
 const NEGATIVE_SPEECH_THRESHOLD = 0.35
-// How long Silero must see non-speech before declaring the turn over. This is
-// the direct equivalent of the old SILENCE_DURATION_MS and serves the same
-// purpose: long enough not to cut the speaker off at a natural mid-sentence
-// pause, short enough not to feel laggy.
+// How long Silero must see non-speech before declaring the turn over: long
+// enough not to cut the speaker off at a natural mid-sentence pause, short
+// enough not to feel laggy.
 const REDEMPTION_MS = 1000
 // Anything shorter than this isn't an utterance — Silero fires
 // `onVADMisfire` instead of `onSpeechEnd`, so a cough or a door closing never
-// becomes a turn. Replaces the old MIN_SPEECH_MS, but note the difference
-// that matters: this is the length of a stretch the MODEL classified as
+// becomes a turn. This is the length of a stretch the MODEL classified as
 // speech, not cumulative time above a loudness line, so noise can't
-// accumulate its way past it.
+// accumulate its way past it. Known limit: a bare clipped "כן" sits near
+// this floor — longer natural forms clear it comfortably.
 const MIN_SPEECH_MS = 320
-// Hard ceiling on one segment. Silero ends turns reliably, but a recorder must
-// never be able to run unbounded: previously one captured 48 seconds. Past
-// this, a segment Silero never marked as speech is DISCARDED; one it did is
-// sent as a normal end-of-turn so a long question still works.
-const MAX_SEGMENT_MS = 20000
-// A segment that has heard no speech is recycled this often, so the audio we
-// eventually send carries at most this much leading silence (which would
-// otherwise slow STT down for no benefit). Restarting while nothing is being
-// said cannot clip speech.
-const SILENT_SEGMENT_RECYCLE_MS = 5000
-// The "hearing you" indicator flipping off the instant probability dips
-// flickers during natural micro-pauses. Visual smoothing only — REDEMPTION_MS
-// governs the actual end-of-turn decision.
-const HEARING_INDICATOR_GRACE_MS = 250
+// Audio Silero prepends from BEFORE the detected onset, so the word's first
+// phoneme is in the payload even though detection necessarily lags it.
+const PRE_SPEECH_PAD_MS = 500
+// The one exception to half-duplex: an utterance that STARTED while the
+// avatar was still audible is accepted if it began at most this long before
+// playback ended — that's a listener answering on the question's tail, the
+// natural rhythm of conversation. Anything that started earlier is the
+// avatar's own voice reaching the mic (a whole answer heard through
+// speakers starts near playback start, far outside this window) and is
+// dropped, which is what keeps the documented clip-replayed-as-a-question
+// incident impossible.
+const OVERLAP_GRACE_MS = 1200
+// Hard ceiling on one utterance. Silero ends turns reliably, but nothing may
+// buffer unbounded: past this, the VAD is force-reset and the speech
+// discarded (previously a recorder once captured 48 seconds).
+const MAX_SPEECH_MS = 20000
+// vad-web delivers utterance audio at Silero's native rate.
+const VAD_SAMPLE_RATE = 16000
 // Human speech energy is concentrated below ~4kHz; averaging the FULL FFT
 // spectrum (up to ~24kHz with a typical 48kHz sample rate) dilutes the
 // signal with ~85% of bins that are near-zero regardless of speech, badly
@@ -73,6 +89,39 @@ function computeVoiceLevel(data: Uint8Array, voiceBinCount: number): number {
   let sum = 0
   for (let i = 0; i < n; i++) sum += data[i]
   return sum / n
+}
+
+/** Float32 samples → base64 of a 16-bit PCM mono WAV. WAV because it is
+ *  self-describing: Deepgram sniffs the container from the bytes
+ *  (Content-Type is octet-stream) and the Whisper fallback goes through
+ *  ffmpeg, which does the same — the backend needed no change. */
+function encodeWavBase64(samples: Float32Array, sampleRate: number): string {
+  const view = new DataView(new ArrayBuffer(44 + samples.length * 2))
+  const writeStr = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i))
+  }
+  writeStr(0, 'RIFF')
+  view.setUint32(4, 36 + samples.length * 2, true)
+  writeStr(8, 'WAVE')
+  writeStr(12, 'fmt ')
+  view.setUint32(16, 16, true)          // fmt chunk size
+  view.setUint16(20, 1, true)           // PCM
+  view.setUint16(22, 1, true)           // mono
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * 2, true)  // byte rate
+  view.setUint16(32, 2, true)           // block align
+  view.setUint16(34, 16, true)          // bits per sample
+  writeStr(36, 'data')
+  view.setUint32(40, samples.length * 2, true)
+  let off = 44
+  for (let i = 0; i < samples.length; i++, off += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]))
+    view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true)
+  }
+  const bytes = new Uint8Array(view.buffer)
+  let bin = ''
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+  return btoa(bin)
 }
 
 export interface ContinuousVoiceInput {
@@ -91,12 +140,11 @@ export interface ContinuousVoiceInput {
 }
 
 /**
- * Half-duplex, hands-free voice turn-taking: acquires the mic once, detects
- * end-of-speech via a calibrated silence threshold, calls `onSegment` with
- * base64-encoded webm audio, then automatically resumes listening for the
- * next turn once `avatarBusy` clears. `connected` gates the whole loop (no
- * point recording while the WS is down); `avatarBusy` gates recording so the
- * avatar's own playback can't be picked up by the mic and self-trigger.
+ * Hands-free voice turn-taking: acquires the mic once, lets Silero VAD
+ * detect AND deliver each utterance (with pre-speech padding), encodes it
+ * as WAV and calls `onSegment` with base64 audio. `connected` gates sending
+ * (no point while the WS is down); `avatarBusy` gates which utterances
+ * count — see the half-duplex rules in the header comment.
  */
 export function useContinuousVoiceInput(
   connected: boolean,
@@ -114,181 +162,55 @@ export function useContinuousVoiceInput(
   const continuousStreamRef = useRef<MediaStream | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
-  const vadRafRef = useRef<number | null>(null)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const segmentChunksRef = useRef<Blob[]>([])
-  // Set by Silero's onSpeechStart, cleared on misfire/segment start. Its only
-  // job now is to record whether THIS segment contained real speech, which
-  // decides send-vs-discard.
-  const speechDetectedAtRef = useRef<number | null>(null)
+  const meterRafRef = useRef<number | null>(null)
+  const meterFrameRef = useRef(0)
+  const lastMeterValueRef = useRef(-1)
   const voiceBinCountRef = useRef(0)
   const vadRef = useRef<MicVAD | null>(null)
+  const vadReadyRef = useRef(false)
   const avatarBusyRef = useRef(false)
-  // Set the instant a segment is sent, cleared once `avatarBusy` actually
-  // catches up (or after a safety timeout). Closes a race: `beginSegment`
-  // runs synchronously right after onSegmentRef fires, but the caller's
-  // `avatarBusy` prop (derived from its own isProcessing/showVideo state)
-  // can only update on its NEXT render — so avatarBusyRef.current would
-  // still read stale/false for one tick, letting a second segment start
-  // and barge-in-cancel the first turn before it ever produces a reply.
-  const pendingSendRef = useRef(false)
-  // Set when a segment must be thrown away rather than sent — specifically
-  // when playback starts WHILE we're already recording. See runVadTick.
-  const discardSegmentRef = useRef(false)
-  const segmentStartedAtRef = useRef(0)
+  // When the avatar last STOPPED being busy — the reference point for the
+  // tail-overlap acceptance rule in onSpeechEnd.
+  const busyClearedAtRef = useRef(0)
+  // Set by onSpeechStart; null once the utterance is resolved (sent,
+  // dropped, misfired, or ceilinged).
+  const speechStartedAtRef = useRef<number | null>(null)
+  const speechStartedDuringBusyRef = useRef(false)
+  const maxSpeechTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const micMutedRef = useRef(false)
   const connectedRef = useRef(false)
-  const loopActiveRef = useRef(false)
   const resumeOnGestureRef = useRef<(() => void) | null>(null)
   const onSegmentRef = useRef(onSegment)
+
+  // "Listening" = the VAD is up and an utterance spoken right now would be
+  // eligible to send. Derived from refs so every gate keeps it honest.
+  const refreshListening = useCallback(() => {
+    setIsListening(
+      vadReadyRef.current &&
+        connectedRef.current &&
+        !micMutedRef.current &&
+        !avatarBusyRef.current
+    )
+  }, [])
 
   useEffect(() => {
     onSegmentRef.current = onSegment
   }, [onSegment])
   useEffect(() => {
+    const wasBusy = avatarBusyRef.current
     avatarBusyRef.current = avatarBusy
-    // The real busy signal caught up with our provisional guess — safe to
-    // drop it now (see pendingSendRef's declaration for why it exists).
-    if (avatarBusy) pendingSendRef.current = false
-  }, [avatarBusy])
+    if (wasBusy && !avatarBusy) busyClearedAtRef.current = Date.now()
+    refreshListening()
+  }, [avatarBusy, refreshListening])
   useEffect(() => {
     micMutedRef.current = micMuted
-  }, [micMuted])
-
-  // Starts the self-perpetuating record → detect-silence → send → wait for
-  // avatar → record-next-segment cycle. Idempotent (loopActiveRef) so it's
-  // safe to call from both the mic-acquisition effect and the connect effect
-  // without ever running two concurrent MediaRecorders on the same stream.
-  const startListeningLoop = useCallback(() => {
-    if (loopActiveRef.current) return
-    loopActiveRef.current = true
-
-    const runVadTick = () => {
-      const analyser = analyserRef.current
-      if (!analyser || mediaRecorderRef.current?.state !== 'recording') return
-
-      // CONFIRMED LIVE: `avatarBusy` used to be checked only when a segment
-      // STARTED, never while one was running. So a recording already in
-      // flight when a clip began playing kept going and captured the clip's
-      // own audio out of the speakers — which STT then transcribed and sent
-      // back as the user's next "question". Real example from the DB: a
-      // 19-second answer was replayed verbatim as a user turn, and the
-      // system dutifully answered it, producing what looked like a
-      // retrieval bug. (The window opens whenever playback starts late —
-      // e.g. autoplay blocked until the user clicks play — because by then
-      // the mic has legitimately reopened.)
-      // Aborting and DISCARDING is the only correct move: audio captured
-      // while the storyteller is talking is never the user's question.
-      if (avatarBusyRef.current) {
-        discardSegmentRef.current = true
-        mediaRecorderRef.current?.stop()  // -> onstop, which drops it
-        return
-      }
-
-      // Runaway-segment ceiling — see MAX_SEGMENT_MS.
-      if (Date.now() - segmentStartedAtRef.current >= MAX_SEGMENT_MS) {
-        if (speechDetectedAtRef.current === null) {
-          discardSegmentRef.current = true
-          console.info('[voice] segment DISCARDED — hit max duration with no speech')
-        }
-        mediaRecorderRef.current?.stop()
-        return
-      }
-
-      // Recycle a segment that has heard nothing, so whatever we eventually
-      // send carries at most SILENT_SEGMENT_RECYCLE_MS of leading silence
-      // (long leading silence only slows STT down). Safe to restart here
-      // precisely BECAUSE nothing is being said.
-      if (
-        speechDetectedAtRef.current === null &&
-        Date.now() - segmentStartedAtRef.current >= SILENT_SEGMENT_RECYCLE_MS
-      ) {
-        discardSegmentRef.current = true
-        mediaRecorderRef.current?.stop()
-        return
-      }
-
-      // Level is now used ONLY to drive the UI meter. It no longer decides
-      // anything — Silero does (see the onSpeechStart/onSpeechEnd callbacks).
-      const data = new Uint8Array(analyser.frequencyBinCount)
-      analyser.getByteFrequencyData(data)
-      setMicLevel(computeVoiceLevel(data, voiceBinCountRef.current))
-
-      vadRafRef.current = requestAnimationFrame(runVadTick)
-    }
-
-    const beginSegment = () => {
-      if (!connectedRef.current || !continuousStreamRef.current) {
-        console.info(
-          '[voice] loop stopped: connected=',
-          connectedRef.current,
-          'hasStream=',
-          !!continuousStreamRef.current
-        )
-        loopActiveRef.current = false
-        return
-      }
-      if (micMutedRef.current || avatarBusyRef.current || pendingSendRef.current) {
-        setTimeout(beginSegment, 150)
-        return
-      }
-      segmentChunksRef.current = []
-      segmentStartedAtRef.current = Date.now()
-      speechDetectedAtRef.current = null
-      setHearingSpeech(false)
-
-      const recorder = new MediaRecorder(continuousStreamRef.current)
-      recorder.ondataavailable = (e) => segmentChunksRef.current.push(e.data)
-      recorder.onstop = async () => {
-        setIsListening(false)
-        setMicLevel(0)
-        // Playback started mid-recording — this audio is the storyteller's
-        // own clip, not a question. Drop it and wait for playback to finish.
-        if (discardSegmentRef.current) {
-          discardSegmentRef.current = false
-          console.info('[voice] segment DISCARDED — playback started while recording')
-          beginSegment()
-          return
-        }
-        // Silero is the sole authority on whether this segment contained
-        // speech: it set speechDetectedAt via onSpeechStart, and cleared it
-        // again on a misfire (too short to be a real utterance).
-        const hadSpeech = speechDetectedAtRef.current !== null
-        console.info(
-          '[voice] segment ended, hadSpeech=', hadSpeech,
-          'chunks=', segmentChunksRef.current.length,
-          'sending=', hadSpeech
-        )
-        if (hadSpeech) {
-          const blob = new Blob(segmentChunksRef.current, { type: 'audio/webm' })
-          const buffer = await blob.arrayBuffer()
-          const b64 = btoa(new Uint8Array(buffer).reduce((s, b) => s + String.fromCharCode(b), ''))
-          console.info('[voice] calling onSegment, blob bytes=', buffer.byteLength)
-          pendingSendRef.current = true
-          setTimeout(() => {
-            pendingSendRef.current = false
-          }, 2000) // safety backstop in case avatarBusy never arrives, for any reason
-          onSegmentRef.current(b64)
-        }
-        beginSegment() // wait for the avatar (if now busy) then listen for the next turn
-      }
-      mediaRecorderRef.current = recorder
-      recorder.start()
-      setIsListening(true)
-      vadRafRef.current = requestAnimationFrame(runVadTick)
-    }
-
-    beginSegment()
-  }, [])
-
+    if (micMuted) setHearingSpeech(false)
+    refreshListening()
+  }, [micMuted, refreshListening])
   useEffect(() => {
     connectedRef.current = connected
-    if (connected) {
-      startListeningLoop()
-    } else if (mediaRecorderRef.current?.state === 'recording') {
-      mediaRecorderRef.current.stop()
-    }
-  }, [connected, startListeningLoop])
+    refreshListening()
+  }, [connected, refreshListening])
 
   // Acquire the mic once, for the whole conversation — reusing the same
   // loopback-safe device-selection fix already applied in VideoRecorder.tsx
@@ -326,17 +248,17 @@ export function useContinuousVoiceInput(
         // clone sample capture, where raw unprocessed fidelity is preferable
         // and there's no simultaneous avatar playback to cancel against),
         // this IS a live back-and-forth conversation where noiseSuppression
-        // and autoGainControl directly help STT — a quiet mic's speech can
-        // otherwise sit only ~8 points above its own noise floor on a 0-255
-        // scale, barely distinguishable from ambient noise (confirmed live:
-        // ambient floor ~36, speech ~44-46 with these disabled).
+        // directly helps STT — a quiet mic's speech can otherwise sit only
+        // ~8 points above its own noise floor on a 0-255 scale, barely
+        // distinguishable from ambient noise (confirmed live: ambient floor
+        // ~36, speech ~44-46 with these disabled).
         // echoCancellation stays OFF. It was briefly switched on when clips
         // were turning up as user questions, on the theory that the speakers
         // were bleeding into the mic — but the trace disproved that: the
         // capture was a DIGITAL loopback device, not an acoustic path, which
         // cancellation cannot touch. Turning it on bought nothing and can
-        // colour the signal. The real fixes are the device refusal above, the
-        // max-duration cap, and the mid-recording playback abort.
+        // colour the signal. The real fixes are the device refusal above,
+        // the utterance ceiling, and the half-duplex drop rules.
         // autoGainControl is OFF too: it continuously rewrites the very
         // levels any detector reasons about (raising gain during quiet, which
         // is what lifted ambient over the old threshold), and Silero does not
@@ -380,12 +302,31 @@ export function useContinuousVoiceInput(
           analyser.frequencyBinCount
         )
 
+        // UI level meter only — no control logic reads this. Throttled to
+        // every 6th frame and deduplicated so the meter doesn't re-render
+        // the whole chat surface at 60fps.
+        const runMeter = () => {
+          const a = analyserRef.current
+          if (a && meterFrameRef.current++ % 6 === 0) {
+            const data = new Uint8Array(a.frequencyBinCount)
+            a.getByteFrequencyData(data)
+            const level = Math.round(
+              computeVoiceLevel(data, voiceBinCountRef.current)
+            )
+            if (level !== lastMeterValueRef.current) {
+              lastMeterValueRef.current = level
+              setMicLevel(level)
+            }
+          }
+          meterRafRef.current = requestAnimationFrame(runMeter)
+        }
+        meterRafRef.current = requestAnimationFrame(runMeter)
+
         // Browsers' autoplay policy can create this AudioContext already
         // "suspended" since nothing here is a direct user gesture (it's
         // acquired automatically on mount) — while suspended, the analyser
-        // silently reports all-zero levels forever, so the VAD never
-        // detects speech and a segment just records forever without ever
-        // auto-sending. resume() is a no-op if already running; the
+        // silently reports all-zero levels forever and the VAD hears
+        // nothing. resume() is a no-op if already running; the
         // document-level listener below is the fallback for browsers that
         // won't actually let resume() take effect until a real user gesture
         // happens anywhere on the page.
@@ -402,10 +343,10 @@ export function useContinuousVoiceInput(
         }
 
         // ── Silero VAD ────────────────────────────────────────────────────
-        // Replaces the old ambient calibration entirely — there is no
-        // threshold to calibrate any more. Loaded dynamically so the ~15 MB
-        // of model + ONNX runtime is fetched only on pages that actually
-        // listen, and never during SSR (it touches AudioWorklet/WASM).
+        // Detector AND transport — see the header comment. Loaded
+        // dynamically so the ~15 MB of model + ONNX runtime is fetched only
+        // on pages that actually listen, and never during SSR (it touches
+        // AudioWorklet/WASM).
         const initStartedAt = performance.now()
         const { MicVAD } = await import('@ricky0123/vad-web')
         const vad = await MicVAD.new({
@@ -432,33 +373,73 @@ export function useContinuousVoiceInput(
           negativeSpeechThreshold: NEGATIVE_SPEECH_THRESHOLD,
           redemptionMs: REDEMPTION_MS,
           minSpeechMs: MIN_SPEECH_MS,
+          preSpeechPadMs: PRE_SPEECH_PAD_MS,
           onSpeechStart: () => {
-            // Guards still apply: never treat playback or a muted mic as a turn.
-            if (micMutedRef.current || avatarBusyRef.current) return
-            if (speechDetectedAtRef.current === null) {
-              console.info('[voice] SPEECH START (silero)')
-            }
-            speechDetectedAtRef.current = Date.now()
-            setHearingSpeech(true)
+            if (micMutedRef.current) return  // muted speech never becomes a turn
+            speechStartedAtRef.current = Date.now()
+            speechStartedDuringBusyRef.current = avatarBusyRef.current
+            if (!avatarBusyRef.current) setHearingSpeech(true)
+            console.info(
+              '[voice] SPEECH START (silero) duringBusy=',
+              avatarBusyRef.current
+            )
+            // Utterance ceiling: force-reset the VAD if speech never ends.
+            if (maxSpeechTimerRef.current) clearTimeout(maxSpeechTimerRef.current)
+            maxSpeechTimerRef.current = setTimeout(() => {
+              if (speechStartedAtRef.current !== null) {
+                console.warn(
+                  '[voice] utterance exceeded ceiling — VAD reset, audio dropped'
+                )
+                speechStartedAtRef.current = null
+                setHearingSpeech(false)
+                vadRef.current?.pause()
+                vadRef.current?.start()
+              }
+            }, MAX_SPEECH_MS)
           },
           onVADMisfire: () => {
-            // Too short to be a real utterance — unset so the segment is
-            // discarded rather than sent (this is what a cough now does).
+            // Too short to be a real utterance — a cough, a door closing.
             console.info('[voice] speech misfire (too short) — not a turn')
-            speechDetectedAtRef.current = null
+            if (maxSpeechTimerRef.current) clearTimeout(maxSpeechTimerRef.current)
+            speechStartedAtRef.current = null
             setHearingSpeech(false)
           },
-          onSpeechEnd: () => {
+          onSpeechEnd: (audio: Float32Array) => {
+            if (maxSpeechTimerRef.current) clearTimeout(maxSpeechTimerRef.current)
             setHearingSpeech(false)
-            if (micMutedRef.current || avatarBusyRef.current) return
-            if (speechDetectedAtRef.current === null) return
-            console.info('[voice] SPEECH END (silero) — closing segment')
-            // Stop the recorder; its onstop sends, because speechDetectedAt
-            // is set. The audio itself comes from MediaRecorder, not Silero,
-            // so the backend contract (base64 webm) is unchanged.
-            if (mediaRecorderRef.current?.state === 'recording') {
-              mediaRecorderRef.current.stop()
+            const startedAt = speechStartedAtRef.current
+            const startedDuringBusy = speechStartedDuringBusyRef.current
+            speechStartedAtRef.current = null
+            if (startedAt === null) return  // muted at onset, or force-reset
+            if (micMutedRef.current || !connectedRef.current) {
+              console.info('[voice] utterance dropped: muted/disconnected')
+              return
             }
+            if (avatarBusyRef.current) {
+              // Ended while the avatar is still talking/processing — either
+              // the avatar's own audio or premature; half-duplex drops it.
+              console.info('[voice] utterance dropped: avatar busy at end')
+              return
+            }
+            if (startedDuringBusy) {
+              const beforeClear = busyClearedAtRef.current - startedAt
+              if (beforeClear > OVERLAP_GRACE_MS) {
+                console.info(
+                  '[voice] utterance dropped: started', beforeClear,
+                  'ms before playback ended — treating as the avatar\'s own audio'
+                )
+                return
+              }
+              console.info(
+                '[voice] tail-overlap utterance accepted, overlapMs=', beforeClear
+              )
+            }
+            const b64 = encodeWavBase64(audio, VAD_SAMPLE_RATE)
+            console.info(
+              '[voice] sending utterance:', audio.length, 'samples (',
+              Math.round((audio.length / VAD_SAMPLE_RATE) * 1000), 'ms )'
+            )
+            onSegmentRef.current(b64)
           },
         })
         if (cancelled) {
@@ -467,12 +448,12 @@ export function useContinuousVoiceInput(
           return
         }
         vadRef.current = vad
+        vadReadyRef.current = true
+        refreshListening()
         console.info(
           '[voice] Silero VAD ready in', Math.round(performance.now() - initStartedAt),
           'ms; audioCtxState=', audioCtx.state, 'connected=', connectedRef.current
         )
-
-        if (connectedRef.current) startListeningLoop()
       } catch (err) {
         console.error('[voice] mic acquisition failed:', err)
         if (!cancelled) {
@@ -484,10 +465,11 @@ export function useContinuousVoiceInput(
 
     return () => {
       cancelled = true
-      if (vadRafRef.current) cancelAnimationFrame(vadRafRef.current)
+      if (meterRafRef.current) cancelAnimationFrame(meterRafRef.current)
+      if (maxSpeechTimerRef.current) clearTimeout(maxSpeechTimerRef.current)
+      vadReadyRef.current = false
       vadRef.current?.destroy().catch(() => {})
       vadRef.current = null
-      mediaRecorderRef.current?.stop()
       continuousStreamRef.current?.getTracks().forEach((t) => t.stop())
       audioCtxRef.current?.close().catch(() => {})
       if (resumeOnGestureRef.current) {
