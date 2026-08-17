@@ -1756,6 +1756,18 @@ units via `_validate_follow_up`), never story content. The mechanical
 verbatim-invariant test now strips exactly (unit texts + banks + that
 one question) and still demands zero residue.
 
+**Mic auto-reopen bug fixed 2026-08-17** (found live: hands-free voice
+required clicking the stop button after every answer). Root cause: the
+server's per-sentence "Animating…" status re-set `isProcessing` while
+an earlier chunk played, and only the FIRST video chunk ever cleared
+it — any multi-chunk answer left the flag stuck true after playback,
+gating the mic forever. This, not the 320ms VAD floor, was the dominant
+reason spoken "כן" never reached the server. Fix (ChatInterface only):
+every chunk arrival clears `isProcessing`, and a status event no longer
+raises it mid-playback. The 320ms floor / re-engagement window remain
+known secondary limits, revisit only if live retest still misses short
+answers.
+
 Honest note in `e5b9ed9`: step 3's commit initially landed with one red
 test (the WS e2e still mocked the old seam) because a tail pipe
 swallowed pytest's exit code; fixed in the next commit and the gate now

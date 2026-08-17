@@ -483,10 +483,18 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
         const chunk: VideoChunk = { url: data.video_url, text: data.text }
         chunkQueueRef.current.push(chunk)
         setCurrentChunkProgress(prev => ({ current: data.chunk_index + 1, total: prev.total }))
-        // First chunk arriving → record latency, clear spinner, start playback
+        // EVERY chunk arrival clears the spinner, not just the first: each
+        // later chunk's "Animating…" status re-set isProcessing while an
+        // earlier chunk was playing, and nothing after the first arrival
+        // ever cleared it again — so any multi-chunk answer left the flag
+        // stuck true after playback, gating the hands-free mic forever
+        // (the click-the-stop-button-to-speak bug). Chunk arrival is proof
+        // generation is delivering; from here playback (showVideo) is the
+        // busy signal.
+        setIsProcessing(false)
         if (!isPlayingRef.current) {
+          // First chunk → record latency, start playback
           if (sendTimeRef.current) setLatencyMs(Date.now() - sendTimeRef.current)
-          setIsProcessing(false)
           playNextChunk()
         } else {
           // Already playing — preload this incoming chunk
@@ -504,7 +512,13 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
         break
 
       case 'status':
-        setIsProcessing(true)
+        // Belt-and-braces for the same stuck-flag bug fixed in
+        // 'video_chunk' above: a mid-playback progress note ("Animating…"
+        // for a LATER sentence) is not a new busy state — playback itself
+        // is already gating the mic via showVideo. Only pre-playback
+        // statuses (Transcribing…/Thinking…/the first Animating…) may
+        // raise the spinner.
+        if (!isPlayingRef.current) setIsProcessing(true)
         setStatusMsg(data.message || 'Processing…')
         break
 
