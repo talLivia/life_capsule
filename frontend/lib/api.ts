@@ -423,6 +423,18 @@ export const api = {
     return response.data
   },
 
+  /** Presigned URLs for the pre-recorded presenter videos, keyed by the
+   *  frozen question ids (plus the intro walkthrough). URLs are directly
+   *  playable in a <video src> — presigning IS the auth. A URL whose video
+   *  was never uploaded 404s on fetch; callers treat that as no-video. */
+  getPresenterVideos: async (): Promise<{
+    intro: string | null
+    questions: Record<string, string>
+  }> => {
+    const response = await apiClient.get('/api/v1/interview/presenter-videos')
+    return response.data
+  },
+
   /** The question spoken aloud, in the producer's own recording language.
    *  A blob rather than a URL so the request carries the auth header like
    *  every other call — an <audio src> would go out unauthenticated. */

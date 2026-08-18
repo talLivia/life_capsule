@@ -162,6 +162,20 @@ def resolve_questions(
     return [s for s in resolve_steps(steps, answers) if s["kind"] == QUESTION]
 
 
+def all_question_ids(language: str) -> List[str]:
+    """Every question id in the language's interview, DOCUMENT order, gate
+    branches included (129 for he) — the order the source document lists
+    them, which is also the order the presenter read them when recording
+    the per-question videos (docs/PRESENTER_VIDEOS_PLAN.md). Gates are
+    excluded: they are click-answer screens with no presenter video."""
+    return [
+        step["id"]
+        for category in _categories(language)
+        for step in iter_steps(category["steps"])
+        if step["kind"] == QUESTION
+    ]
+
+
 def category_is_settled(category: Dict[str, Any], answers: Dict[str, str]) -> bool:
     """True when no gate in the reachable path is still unanswered.
 
