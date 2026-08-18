@@ -88,6 +88,16 @@ export function useVideoClipChat() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const startNewSessionRef = useRef<() => void>(() => {})
 
+  // Any NEW input (spoken or typed) consumes the server-side pending prompt
+  // (matched, or fallen through as a fresh question) — open follow-up/clarify
+  // cards must not outlive the state they represent.
+  const dismissOpenPromptCards = (msgs: TalkMessage[]): TalkMessage[] =>
+    msgs.map((m) => ({
+      ...m,
+      followUpDismissed: m.followUpQuestion ? true : m.followUpDismissed,
+      clarifyDismissed: m.clarifyOptions ? true : m.clarifyDismissed,
+    }))
+
   const handleWsMessage = useCallback((msg: WsMessage) => {
     switch (msg.type) {
       case 'transcription':
@@ -96,8 +106,17 @@ export function useVideoClipChat() {
         // sendText), so surface the recognized text as the user bubble here —
         // it arrives just before the clip response.
         setMessages((prev) => [
-          ...prev,
+          ...dismissOpenPromptCards(prev),
           { id: `user-voice-${Date.now()}`, role: 'user', content: msg.text },
+        ])
+        break
+      case 'follow_up_ack':
+        // A voice-declined offer: the server closed it without an engine
+        // call; show the fixed ack as chat text so the exchange doesn't end
+        // in dead air, and retire the card.
+        setMessages((prev) => [
+          ...dismissOpenPromptCards(prev),
+          { id: `ack-${Date.now()}`, role: 'assistant', content: msg.message },
         ])
         break
       case 'video_clip_response': {
@@ -265,8 +284,12 @@ export function useVideoClipChat() {
     const text = inputText.trim()
     if (!text || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
     // Typed input: text is known now, so its bubble + the clip search start
-    // together.
-    setMessages((prev) => [...prev, { id: `user-${Date.now()}`, role: 'user', content: text }])
+    // together. A typed "כן" consumes the pending prompt server-side exactly
+    // like a spoken one, so open cards retire here too.
+    setMessages((prev) => [
+      ...dismissOpenPromptCards(prev),
+      { id: `user-${Date.now()}`, role: 'user', content: text },
+    ])
     setStatusText('Finding a clip…')
     setIsThinking(true)
     wsRef.current.send(JSON.stringify({ type: 'video_clip_question', text }))
@@ -338,7 +361,18 @@ export function useVideoClipChat() {
     micMuted, setMicMuted, isListening, hearingSpeech, micLevel, permissionDenied,
     micUnavailable,
   } = useContinuousVoiceInput(
-    connected, isThinking || isClipPlaying || clipGrace, sendAudioSegment
+    connected,
+    isThinking || isClipPlaying || clipGrace,
+    sendAudioSegment,
+    // A one-word answer is the EXPECTED input while a follow-up/clarify
+    // card is open — relaxes the hook's general speech floor to its hard
+    // floor for exactly that window (the avatar mode's two-tier floor,
+    // now wired for v2 too).
+    messages.some(
+      (m) =>
+        (m.followUpQuestion && !m.followUpDismissed) ||
+        (m.clarifyOptions && !m.clarifyDismissed)
+    )
   )
 
   useEffect(() => {

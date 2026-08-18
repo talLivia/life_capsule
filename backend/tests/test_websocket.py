@@ -14,6 +14,7 @@ make barge-in actually work:
 """
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -1220,3 +1221,177 @@ async def test_classify_prompt_reply_fails_open_on_error_and_garbage(monkeypatch
 
     monkeypatch.setattr(llm_service, "generate_response", garbage)
     assert await wsmod._classify_prompt_reply("שאלה?", "משהו") == "unrelated"
+
+
+# ── v2 pending-prompt wiring (v2-voice-prompts step 2) ──────────────────────
+#
+# The v2 handler shares the SAME pending_prompt core the avatar uses. The
+# load-bearing test is the inertness one: with no prompt armed, the new
+# code is a provable no-op for every v2 turn.
+
+
+def _v2_result(**kw):
+    from app.services.video_clip_assembler import VideoClipResult
+
+    return VideoClipResult(video_url=kw.pop("video_url", "http://test/clip.mp4"), **kw)
+
+
+def _wire_v2(m):
+    ws = _wire_session(m)
+    m.session_data["s1"]["producer_id"] = "producer-1"
+    m.session_data["s1"]["producer_chat_mode"] = "video_clips_v2"
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_v2_without_pending_is_inert(monkeypatch):
+    """No prompt armed → neither the matcher path nor the classifier runs,
+    and the assembler receives the utterance untouched."""
+    from app import websocket as wsmod
+    from app.services import full_archive_retrieval as far
+
+    asked = []
+
+    async def fake_v2(question, group_id, recording_language, session_id):
+        asked.append(question)
+        return _v2_result(shown_units=[{"key": "k", "unit_id": "u1", "text": "טקסט"}])
+
+    async def must_not_classify(offered_question, utterance):
+        raise AssertionError("no pending — the classifier must never run")
+
+    monkeypatch.setattr(far, "assemble_video_clip_response_v2", fake_v2)
+    monkeypatch.setattr(wsmod, "_classify_prompt_reply", must_not_classify)
+
+    m = ConnectionManager()
+    _wire_v2(m)
+
+    async def swallow_persist(*a, **k):
+        return None
+
+    monkeypatch.setattr(m, "_persist_message", swallow_persist)
+    monkeypatch.setattr(m, "_ensure_conversation_title", swallow_persist)
+
+    await m._handle_video_clip_question_inner("s1", "ספר לי על אבא שלך")
+
+    assert asked == ["ספר לי על אבא שלך"]
+    assert "pending_prompt" not in m.session_data["s1"]
+
+
+@pytest.mark.asyncio
+async def test_v2_follow_up_arms_and_spoken_yes_asks_it(monkeypatch):
+    """A v2 response carrying follow_up arms the prompt; the next spoken
+    'כן' reaches the assembler as the OFFERED question — and persists as
+    the user turn, exactly like the avatar handler."""
+    from app import websocket as wsmod
+    from app.services import full_archive_retrieval as far
+
+    asked = []
+    results = iter(
+        [
+            _v2_result(
+                shown_units=[{"key": "k", "unit_id": "u1", "text": "טקסט"}],
+                follow_up={"question": "רוצה לשמוע על הצבא?", "unit_ids": ["u9"]},
+            ),
+            _v2_result(shown_units=[{"key": "k2", "unit_id": "u9", "text": "צבא"}]),
+        ]
+    )
+
+    async def fake_v2(question, group_id, recording_language, session_id):
+        asked.append(question)
+        return next(results)
+
+    monkeypatch.setattr(far, "assemble_video_clip_response_v2", fake_v2)
+
+    m = ConnectionManager()
+    _wire_v2(m)
+
+    persisted = []
+
+    async def record_persist(session_id, role, content, latency=None, metadata=None, video_url=None):
+        persisted.append({"role": role, "content": content})
+
+    monkeypatch.setattr(m, "_persist_message", record_persist)
+    monkeypatch.setattr(m, "_ensure_conversation_title", AsyncMock())
+
+    await m._handle_video_clip_question_inner("s1", "ספר לי על אבא שלך")
+    assert m.session_data["s1"]["pending_prompt"] == {
+        "kind": "follow_up",
+        "question": "רוצה לשמוע על הצבא?",
+    }
+
+    await m._handle_video_clip_question_inner("s1", "כן")
+
+    assert asked == ["ספר לי על אבא שלך", "רוצה לשמוע על הצבא?"]
+    assert {"role": "user", "content": "רוצה לשמוע על הצבא?"} in persisted
+    assert "pending_prompt" not in m.session_data["s1"]
+
+
+@pytest.mark.asyncio
+async def test_v2_spoken_no_sends_text_ack_without_the_engine(monkeypatch):
+    from app import websocket as wsmod
+    from app.services import full_archive_retrieval as far
+    from app.services.spoken_answer import FOLLOW_UP_DECLINE_ACK
+
+    async def must_not_run(question, group_id, recording_language, session_id):
+        raise AssertionError("a declined offer must never reach the engine")
+
+    monkeypatch.setattr(far, "assemble_video_clip_response_v2", must_not_run)
+
+    m = ConnectionManager()
+    ws = _wire_v2(m)
+    m.session_data["s1"]["pending_prompt"] = {
+        "kind": "follow_up",
+        "question": "רוצה לשמוע על הצבא?",
+    }
+
+    persisted = []
+
+    async def record_persist(session_id, role, content, latency=None, metadata=None, video_url=None):
+        persisted.append({"role": role, "content": content})
+
+    monkeypatch.setattr(m, "_persist_message", record_persist)
+
+    await m._handle_video_clip_question_inner("s1", "לא תודה")
+
+    acks = [msg for msg in ws.sent if msg.get("type") == "follow_up_ack"]
+    assert acks == [{"type": "follow_up_ack", "message": FOLLOW_UP_DECLINE_ACK}]
+    assert {"role": "assistant", "content": FOLLOW_UP_DECLINE_ACK} in persisted
+    assert "pending_prompt" not in m.session_data["s1"]
+
+
+@pytest.mark.asyncio
+async def test_v2_clarify_arms_and_spoken_name_reasks(monkeypatch):
+    from app.services import full_archive_retrieval as far
+
+    asked = []
+    results = iter(
+        [
+            _v2_result(
+                video_url=None,
+                clarify={"question": "לאיזה אמנון?", "options": ["אמנון", "אמנון נחום"]},
+            ),
+            _v2_result(shown_units=[{"key": "k", "unit_id": "u1", "text": "טקסט"}]),
+        ]
+    )
+
+    async def fake_v2(question, group_id, recording_language, session_id):
+        asked.append(question)
+        return next(results)
+
+    monkeypatch.setattr(far, "assemble_video_clip_response_v2", fake_v2)
+
+    m = ConnectionManager()
+    _wire_v2(m)
+
+    monkeypatch.setattr(m, "_persist_message", AsyncMock())
+    monkeypatch.setattr(m, "_ensure_conversation_title", AsyncMock())
+
+    await m._handle_video_clip_question_inner("s1", "ספר לי על אמנון")
+    assert m.session_data["s1"]["pending_prompt"] == {
+        "kind": "clarify",
+        "options": ["אמנון", "אמנון נחום"],
+        "original": "ספר לי על אמנון",
+    }
+
+    await m._handle_video_clip_question_inner("s1", "אמנון נחום")
+    assert asked == ["ספר לי על אמנון", "ספר לי על אמנון — אמנון נחום"]

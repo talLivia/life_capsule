@@ -1798,6 +1798,24 @@ test (the WS e2e still mocked the old seam) because a tail pipe
 swallowed pytest's exit code; fixed in the next commit and the gate now
 checks PIPESTATUS.
 
+**Voice-answering prompts in BOTH modes, 2026-08-19** (branch
+`v2-voice-prompts`, stacked on `retire-avatar-retrieval`): the
+pending-prompt core (bare-word fast path, 3-label classifier, arming
+rule) moved to `services/pending_prompt.py` — the avatar handler
+re-points to it with its existing tests passing UNCHANGED (that is the
+equivalence proof; `resolve()` takes the classifier as a parameter so
+the websocket-module monkeypatch seam stays authoritative). The v2
+handler gained ~15 orchestration lines: resolve at top (a spoken/typed
+"כן" sends the byte-identical offered question; a decline sends a fixed
+"בסדר." text bubble + `follow_up_ack` card-dismissal event, no engine
+call; anything else routes fresh), arming after completed turns. The
+inertness property is pinned by test: with no prompt armed the new v2
+code is a no-op. Clients: useVideoClipChat + TalkInterface both pass
+`expectShortReply` (two-tier floor now in all three chat surfaces), and
+TalkInterface gained the follow-up/clarify cards + spoken-turn user
+bubbles family avatar chat lacked. Audio temp files renamed .webm→.wav
+(content was WAV since the capture rewrite; sniffed either way).
+
 ✅ **Step 5 executed 2026-08-19** (branch `retire-avatar-retrieval`, off
 `avatar-plus-presenter`) — the gate was satisfied many times over by the
 live avatar sessions of 08-17 (00:23, 00:39, and the four-turn

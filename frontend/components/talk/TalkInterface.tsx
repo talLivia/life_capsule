@@ -11,6 +11,14 @@ interface TalkMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  // Prompt cards (parity with the producer-side chat, 2026-08-19): the
+  // offered follow-up question / the which-person options, with dismissal
+  // flags so a card can't be actioned twice.
+  followUpQuestion?: string
+  followUpDismissed?: boolean
+  clarifyOptions?: string[]
+  clarifyFor?: string
+  clarifyDismissed?: boolean
 }
 
 interface VideoChunk {
@@ -89,8 +97,52 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
     }
   }, [playNextChunk])
 
+  // Any NEW input (spoken or typed) consumes the server-side pending prompt
+  // — open follow-up/clarify cards must not outlive the state they represent.
+  const dismissOpenPromptCards = (msgs: TalkMessage[]): TalkMessage[] =>
+    msgs.map((m) => ({
+      ...m,
+      followUpDismissed: m.followUpQuestion ? true : m.followUpDismissed,
+      clarifyDismissed: m.clarifyOptions ? true : m.clarifyDismissed,
+    }))
+
   const handleWsMessage = useCallback((msg: WsMessage) => {
     switch (msg.type) {
+      case 'transcription':
+        // Spoken turn: surface the recognized words as the user bubble (they
+        // aren't known client-side until STT returns) and retire any open
+        // prompt cards — the server already consumed the pending prompt.
+        setMessages((prev) => [
+          ...dismissOpenPromptCards(prev),
+          { id: `user-voice-${Date.now()}`, role: 'user', content: msg.text },
+        ])
+        break
+      case 'follow_up':
+        // The voice spoke this same generated question; here it becomes its
+        // own assistant bubble with כן/לא attached (parity with the
+        // producer-side ChatInterface, 2026-08-19).
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `followup-${Date.now()}`,
+            role: 'assistant',
+            content: msg.question,
+            followUpQuestion: msg.question,
+          },
+        ])
+        break
+      case 'clarify':
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `clarify-${Date.now()}`,
+            role: 'assistant',
+            content: msg.question,
+            clarifyOptions: msg.options,
+            clarifyFor: msg.for_question,
+          },
+        ])
+        break
       case 'token': {
         // The full reply is already known (retrieval, not live generation)
         // — show it as soon as it arrives rather than waiting for `message`.
@@ -255,11 +307,29 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
   const sendText = () => {
     const text = inputText.trim()
     if (!text || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
-    setMessages((prev) => [...prev, { id: `user-${Date.now()}`, role: 'user', content: text }])
+    setMessages((prev) => [
+      ...dismissOpenPromptCards(prev),
+      { id: `user-${Date.now()}`, role: 'user', content: text },
+    ])
     setIsThinking(true)
     wsRef.current.send(JSON.stringify({ type: 'text', text }))
     setInputText('')
   }
+
+  /** A prompt-card button: send the byte-identical question the card names
+   *  through the normal text path — the same string a spoken "כן" (or a
+   *  spoken option name) resolves to server-side. */
+  const sendPromptReply = (question: string) => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return
+    setMessages((prev) => [
+      ...dismissOpenPromptCards(prev),
+      { id: `user-${Date.now()}`, role: 'user', content: question },
+    ])
+    setIsThinking(true)
+    wsRef.current.send(JSON.stringify({ type: 'text', text: question }))
+  }
+
+  const dismissCards = () => setMessages((prev) => dismissOpenPromptCards(prev))
 
   const sendAudioSegment = useCallback((base64Audio: string) => {
     if (wsRef.current?.readyState !== WebSocket.OPEN) return
@@ -268,7 +338,18 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
   }, [])
 
   const { micMuted, setMicMuted, isListening, hearingSpeech, micUnavailable } =
-    useContinuousVoiceInput(connected, isThinking || showVideo, sendAudioSegment)
+    useContinuousVoiceInput(
+      connected,
+      isThinking || showVideo,
+      sendAudioSegment,
+      // A one-word answer is the EXPECTED input while a follow-up/clarify
+      // card is open — relaxes the general speech floor (two-tier floor).
+      messages.some(
+        (m) =>
+          (m.followUpQuestion && !m.followUpDismissed) ||
+          (m.clarifyOptions && !m.clarifyDismissed)
+      )
+    )
 
   useEffect(() => {
     if (!micUnavailable) return
@@ -332,6 +413,44 @@ export function TalkInterface({ avatarId, avatarImageUrl, producerName }: TalkIn
               }`}
             >
               {m.content}
+              {/* Live follow-up offer: this bubble IS the offered question;
+                  כן sends it verbatim — the same string a spoken כן
+                  resolves to server-side. */}
+              {m.followUpQuestion && !m.followUpDismissed && (
+                <div className="flex items-center gap-2 mt-2.5">
+                  <button
+                    onClick={() => sendPromptReply(m.followUpQuestion!)}
+                    className="px-3 py-1 rounded-lg text-xs font-medium text-white bg-calm-sage-600 hover:bg-calm-sage-500 transition-all active:scale-95"
+                  >
+                    כן
+                  </button>
+                  <button
+                    onClick={dismissCards}
+                    className="px-3 py-1 rounded-lg text-xs font-medium border border-calm-border dark:border-calm-borderDark hover:bg-black/5 transition-all active:scale-95"
+                  >
+                    לא
+                  </button>
+                </div>
+              )}
+              {/* Which-person clarify: one button per name; choosing re-asks
+                  the ORIGINAL question with the person named. */}
+              {m.clarifyOptions && !m.clarifyDismissed && (
+                <div className="flex flex-wrap items-center gap-2 mt-2.5">
+                  {m.clarifyOptions.map((option) => (
+                    <button
+                      key={option}
+                      onClick={() =>
+                        sendPromptReply(
+                          m.clarifyFor ? `${m.clarifyFor} — ${option}` : option
+                        )
+                      }
+                      className="px-3 py-1 rounded-lg text-xs font-medium border border-calm-border dark:border-calm-borderDark hover:bg-black/5 transition-all active:scale-95"
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
           {isThinking && (

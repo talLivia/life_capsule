@@ -108,6 +108,10 @@ export type WsMessage =
   // by voice ("כן"/"לא" — deterministic server-side matching) or by the
   // buttons this event renders.
   | { type: 'follow_up'; question: string }
+  // v2's voice-declined offer: the server closed it without an engine call;
+  // carries the fixed ack text the client shows as an assistant bubble
+  // while retiring the open card.
+  | { type: 'follow_up_ack'; message: string }
   // The lookup itself failed. Deliberately NOT 'video_clip_no_story': that
   // one asserts the archive has nothing, and an outage cannot support that
   // claim. Carries the question so it can be retried verbatim.

@@ -152,124 +152,19 @@ MAX_CONTEXT_MESSAGES = 60
 # Soft TTL for an idle (disconnected/abandoned) session in seconds.
 STALE_SESSION_TTL_SECS = 60 * 60 * 2  # 2 hours
 
-# ── pending-prompt voice answering (avatar mode) ─────────────────────────────
-#
-# When a spoken turn ends with a follow-up offer or a clarify ask, the next
-# utterance may be the ANSWER to that prompt rather than a fresh question.
-# Two layers decide, for a FOLLOW-UP offer (docs/AVATAR_SHARED_ENGINE_PLAN
-# §7, revised 2026-08-18 after the word-list provably missed natural Hebrew
-# twice in one live session — "כן, תספר לי" and "לא, תספר לי עוד..."):
-#
-#   1. Bare-word fast path: an utterance that IS a plain yes/no (whole
-#      normalized utterance against the tiny sets below) resolves with zero
-#      latency and no model involvement.
-#   2. Everything else goes to `_classify_prompt_reply` — one temperature=0
-#      LLM call (the `_classify_topic` pattern) choosing among exactly three
-#      LABELS, never generating output text: accept / decline / unrelated.
-#      Any error or unparseable reply fails OPEN to "unrelated", which is
-#      the pre-classifier behavior: route the whole utterance as a fresh
-#      question, prompt dismissed — the failure mode is the status quo,
-#      never a wrong action.
-#
-# Either way the ACTION stays deterministic: accept sends the byte-identical
-# offered question a button click sends; decline speaks the fixed ack.
-#
-# CLARIFY prompts deliberately stay literal-option matching only (whole-word
-# containment, longest option first, so "אמנון נחום" beats its prefix
-# "אמנון") — the options are proper names: a name either appears in the
-# reply or the engine's own disambiguation handles the paraphrase.
-
-_YES_UTTERANCES = {
-    "כן", "כן בבקשה", "בטח", "ברור", "כמובן",
-    "yes", "sure", "ok", "okay",
-}
-_NO_UTTERANCES = {
-    "לא", "לא תודה", "לא עכשיו",
-    "no", "no thanks", "nope",
-}
-
-_PROMPT_REPLY_LABELS = {"accept", "decline", "unrelated"}
-
-_PROMPT_REPLY_SYSTEM_PROMPT = """\
-The assistant just offered to tell the listener more, phrased as a question \
-(the OFFER). The listener replied (the REPLY), usually in Hebrew. Classify \
-the REPLY as exactly one of three labels:
-
-accept — the listener wants the offered material, however phrased \
-(e.g. "כן, תספר לי", "אה בטח, למה לא", "ספר לי על זה").
-decline — the listener is closing the offer and asking for NOTHING else \
-(e.g. "לא בא לי כרגע", "אולי אחר כך, תודה").
-unrelated — the reply contains its own request, question, or topic, even if \
-it starts with a yes or a no (e.g. "לא, תספר לי על הצבא", "מה לגבי אמא שלך?", \
-"לא סיפרת לי על הבית") — the conversation should just answer it.
-
-Answer with one word only: accept, decline, or unrelated."""
-
-
-async def _classify_prompt_reply(offered_question: str, utterance: str) -> str:
-    """Bounded 3-label classification, never generation — the model picks
-    which server-known action runs; every output string stays byte-identical
-    to what the buttons send. Fail-OPEN to \"unrelated\" (= the fresh-question
-    fall-through that was the only behavior before this call existed)."""
-    from app.services.llm import llm_service
-
-    try:
-        raw = await llm_service.generate_response(
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"OFFER: {offered_question}\nREPLY: {utterance}",
-                }
-            ],
-            system_prompt=_PROMPT_REPLY_SYSTEM_PROMPT,
-            temperature=0,
-        )
-    except Exception as e:
-        logger.warning(f"prompt-reply classification failed (fail-open): {e}")
-        return "unrelated"
-    label = (raw or "").strip().strip('"').strip("'").strip(".").lower()
-    return label if label in _PROMPT_REPLY_LABELS else "unrelated"
-
-
-def _normalize_utterance(text: str) -> str:
-    """Punctuation → spaces, collapsed whitespace, lowercased (no-op for
-    Hebrew, correct for English). What both sides of every match see."""
-    cleaned = re.sub(r"[^\w\s]", " ", text or "", flags=re.UNICODE)
-    return re.sub(r"\s+", " ", cleaned).strip().lower()
-
-
-def _match_pending_prompt(text: str, pending: dict) -> Optional[dict]:
-    """The deterministic layer: the bare-word fast path for follow-ups and
-    the ONLY matching clarify gets. Returns {"action": "ask", "text":
-    <outgoing question>} — byte-identical to the corresponding button's
-    send — or {"action": "dismiss"}, or None (no deterministic match; for a
-    follow-up the caller then consults `_classify_prompt_reply`)."""
-    spoken = _normalize_utterance(text)
-    if not spoken:
-        return None
-
-    kind = pending.get("kind")
-    if kind == "follow_up":
-        if spoken in _YES_UTTERANCES:
-            return {"action": "ask", "text": pending["question"]}
-        if spoken in _NO_UTTERANCES:
-            return {"action": "dismiss"}
-        return None
-
-    if kind == "clarify":
-        # Whole-word containment so "דן" can't fire inside "ירדן"; longest
-        # option first so the fuller name wins when one contains another.
-        padded = f" {spoken} "
-        for option in sorted(pending.get("options", []), key=len, reverse=True):
-            normalized = _normalize_utterance(option)
-            if normalized and f" {normalized} " in padded:
-                return {
-                    "action": "ask",
-                    "text": f"{pending['original']} — {option}",
-                }
-        return None
-
-    return None
+# ── pending-prompt voice answering ──────────────────────────────────────────
+# The mode-agnostic core (bare-word fast path, 3-label classifier, arming
+# rule) lives in app/services/pending_prompt.py, shared by BOTH mode
+# handlers. Re-imported here under their original names: tests and the
+# handlers reference them through this module, so monkeypatching
+# `websocket._classify_prompt_reply` keeps working — `resolve()` takes the
+# classifier as a parameter and each call site passes this module-level
+# binding.
+from app.services.pending_prompt import (  # noqa: E402
+    _classify_prompt_reply,
+    _match_pending_prompt,
+)
+from app.services import pending_prompt  # noqa: E402
 
 
 class ConnectionManager:
@@ -678,7 +573,7 @@ class ConnectionManager:
         # could delete the file out from under a NEW turn's in-flight read
         # (or the new write could land mid-read of the old one) — exactly
         # the kind of race that silently yields empty transcriptions.
-        tmp_audio = _private_session_dir(session_id) / f"input-{uuid.uuid4().hex}.webm"
+        tmp_audio = _private_session_dir(session_id) / f"input-{uuid.uuid4().hex}.wav"  # WAV since the vad-web capture rewrite (content-sniffed either way)
         try:
             await self.send_message(
                 session_id,
@@ -714,7 +609,7 @@ class ConnectionManager:
                 # Keep a copy for offline debugging — the finally block below
                 # unlinks tmp_audio regardless, so without this an empty
                 # transcription can never be inspected after the fact.
-                debug_path = TMPDIR / f"debug-failed-transcribe-{session_id}-{int(datetime.now(timezone.utc).timestamp())}.webm"
+                debug_path = TMPDIR / f"debug-failed-transcribe-{session_id}-{int(datetime.now(timezone.utc).timestamp())}.wav"
                 try:
                     debug_path.write_bytes(raw)
                     logger.warning(f"Empty transcription [{session_id}]: saved audio to {debug_path}")
@@ -803,18 +698,13 @@ class ConnectionManager:
             if pending:
                 from app.services import spoken_answer as sa_mod
 
-                match = _match_pending_prompt(text, pending)
-                if match is None and pending.get("kind") == "follow_up":
-                    # Not a bare yes/no — let the bounded classifier decide
-                    # which server-known action this reply selects (it never
-                    # generates text; "unrelated" = the old fall-through).
-                    label = await _classify_prompt_reply(
-                        pending.get("question", ""), text
-                    )
-                    if label == "accept":
-                        match = {"action": "ask", "text": pending["question"]}
-                    elif label == "decline":
-                        match = {"action": "dismiss"}
+                # The shared two-layer resolution (services/pending_prompt).
+                # The classifier is passed as THIS module's binding so the
+                # test seam (monkeypatching websocket._classify_prompt_reply)
+                # stays authoritative.
+                match = await pending_prompt.resolve(
+                    pending, text, classify=_classify_prompt_reply
+                )
                 if match and match["action"] == "ask":
                     text = match["text"]
                 elif match and match["action"] == "dismiss":
@@ -893,11 +783,9 @@ class ConnectionManager:
                     # of these options instead of clicking it. Armed only
                     # here, after a COMPLETED turn — an interrupted turn
                     # whose ask was never fully spoken never arms a prompt.
-                    data["pending_prompt"] = {
-                        "kind": "clarify",
-                        "options": answer.clarify.get("options", []),
-                        "original": text,
-                    }
+                    data["pending_prompt"] = pending_prompt.pending_from_result(
+                        None, answer.clarify, text
+                    )
                 elif answer and answer.follow_up and answer.follow_up.get("question"):
                     # The voice spoke the generated question itself (the
                     # renderer's scoped exception); this event carries the
@@ -909,10 +797,9 @@ class ConnectionManager:
                             "question": answer.follow_up["question"],
                         },
                     )
-                    data["pending_prompt"] = {
-                        "kind": "follow_up",
-                        "question": answer.follow_up["question"],
-                    }
+                    data["pending_prompt"] = pending_prompt.pending_from_result(
+                        answer.follow_up, None, text
+                    )
 
         except Exception as e:
             logger.error(f"Text error [{session_id}]: {type(e).__name__}: {e}", exc_info=True)
@@ -977,6 +864,36 @@ class ConnectionManager:
         # nothing in the browser console. Matches _handle_text_input_inner's
         # own convention (its try already wraps its persist/title calls too).
         try:
+            # A prompt armed by the PREVIOUS turn (follow-up offer / clarify)
+            # is consumed by exactly one input — this one. Identical shape to
+            # the avatar handler: the shared resolver either rewrites `text`
+            # into the byte-identical question a button click sends, closes a
+            # declined offer without an engine call, or falls through as a
+            # fresh question. With no prompt armed this whole block is a
+            # provable no-op (pop returns None), pinned by test.
+            pending = data.pop("pending_prompt", None)
+            if pending:
+                resolution = await pending_prompt.resolve(
+                    pending, text, classify=_classify_prompt_reply
+                )
+                if resolution and resolution["action"] == "ask":
+                    text = resolution["text"]
+                elif resolution and resolution["action"] == "dismiss":
+                    # "לא" answers the OFFER, not the archive. v2 has no
+                    # synthesized voice, so the ack is a fixed text bubble
+                    # plus a card-dismissal event — never an engine call.
+                    from app.services.spoken_answer import FOLLOW_UP_DECLINE_ACK
+
+                    await self._persist_message(session_id, "user", text)
+                    await self._persist_message(
+                        session_id, "assistant", FOLLOW_UP_DECLINE_ACK
+                    )
+                    await self.send_message(
+                        session_id,
+                        {"type": "follow_up_ack", "message": FOLLOW_UP_DECLINE_ACK},
+                    )
+                    return
+
             await self._persist_message(session_id, "user", text)
             await self._ensure_conversation_title(session_id, text)
             await self.send_message(
@@ -1013,6 +930,12 @@ class ConnectionManager:
                         "question": result.clarify["question"],
                         "options": result.clarify["options"],
                     },
+                )
+                # Arm voice answering: the next utterance may NAME one of
+                # these options instead of clicking it (same rule as the
+                # avatar handler; armed only after a completed turn).
+                data["pending_prompt"] = pending_prompt.pending_from_result(
+                    None, result.clarify, text
                 )
                 return
 
@@ -1066,6 +989,11 @@ class ConnectionManager:
                         "follow_up": result.follow_up,
                     },
                 )
+                armed = pending_prompt.pending_from_result(
+                    result.follow_up, None, text
+                )
+                if armed:
+                    data["pending_prompt"] = armed
                 return
 
             latency = (datetime.now(timezone.utc) - started_at).total_seconds()
@@ -1105,6 +1033,13 @@ class ConnectionManager:
                     "follow_up": result.follow_up,
                 },
             )
+            # Voice-answering the offer: same one-shot arming as the avatar
+            # handler. Set only when a follow_up exists, so a plain turn
+            # leaves no key behind (and the next turn's resolution block is
+            # a no-op).
+            armed = pending_prompt.pending_from_result(result.follow_up, None, text)
+            if armed:
+                data["pending_prompt"] = armed
 
         except Exception as e:
             logger.error(
