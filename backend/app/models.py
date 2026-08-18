@@ -349,7 +349,9 @@ class RawSegment(Base):
     video_key = Column(String, nullable=True)
     transcript = Column(Text, nullable=True)  # set by Prompt 5's transcribe step
     # Set by extract_topics (Prompt 5) — actual-content classification,
-    # independent of question_asked. Prompt 6's primary_match queries this.
+    # independent of question_asked. (Prompt 6's primary_match, its original
+    # query-side consumer, was retired in step 5; the tags remain useful
+    # ingestion metadata.)
     topic_tags = Column(JSON, nullable=True)
     # A generated CONTENT title ("הבית הראשון בטבריה") — the recording's only
     # rendered name, on the extraction screen and the timeline alike; raw

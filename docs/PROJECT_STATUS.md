@@ -1798,16 +1798,23 @@ test (the WS e2e still mocked the old seam) because a tail pipe
 swallowed pytest's exit code; fixed in the next commit and the gate now
 checks PIPESTATUS.
 
-🛑 **Step 5 (retiring `retrieve`/`primary_match`/`expand_graph`,
-`relevance_scorer`, `assemble_response`) is deliberately NOT executed** —
-the plan gates it on a live avatar-mode turn on the new path, which
-needs avatar mode enabled on an account with a ready avatar (it is
-dormant-by-default) plus a real engine call. The superseded code is
-unreachable from production paths but still present and tested. Run the
-live turn, then execute step 5 per the plan's table (kept-names rule:
-`_recent_turns`, `_render_turn_for_history`, `COREFERENCE_HISTORY_TURNS`,
-`_parse_json_array`; banks stay in `response_assembler`; the visited-set
-removal stays deferred).
+✅ **Step 5 executed 2026-08-19** (branch `retire-avatar-retrieval`, off
+`avatar-plus-presenter`) — the gate was satisfied many times over by the
+live avatar sessions of 08-17 (00:23, 00:39, and the four-turn
+09:01–09:04 flow, all served by select_units + the spoken renderer,
+verified in DB/logs). Deleted per the plan's table: `retrieve`,
+`primary_match`, `expand_graph`, `RetrievalResult`/`RetrievedSegment`,
+`_classify_topic`, `_extract_entity_names_from_question`,
+`_embed_question_for_primary_match`, `_resolve_entity_names`,
+`_resolve_coreferences` + their prompts and orphaned private helpers;
+the whole `relevance_scorer` module; `assemble_response` +
+`_fetch_transcripts`/`_entity_names_for`/`_shared_entity_name`; and
+their tests. Kept, names frozen: `_recent_turns`,
+`_render_turn_for_history`, `COREFERENCE_HISTORY_TURNS`,
+`_parse_json_array`; the fallback constants and both template banks stay
+in `response_assembler` (both renderers import them); the visited-set
+removal remains deferred as its own cleanup; embeddings columns stay
+(ingestion writes them — dropping is a separate decision).
 
 ## ⚠️ `gemini-flash-latest` MOVED to gemini-3.7-flash — detected 2026-08-16
 

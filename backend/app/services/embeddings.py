@@ -67,8 +67,8 @@ async def _embed_openai(text: str) -> List[float]:
 async def embed_text(text: str) -> List[float]:
     """Embed a single piece of text (a question, or a segment transcript at
     ingestion time). Raises on failure — callers decide how to degrade
-    (relevance_scorer.py treats a missing/failed embedding as "no relevance
-    signal", not a hard error)."""
+    (ingestion leaves embedding=None and carries on, never failing the
+    segment)."""
     if settings.EMBEDDING_PROVIDER == "gemini":
         return await _embed_gemini(text)
     return await _embed_openai(text)

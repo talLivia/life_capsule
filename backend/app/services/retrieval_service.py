@@ -1,207 +1,45 @@
 """
-Real-time retrieval pipeline (Prompt 6) — called when the avatar receives a
-question during a live conversation with a family member (Prompt 9).
+Conversation-history helpers shared by the retrieval engine.
 
-1. `primary_match` — three independent signals, unioned:
-   a. TOPIC: classify the question's topic (a lightweight Claude/Gemini
-      call, temperature=0) and deterministically find 'ready' segments in
-      Postgres, scoped to this producer's archive only, whose topic_tags
-      include that topic. A plain set-membership check, not another LLM
-      judgment.
-   b. ENTITY: extract any person/place named directly in the question
-      (a second lightweight call, run concurrently with (a)), fuzzy-
-      resolve each against the stored entities
-      (`entity_names.names_are_similar` — the same gate Prompt 5 uses at
-      ingestion time), and find segments that directly MENTION them
-      (`entity_store.find_segments_mentioning`). This exists
-      because topic_tags are thematic ("military service"), never person
-      names — a question naming someone directly ("tell me about Gila")
-      must still find their segments even when its overall theme doesn't
-      happen to overlap with how that segment was tagged at ingestion
-      time. Added in Prompt 10 after the QA harness surfaced exactly this
-      gap against real data.
-   c. SEMANTIC: cosine similarity between the question's embedding and
-      each ready segment's precomputed transcript embedding (the exact
-      same mechanism Prompt 7's relevance_scorer.py already uses for
-      candidate scoring, `embeddings.py`) — catches phrasing/synonym gaps
-      exact topic-tag matching misses (e.g. "tell me about your wedding"
-      vs a segment topic-tagged "marriage"/"relationship": the topic
-      classifier's output for THIS phrasing just doesn't happen to
-      string-match the stored tag, even though the underlying topic is
-      obviously the same). SEMANTIC_MATCH_THRESHOLD was picked from real
-      cosine-similarity numbers measured against Prompt 10's QA questions,
-      not guessed — see the constant's own comment.
-2. `expand_graph` — pull the entities recorded for the primary segment(s)
-   (`entity_store.get_entity_names_for_segments`, ONE query) and call
-   `find_segments_mentioning_scored` to find other segments sharing those
-   entities, excluding whatever this conversation session already surfaced
-   (`session_visited_set` — Upstash Redis via cache_service, Prompt 2).
-   NOTE: the old `max_hops` parameter is gone. It was 1 at every call site,
-   which made the Cypher `RELATES_TO*0..0` — matching only the origin node.
-   No traversal ever happened, so there is nothing here to replace.
-3. Only candidates meeting MIN_SHARED_ENTITY_COUNT survive — "how many of the
-   primary segment(s)' entities does this candidate actually share" is the
-   confidence proxy (see `find_segments_mentioning_scored`'s docstring).
-4. Capped to MAX_CANDIDATES per turn.
+⚠️ HISTORY: this module WAS the avatar mode's multi-step retrieval
+pipeline (Prompt 6: topic classification → primary_match → expand_graph,
+plus an LLM coreference-rewrite pass). All of that was retired on
+2026-08-19 per docs/AVATAR_SHARED_ENGINE_PLAN.md §5 — the shared engine
+(full_archive_retrieval.select_units) does those jobs inside its single
+whole-archive read, for BOTH modes, and its history block replaced the
+separate coreference call. See the `pre-step5-retirement` history of this
+file for the deleted implementation.
 
-Returns primary segment(s) + up to MAX_CANDIDATES related candidates, each
-as only a short summary (never the full transcript) — Prompt 7 (relevance
-scoring) only needs that much, and Prompt 8 (response assembly) does its
-own targeted re-fetch of full transcript text for whatever it actually uses.
+What remains is exactly the §5 KEEP list, names frozen:
 
-This module never writes the visited-set — only Prompt 8 knows which
-segments actually made it into the assembled response, so updating Redis
-with "all segment ids used" is explicitly its job (per the project plan),
-not this read-only lookup's.
-
-KNOWN LIMITATION (intentional, not a bug — revisit only if retrieval scope
-expands): a question referencing someone purely by role/relationship
-without naming them (e.g. "who was your commander?", "tell me about your
-boss") gets none of primary_match's three signals for free — ENTITY finds
-nothing because no proper name was mentioned, and it falls to TOPIC/
-SEMANTIC alone. If the segment's transcript never happens to use that
-same role word, and the question's topic/semantic similarity doesn't
-independently clear their thresholds either, the question gets the
-no-story fallback even though a human reading the transcript would
-recognize who's meant. This is the deliberate boundary of the project's
-"never invent or guess" principle (see response_assembler.py's zero-LLM-
-call guarantee and NO_STORY_FALLBACK) — resolving an unnamed role to a
-specific real person would require exactly the kind of inference this
-project avoids throughout. Fixing it would mean either LLM-inferring "your
-commander" -> a specific graph entity from context (an inference, not a
-lookup) or teaching entity extraction to also capture role words at
-ingestion time (a bigger, separate design change) — neither attempted
-here.
+  * `_recent_turns` / `COREFERENCE_HISTORY_TURNS` — the engine's
+    coreference-via-history window (full_archive_retrieval.py imports
+    both; eval scripts monkeypatch `_recent_turns` by name).
+  * `_render_turn_for_history` — history rows can hold a raw clip URL as
+    content; the engine's prompt must see a placeholder, not a URL.
+  * `_parse_json_array` — general JSON-array-from-LLM-text parsing,
+    still generally useful.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
-from app.models import InterviewSession, Message, RawSegment
-from app.services import embeddings, entity_store
-from app.services.entity_names import names_are_similar
-from app.services.cache import cache_service
-from app.services.llm import llm_service
+from app.models import Message
 
 logger = logging.getLogger(__name__)
 
-# Tunable constants — Prompt 10's QA harness is where these get tuned for
-# real against actual retrieval quality, not guessed here.
-MIN_SHARED_ENTITY_COUNT = 1  # conservative default: any real shared entity counts
-MAX_CANDIDATES = 2
-_SUMMARY_MAX_CHARS = 160
-
-# How many of the most recent Message rows (both roles) _resolve_coreferences
-# looks at — see that function's own docstring for why 2 (the last user+
-# assistant pair), not the full MAX_CONTEXT_MESSAGES window websocket.py
-# rehydrates for UI continuity: recency, not breadth, is what resolving a
-# reference needs.
+# How many of the most recent Message rows (both roles) the engine's
+# history block looks at — the last user+assistant pair. Recency, not
+# breadth, is what resolving a reference needs; websocket.py's much larger
+# MAX_CONTEXT_MESSAGES window exists for UI continuity, a different job.
 COREFERENCE_HISTORY_TURNS = 2
-
-# Sanity cap on primary_match's own result count, independent of the
-# coreference fix above — confirmed live: an ambiguous, under-specified
-# question (a bare pronoun follow-up, before the coreference fix existed)
-# can carry no real topic/entity/semantic signal of its own, and the
-# retired v1 chunk path's second-pass leniency (relaxed semantic
-# threshold) then matched ALL 12 of 12 chunks in a real archive —
-# strictly worse than matching nothing, since it would flood Prompt 13's
-# per-candidate verification with the entire archive instead of failing
-# cleanly. A future ambiguous question could still trigger this even after
-# coreference resolution (e.g. a question that's simply too vague for any
-# signal to apply), so this cap stands on its own: if a single pass's
-# match count exceeds it, treat the match as untrustworthy and return
-# nothing rather than flooding downstream — a legitimately broad question
-# ("tell me about your childhood") could occasionally get capped away
-# empty too; that's an acceptable false negative given the alternative.
-MAX_PRIMARY_MATCHES = 6
-# Raw cosine similarity (not min-max normalized like Prompt 7's combined
-# score — there's no "candidate set" to normalize against here, just one
-# question against every ready segment). Calibrated against real Gemini
-# embeddings of Prompt 10's QA questions (all 30, against all 3 sample
-# segments): genuinely unrelated pairs (childhood/hobbies/travel/cooking/
-# pets/sports/food/parents/weekend/music questions vs any of the 3
-# segments) topped out at 0.654; the wedding/wife phrasing-gap questions
-# this threshold exists to catch scored 0.696-0.736 against the marriage
-# segment. 0.68 sits in that gap with a real margin above the unrelated
-# ceiling. One edge case ("מה הרגשת ביום החתונה?" / "how did you feel on
-# your wedding day", 0.647) lands BELOW even the unrelated ceiling and
-# stays unmatched by this signal — a genuine embedding-similarity limit,
-# not something a single global threshold can fix without risking false
-# positives on unrelated questions elsewhere; it may still match via the
-# topic or entity signals depending on phrasing.
-SEMANTIC_MATCH_THRESHOLD = 0.68
-
-_TOPIC_CLASSIFY_SYSTEM_PROMPT_TEMPLATE = """\
-You are a strict topic classifier for a personal life-story archive \
-retrieval system. Given a question someone is asking about the \
-storyteller's life, output ONLY a single short topic tag (1-3 words, \
-lowercase, in {language}) describing what the question is actually \
-about - using the same tagging style as segment classification: e.g. \
-military service, childhood, family, career, loss, friendship. Do not \
-include any commentary or text outside the single tag."""
-
-_ENTITY_NAME_QUESTION_SYSTEM_PROMPT = """\
-You are a strict named-entity extractor for a personal life-story \
-archive retrieval system. Given a QUESTION someone is asking about the \
-storyteller's life, output ONLY a JSON array of distinct proper names of \
-PEOPLE or PLACES explicitly named IN THE QUESTION ITSELF - never a role, \
-relationship, or description that merely implies an unnamed person (e.g. \
-"your commander", "your wife", "your manager"), even if a specific \
-person is obviously meant. Written exactly as they appear in the \
-question (same language/script). If no proper name is mentioned, output \
-an empty array: []. Do not include any commentary or text outside the \
-JSON array. Example: question "Tell me about Gila" -> ["Gila"]. Question \
-"Who was your commander?" -> []."""
-
-
-@dataclass
-class RetrievedSegment:
-    segment_id: str
-    summary: str
-
-
-@dataclass
-class RetrievalResult:
-    primary: List[RetrievedSegment] = field(default_factory=list)
-    candidates: List[RetrievedSegment] = field(default_factory=list)
-
-
-def _short_summary(transcript: Optional[str]) -> str:
-    """A short, deterministic preview — never the full transcript. Prompt 8
-    re-fetches full text for whichever segments are actually used."""
-    text = (transcript or "").strip()
-    if len(text) <= _SUMMARY_MAX_CHARS:
-        return text
-    return text[:_SUMMARY_MAX_CHARS].rsplit(" ", 1)[0] + "…"
-
-
-async def _classify_topic(question: str, recording_language: str) -> Optional[str]:
-    """Single lightweight Claude/Gemini call, temperature=0 (deterministic)
-    — per the Prompt 6 spec, the only inference step in this whole
-    pipeline. Output must use the same tag vocabulary/language as Prompt 5's
-    extract_topics so the plain set-membership check in primary_match can
-    actually overlap."""
-    system_prompt = _TOPIC_CLASSIFY_SYSTEM_PROMPT_TEMPLATE.format(language=recording_language)
-    try:
-        raw = await llm_service.generate_response(
-            messages=[{"role": "user", "content": question}],
-            system_prompt=system_prompt,
-            temperature=0,
-        )
-    except Exception as e:
-        logger.warning(f"Topic classification failed: {e}")
-        return None
-    topic = raw.strip().strip('"').strip("'").lower()
-    return topic or None
 
 
 def _parse_json_array(text: str) -> List[str]:
@@ -217,93 +55,11 @@ def _parse_json_array(text: str) -> List[str]:
     return [str(item).strip() for item in data if str(item).strip()]
 
 
-async def _extract_entity_names_from_question(question: str) -> List[str]:
-    """A second lightweight call, run concurrently with _classify_topic: a
-    question naming someone directly ("tell me about Gila") must find their
-    segments even when the question's overall THEME doesn't happen to
-    overlap with how that segment was topic-tagged at ingestion time —
-    topic_tags are thematic ("military service"), never person names.
-    Mirrors analysis_graph.py's ingestion-time entity extraction, but tuned
-    for a short question instead of a full transcript: an implied-but-
-    unnamed role ("your commander") must NOT be treated as a name."""
-    try:
-        raw = await llm_service.generate_response(
-            messages=[{"role": "user", "content": question}],
-            system_prompt=_ENTITY_NAME_QUESTION_SYSTEM_PROMPT,
-            temperature=0,
-        )
-    except Exception as e:
-        logger.warning(f"Entity-name extraction failed for question: {e}")
-        return []
-    return _parse_json_array(raw)
-
-
-async def _embed_question_for_primary_match(question: str) -> Optional[List[float]]:
-    """Same embedder Prompt 7's relevance_scorer.py uses (embeddings.py) —
-    degrades to "no semantic signal" rather than failing primary_match
-    outright, matching how the topic/entity signals already degrade."""
-    try:
-        return await embeddings.embed_text(question)
-    except Exception as e:
-        logger.warning(f"Question embedding failed for semantic primary match: {e}")
-        return None
-
-
-async def _resolve_entity_names(names: List[str], group_id: str) -> List[str]:
-    """Fuzzy-resolve each name extracted from the question against the stored
-    entities (`names_are_similar` — the same token-aware lexical gate Prompt 5
-    uses at ingestion time), so e.g. "גילה" still finds segments even if the
-    stored entity ended up named "גילה כהן" after a human-in-the-loop
-    resolution. Returns the STORED names, not the raw extracted text."""
-    resolved: set = set()
-    async with AsyncSessionLocal() as db:
-        for name in names:
-            candidates = await entity_store.get_entity_candidates(db, name, group_id)
-            for c in candidates:
-                if names_are_similar(name, c["name"]):
-                    resolved.add(c["name"])
-    return list(resolved)
-
-
-# ── Coreference resolution ─────────────────────────────────────────────────
-#
-# Confirmed live (real archive, real LLM calls, no mocks): a follow-up
-# question like "did you love her?" right after "who is Gila?" carries no
-# topic/entity/semantic signal of its own once asked in isolation — exactly
-# what primary_match did before this fix, since it never took conversation
-# history into account. Observed failure modes on real data: a bare pronoun
-# ("is he still alive?" right after "who most influenced you as a child?")
-# matched either nothing, or — via the retired v1 chunk path's second-pass
-# leniency — ALL 12 of 12 chunks in the whole archive (see
-# MAX_PRIMARY_MATCHES above for the guard against that).
-#
-# _recent_turns below is ALSO the v2 clip mode's conversation-history
-# window (full_archive_retrieval.select_units) and is patched by name in
-# every eval script — do not rename it.
-
-_COREFERENCE_RESOLVE_SYSTEM_PROMPT_TEMPLATE = """\
-You are rewriting a question for a search system - you are not answering \
-it. Below is the most recent part of a conversation. The NEW QUESTION may \
-refer back to something mentioned in it using a pronoun or vague \
-reference ("her", "him", "them", "it", "that", "he") instead of naming it \
-directly. If so, rewrite the NEW QUESTION replacing ONLY that reference \
-with the specific name/thing it refers to from the conversation below, in \
-{language}, changing nothing else about the question. If the NEW QUESTION \
-already stands on its own (no unresolved reference), or nothing in the \
-conversation below actually resolves it, output the NEW QUESTION EXACTLY \
-UNCHANGED. Never invent a name or detail that isn't actually present in \
-the conversation below. Output ONLY the (possibly rewritten) question, no \
-commentary, no quotation marks.
-
-Recent conversation:
-{history_block}"""
-
-
 def _render_turn_for_history(role: str, content: str) -> str:
     """video_clip_assembler's assistant turns persist a raw video URL as
     `content` (there's no text caption of what the clip actually said) —
-    feeding that to the coreference LLM call as if it were narration would
-    be actively misleading rather than merely unhelpful. Rendered as a
+    feeding that to an LLM prompt as if it were narration would be
+    actively misleading rather than merely unhelpful. Rendered as a
     neutral placeholder instead; the antecedent we actually need ("Gila")
     almost always comes from the family member's OWN prior question anyway,
     not the assistant's reply."""
@@ -328,169 +84,3 @@ async def _recent_turns(session_id: str, limit: int) -> List[Dict[str, str]]:
         )
         rows = list(result.all())[::-1]
     return [{"role": row.role, "content": row.content} for row in rows]
-
-
-async def _resolve_coreferences(question: str, session_id: str, recording_language: str) -> str:
-    """Rewrites a context-dependent follow-up ("did you love her?") into a
-    self-contained question ("did you love Gila?") using the last
-    COREFERENCE_HISTORY_TURNS messages of this session. Fail-soft to the
-    ORIGINAL question: no history yet (first turn of a session), an LLM
-    failure, or the model finding nothing to resolve must never block
-    retrieval or invent a reference that wasn't actually there."""
-    history = await _recent_turns(session_id, COREFERENCE_HISTORY_TURNS)
-    if not history:
-        return question
-
-    history_block = "\n".join(_render_turn_for_history(t["role"], t["content"]) for t in history)
-    system_prompt = _COREFERENCE_RESOLVE_SYSTEM_PROMPT_TEMPLATE.format(
-        language=recording_language, history_block=history_block
-    )
-    try:
-        rewritten = await llm_service.generate_response(
-            messages=[{"role": "user", "content": question}],
-            system_prompt=system_prompt,
-            temperature=0,
-        )
-    except Exception as e:
-        logger.warning(f"Coreference resolution failed, using original question: {e}")
-        return question
-    rewritten = rewritten.strip().strip('"').strip("'")
-    return rewritten or question
-
-
-async def primary_match(
-    question: str, group_id: str, recording_language: str, session_id: str
-) -> List[RawSegment]:
-    """Three independent signals, unioned — see module docstring:
-    (a) classify the question's topic, deterministically matched against
-    'ready' segments' topic_tags; (b) extract any person/place named
-    directly in the question and find segments that mention them in the
-    graph; (c) cosine similarity between the question's embedding and each
-    ready segment's embedding, catching phrasing/synonym gaps (a) misses.
-    Any signal alone is enough to surface a segment.
-
-    `question` is resolved against recent conversation history FIRST (see
-    _resolve_coreferences) — a bare pronoun follow-up otherwise carries none
-    of these three signals at all."""
-    question = await _resolve_coreferences(question, session_id, recording_language)
-
-    topic, extracted_names, question_embedding = await asyncio.gather(
-        _classify_topic(question, recording_language),
-        _extract_entity_names_from_question(question),
-        _embed_question_for_primary_match(question),
-    )
-
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(RawSegment)
-            .join(InterviewSession, RawSegment.interview_session_id == InterviewSession.id)
-            .where(InterviewSession.user_id == group_id, RawSegment.status == "ready")
-        )
-        segments = result.scalars().all()
-
-    matched: Dict[str, RawSegment] = {}
-
-    if topic:
-        for seg in segments:
-            if seg.topic_tags and topic in {t.strip().lower() for t in seg.topic_tags}:
-                matched[seg.id] = seg
-
-    if extracted_names:
-        resolved_names = await _resolve_entity_names(extracted_names, group_id)
-        if resolved_names:
-            async with AsyncSessionLocal() as db:
-                entity_segment_ids = await entity_store.find_segments_mentioning(
-                    db, entity_names=resolved_names, producer_id=group_id
-                )
-            segments_by_id = {seg.id: seg for seg in segments}
-            for sid in entity_segment_ids:
-                if sid in segments_by_id:
-                    matched[sid] = segments_by_id[sid]
-
-    if question_embedding:
-        for seg in segments:
-            if (
-                seg.embedding
-                and embeddings.cosine_similarity(question_embedding, seg.embedding)
-                >= SEMANTIC_MATCH_THRESHOLD
-            ):
-                matched[seg.id] = seg
-
-    if len(matched) > MAX_PRIMARY_MATCHES:
-        logger.warning(
-            f"primary_match matched {len(matched)} segments (> MAX_PRIMARY_MATCHES="
-            f"{MAX_PRIMARY_MATCHES}) for question {question!r} — treating as an "
-            "untrustworthy match rather than flooding downstream scoring/assembly."
-        )
-        return []
-
-    return list(matched.values())
-
-
-async def expand_graph(
-    primary_segments: List[RawSegment],
-    session_visited_set: set,
-    group_id: str,
-) -> List[RetrievedSegment]:
-    """Entities from the primary segment(s) -> related episodes, filtered by
-    minimum shared-entity count and capped to MAX_CANDIDATES."""
-    if not primary_segments:
-        return []
-
-    # Exclude both the session's visited-set AND the primary segments
-    # themselves — a primary segment trivially "shares" its own entities and
-    # must never reappear as one of its own related candidates.
-    exclude_ids = set(session_visited_set) | {seg.id for seg in primary_segments}
-
-    async with AsyncSessionLocal() as db:
-        by_segment = await entity_store.get_entity_names_for_segments(
-            db, [seg.id for seg in primary_segments], group_id
-        )
-        entity_names = {name for names in by_segment.values() for name in names}
-        if not entity_names:
-            return []
-
-        scored = await entity_store.find_segments_mentioning_scored(
-            db,
-            entity_names=list(entity_names),
-            producer_id=group_id,
-            exclude_ids=list(exclude_ids),
-            limit=MAX_CANDIDATES * 4,  # headroom before the threshold+cap below
-        )
-
-    qualifying = [c for c in scored if c["shared_entity_count"] >= MIN_SHARED_ENTITY_COUNT]
-    top_ids = [c["segment_id"] for c in qualifying[:MAX_CANDIDATES]]
-    if not top_ids:
-        return []
-
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(select(RawSegment).where(RawSegment.id.in_(top_ids)))
-        segments_by_id = {seg.id: seg for seg in result.scalars().all()}
-
-    # Preserve score-ranked order; a candidate could be absent if it was
-    # deleted/re-recorded since the graph link was made.
-    return [
-        RetrievedSegment(segment_id=sid, summary=_short_summary(segments_by_id[sid].transcript))
-        for sid in top_ids
-        if sid in segments_by_id
-    ]
-
-
-async def retrieve(
-    question: str, group_id: str, recording_language: str, session_id: str
-) -> RetrievalResult:
-    """Orchestrates the full Prompt 6 pipeline for one incoming question."""
-    primary_segments = await primary_match(question, group_id, recording_language, session_id)
-    if not primary_segments:
-        return RetrievalResult()
-
-    visited = await cache_service.get_visited(session_id)
-    candidates = await expand_graph(primary_segments, visited, group_id)
-
-    return RetrievalResult(
-        primary=[
-            RetrievedSegment(segment_id=seg.id, summary=_short_summary(seg.transcript))
-            for seg in primary_segments
-        ],
-        candidates=candidates,
-    )

@@ -123,20 +123,18 @@ async def test_ws_full_turn_streams_events(monkeypatch):
     async def fake_no_names(segment_ids, group_id):
         return {}
 
-    async def fake_assemble_response(question, group_id, recording_language, session_id):
-        return TEST_REPLY
-
     # Poison pill: if a text turn ever reaches the LLM service DIRECTLY (not
-    # through response_assembler, which is mocked above) — a regression
+    # through the engine seam, which is mocked below) — a regression
     # reintroducing free-form chat — fail loudly instead of silently
     # passing. This is the actual safety property Prompt 1 exists to
-    # guarantee: only response_assembler's constrained, retrieval-based
-    # text may ever reach TTS/lip-sync.
+    # guarantee: only the engine's verbatim-unit text (via the spoken
+    # renderer) may ever reach TTS/lip-sync. (assemble_response, the old
+    # constrained path, was retired in step 5 — the seam is select_units.)
     def _fail_if_llm_called(*args, **kwargs):
         raise AssertionError(
             "llm_service was invoked directly during a text turn, bypassing "
-            "response_assembler.py — the free-form chat path must stay "
-            "disconnected."
+            "the select_units engine seam — the free-form chat path must "
+            "stay disconnected."
         )
 
     from app.services.llm import llm_service
@@ -144,9 +142,6 @@ async def test_ws_full_turn_streams_events(monkeypatch):
     monkeypatch.setattr(llm_service, "generate_response", _fail_if_llm_called)
     monkeypatch.setattr(llm_service, "stream_response", _fail_if_llm_called)
 
-    from app.services import response_assembler
-
-    monkeypatch.setattr(response_assembler, "assemble_response", fake_assemble_response)
     monkeypatch.setattr(far, "select_units", fake_select_units)
     monkeypatch.setattr(sa_mod, "_entity_names_by_segment", fake_no_names)
 
@@ -184,8 +179,8 @@ async def test_ws_full_turn_streams_events(monkeypatch):
     assert "video_chunk" in types  # at least one lip-sync chunk
     assert "video_chunk_end" in types  # stream terminated cleanly
 
-    # The reply is exactly what response_assembler.assemble_response()
-    # returned — nothing else reached TTS/lip-sync.
+    # The reply is exactly the engine-selected unit text the spoken
+    # renderer produced — nothing else reached TTS/lip-sync.
     final = next(m for m in messages if m["type"] == "message")
     assert final["content"] == TEST_REPLY
 

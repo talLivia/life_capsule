@@ -15,7 +15,7 @@ The producer's `User.chat_mode` selects one mode for everyone talking to them:
 | mode | how an answer is produced |
 | --- | --- |
 | `video_clips_v2` | **the default.** Prompt 15 whole-archive read → trimmed original clips |
-| `avatar` | optional, off by default. LLM reply → TTS → MuseTalk lip-sync (`ChatInterface`, `TalkInterface`) |
+| `avatar` | optional, off by default. SAME engine as v2 (select_units) → spoken renderer (verbatim units + fixed bridges) → TTS → MuseTalk lip-sync (`ChatInterface`, `TalkInterface`). The old separate retrieval pipeline was retired 2026-08-19 (AVATAR_SHARED_ENGINE_PLAN §5) — avatar mode is a second RENDERER, not a second retrieval system |
 
 **v2 stands fully on its own — no avatars row exists for a producer who
 never enables avatar mode.** Sessions are producer-keyed

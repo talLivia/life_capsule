@@ -762,10 +762,11 @@ class ConnectionManager:
           3. Consumer runs TTS + animation per sentence, streaming
              `video_chunk` events as each completes
 
-        Step 1 is `response_assembler.assemble_response()` (Prompts 6-9) —
-        retrieval + relevance scoring + bridge-phrase assembly against the
-        storyteller's own archive, never the general-purpose LLM (removed
-        in Prompt 1). It's the only thing allowed to reach TTS/lip-sync.
+        Step 1 is the shared engine + spoken renderer (select_units →
+        render_spoken_answer) — unit selection against the storyteller's
+        own archive, never the general-purpose LLM (removed in Prompt 1;
+        the old assemble_response pipeline retired in step 5). It's the
+        only thing allowed to reach TTS/lip-sync.
         """
         text = (text or "").strip()
         if not text:
@@ -1132,14 +1133,14 @@ class ConnectionManager:
         text: str,
     ) -> str:
         """
-        The retrieval-constrained response pipeline (Prompts 6-9):
-        response_assembler.assemble_response() runs retrieval (Prompt 6) +
-        relevance scoring (Prompt 7) + bridge-phrase assembly (Prompt 8)
-        against the STORYTELLER's archive (session's producer_id, the
-        avatar owner — see _load_session_data), then the assembled text
-        (verbatim transcripts + fixed bridge phrases only, never generated)
-        is chunked into this queue exactly the way a live-streamed LLM
-        reply would be, so the TTS/lip-sync consumer downstream
+        The retrieval-constrained response pipeline: the shared engine
+        (full_archive_retrieval.select_units) selects units against the
+        STORYTELLER's archive (session's producer_id, the avatar owner —
+        see _load_session_data), the spoken renderer turns them into
+        narrated text (verbatim units + fixed bridge phrases only, never
+        generated; the old assemble_response pipeline was retired in
+        step 5), and that text is chunked into this queue exactly the way
+        a live-streamed LLM reply would be, so the TTS/lip-sync consumer downstream
         (`_animate_from_queue`) doesn't need to know the difference.
 
         Deliberately never calls the general-purpose LLM service for the

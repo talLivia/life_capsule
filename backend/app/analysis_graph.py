@@ -16,11 +16,11 @@ finalize_ingest. Any node that hits an unrecoverable error routes to `fail`
 instead of continuing.
 
 embed_transcript (Prompt 7) computes and persists the segment's transcript
-embedding once, at ingestion time, so relevance_scorer.py's cosine-
-similarity term never re-embeds segment text on a live retrieval turn —
-only the incoming question gets embedded then. Fail-soft like
-extract_topics: an embedding failure leaves embedding=None (relevance_score
-degrades to 0 for that segment, per relevance_scorer.py) rather than
+embedding once, at ingestion time. (The live-turn cosine-similarity
+consumer, relevance_scorer.py, was retired in step 5 of
+docs/AVATAR_SHARED_ENGINE_PLAN.md — the stored embeddings stay, per that
+plan, and dropping the columns is its own future decision.) Fail-soft like
+extract_topics: an embedding failure leaves embedding=None rather than
 failing the whole segment.
 
 Ambiguity heuristic (check_entities): `entity_store.get_entity_candidates`
