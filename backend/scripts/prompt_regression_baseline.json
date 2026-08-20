@@ -1,11 +1,11 @@
 {
   "archive_version": [
-    14,
-    "2026-08-07 22:50:48.515861+00:00",
-    "2026-08-07 22:41:27.610434+00:00"
+    18,
+    "2026-08-20 16:08:34.227713+00:00",
+    "2026-08-20 16:07:07.180180+00:00"
   ],
   "group_id": "79820a49-b07d-41fe-941b-f5ceba09f7b5",
-  "runs": 3,
+  "runs": 5,
   "questions": {
     "family": {
       "variants": [
@@ -17,40 +17,56 @@
           "u8",
           "u9",
           "u10",
-          "u23",
-          "u24",
-          "u25",
-          "u65",
-          "u66",
-          "u67",
+          "u36",
+          "u37",
+          "u38",
+          "u45",
+          "u46",
+          "u47",
+          "u48",
+          "u49",
+          "u50",
+          "u51",
           "u52",
-          "u53"
+          "u53",
+          "u54",
+          "u55",
+          "u56",
+          "u57",
+          "u58",
+          "u59",
+          "u84",
+          "u85",
+          "u86"
         ]
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 5,
+      "runs": 5
     },
     "brothers": {
       "variants": [
         [
-          "u65",
-          "u66",
-          "u67"
+          "u84",
+          "u85",
+          "u86"
         ]
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 0,
+      "runs": 5
     },
     "ilana": {
       "variants": [
         [
-          "u23",
-          "u24",
-          "u25"
+          "u36",
+          "u37",
+          "u38"
         ]
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 0,
+      "runs": 5
     },
     "tzvi": {
       "variants": [
@@ -65,7 +81,8 @@
         ]
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 0,
+      "runs": 5
     },
     "army": {
       "variants": [
@@ -77,14 +94,16 @@
         ]
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 5,
+      "runs": 5
     },
     "montreal": {
       "variants": [
         []
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 0,
+      "runs": 5
     },
     "army-narrow": {
       "variants": [
@@ -94,7 +113,8 @@
         ]
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 0,
+      "runs": 5
     },
     "army-broad": {
       "variants": [
@@ -106,61 +126,174 @@
         ]
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 5,
+      "runs": 5
     },
     "influence-1": {
       "variants": [
         []
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 0,
+      "runs": 5
     },
     "influence-2 (followup)": {
       "variants": [
         []
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 0,
+      "runs": 5
     },
     "school": {
       "variants": [
         [
-          "u41",
-          "u42",
-          "u43",
-          "u44",
-          "u45",
-          "u46",
-          "u47",
-          "u48"
+          "u60",
+          "u61",
+          "u62",
+          "u63",
+          "u64",
+          "u65",
+          "u66",
+          "u67"
         ]
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 0,
+      "runs": 5
     },
     "no-answer": {
       "variants": [
         []
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 0,
+      "runs": 5
+    },
+    "career-broad": {
+      "variants": [
+        [
+          "u23",
+          "u24",
+          "u25",
+          "u26",
+          "u27",
+          "u28",
+          "u29"
+        ]
+      ],
+      "clarified": 0,
+      "follow_up_offered": 0,
+      "runs": 5
+    },
+    "childhood-broad": {
+      "variants": [
+        [
+          "u1",
+          "u2",
+          "u3",
+          "u60",
+          "u61",
+          "u62",
+          "u63",
+          "u64",
+          "u65",
+          "u66",
+          "u67",
+          "u68",
+          "u69",
+          "u70",
+          "u71",
+          "u72",
+          "u104",
+          "u105",
+          "u106",
+          "u107",
+          "u108"
+        ]
+      ],
+      "clarified": 0,
+      "follow_up_offered": 0,
+      "runs": 5
+    },
+    "spouse": {
+      "variants": [
+        [
+          "u39",
+          "u40",
+          "u41",
+          "u42",
+          "u43",
+          "u44"
+        ]
+      ],
+      "clarified": 0,
+      "follow_up_offered": 0,
+      "runs": 5
+    },
+    "spouse-pronoun (followup)": {
+      "variants": [
+        []
+      ],
+      "clarified": 0,
+      "follow_up_offered": 0,
+      "runs": 5
     },
     "about-a-person": {
       "variants": [
         [
+          "u11",
+          "u12",
+          "u13",
           "u14",
-          "u19"
+          "u15",
+          "u16",
+          "u17",
+          "u18",
+          "u19",
+          "u20",
+          "u21",
+          "u22"
         ]
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 0,
+      "runs": 5
     },
     "uncle-then-more": {
       "variants": [
         []
       ],
       "clarified": 0,
-      "runs": 3
+      "follow_up_offered": 0,
+      "runs": 5
+    },
+    "uncle-then-more-exhausted": {
+      "variants": [
+        []
+      ],
+      "clarified": 0,
+      "follow_up_offered": 0,
+      "runs": 5
+    },
+    "two-hop-roots": {
+      "variants": [
+        [
+          "u50",
+          "u51",
+          "u52",
+          "u53",
+          "u54",
+          "u55",
+          "u56",
+          "u57",
+          "u58",
+          "u59"
+        ]
+      ],
+      "clarified": 0,
+      "follow_up_offered": 5,
+      "runs": 5
     }
   }
 }

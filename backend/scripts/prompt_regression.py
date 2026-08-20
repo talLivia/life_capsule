@@ -114,6 +114,11 @@ MARGINAL: Dict[str, str] = {
     # Broad question about a person; how much context travels with the
     # name-bearing units is exactly the judgement under test here.
     "about-a-person": "broad question about a person named in only one unit per recording",
+    # Added 2026-08-20 with the gap recordings: new broad domains start life
+    # marginal until the 5-run baseline proves otherwise.
+    "career-broad": "new broad domain (career recording, 2026-08-20) â€” stability unproven",
+    "childhood-broad": "broad across 4+ childhood recordings â€” stability unproven",
+    "two-hop-roots": "new state-bearing case (accepted follow-up offer) â€” stability unproven",
 }
 
 #: The archive fingerprint the `uncle-then-more` fixture was derived from.
@@ -121,10 +126,17 @@ MARGINAL: Dict[str, str] = {
 #: the moment anything is re-recorded â€” the builder REFUSES to run rather
 #: than silently testing different words (how seed_sweep.py's references
 #: died, twice).
+#: Re-derived 2026-08-20 after the gap-filling recordings (career_q02 +
+#: relationships_q03) landed. ⚠️ Archive order is (question_index,
+#: created_at) — NOT append-only by date: both new recordings inserted
+#: MID-ARCHIVE (career at u23-35, spouse at u39-44), shifting every unit
+#: from the old u23 onward by +13, then +19 from the old u26 onward. The
+#: fixture lists below were mapped mechanically by that rule and are
+#: re-verified semantically by _verified_uncle_state's guards on every run.
 _UNCLE_STATE_ARCHIVE_VERSION = (
-    14,
-    "2026-08-07 22:50:48.515861+00:00",
-    "2026-08-07 22:41:27.610434+00:00",
+    18,
+    "2026-08-20 16:08:34.227713+00:00",
+    "2026-08-20 16:07:07.180180+00:00",
 )
 
 #: The live session's per-assistant-turn unit lists (2026-08-09, session
@@ -134,14 +146,14 @@ _UNCLE_STATE_ARCHIVE_VERSION = (
 #: uncle's whole segment as one turn, or "everything except the friend's
 #: recordings" â€” measured 0/2 where this exact state measured 5/5 and 2/2.
 _UNCLE_STATE_TURNS: List[List[str]] = [
-    [f"u{i}" for i in range(4, 11)] + ["u23", "u24", "u25", "u65", "u66", "u67"],
-    [f"u{i}" for i in range(26, 41)]
-    + [f"u{i}" for i in range(49, 60)]
-    + [f"u{i}" for i in range(68, 79)],
-    [f"u{i}" for i in range(54, 60)] + ["u63", "u64"],
+    [f"u{i}" for i in range(4, 11)] + ["u36", "u37", "u38", "u84", "u85", "u86"],
+    [f"u{i}" for i in range(45, 60)]
+    + [f"u{i}" for i in range(68, 79)]
+    + [f"u{i}" for i in range(87, 98)],
+    [f"u{i}" for i in range(73, 79)] + ["u82", "u83"],
     ["u2", "u3"],
     [],  # a persisted no-story reply: an assistant row with no units
-    ["u74", "u75", "u76", "u77", "u78"],
+    ["u93", "u94", "u95", "u96", "u97"],
 ]
 
 #: Session 70305082 (2026-08-09 23:26-23:28 UTC), oldest first: friend fully
@@ -153,10 +165,17 @@ _UNCLE_EXHAUSTED_TURNS: List[List[str]] = [
     [f"u{i}" for i in range(11, 15)],
     [f"u{i}" for i in range(15, 23)],
     [f"u{i}" for i in range(4, 11)],
-    ["u23", "u24", "u25"],
-    [f"u{i}" for i in range(26, 31)],
+    ["u36", "u37", "u38"],
+    [f"u{i}" for i in range(45, 50)],
+    # ⚠️ Fixed 2026-08-20: this list originally ended with only the uncle's
+    # 5-unit enumeration (old u74-78), which NEVER satisfied the guard's
+    # "everything about the uncle is shown" — the case was added while
+    # Gemini credits were exhausted and had never actually run, so the
+    # defect sat undetected until the first real --save. The session note
+    # says "the uncle resolved and FULLY played"; the full recording is
+    # what that means.
     [],  # the clarify reply "×œ××™×–×” ××ž× ×•×Ÿ ×”×ª×›×•×•× ×ª?"
-    ["u74", "u75", "u76", "u77", "u78"],
+    [f"u{i}" for i in range(84, 98)],
 ]
 
 
@@ -224,6 +243,33 @@ async def _uncle_conversation_state(group_id: str) -> List[List[str]]:
     )
 
 
+#: The family answer's exact selection at archive v18 (father + mother +
+#: both nickname takes), verified live 2x on 08-17/08-19 in the OLD
+#: numbering and remapped 2026-08-20. The two-hop case replays: family
+#: answered -> the listener accepts the roots OFFER (the literal offered
+#: question observed live on 08-17) -> the roots recording should answer.
+_FAMILY_ANSWER_TURN: List[str] = (
+    [f"u{i}" for i in range(4, 11)]
+    + ["u36", "u37", "u38"]
+    + [f"u{i}" for i in range(84, 104)]
+)
+
+
+async def _family_then_roots_state(group_id: str) -> List[List[str]]:
+    version = await ar._archive_version(group_id)
+    if version != _UNCLE_STATE_ARCHIVE_VERSION:
+        raise RuntimeError(
+            f"two-hop-roots fixture derived from {_UNCLE_STATE_ARCHIVE_VERSION} "
+            f"but the archive is now {version} - re-derive before trusting it"
+        )
+    _archive, _em, units, _tags = await ar._archive_bundle(group_id)
+    by_id = {u.unit_id: u for u in units}
+    missing = [u for u in _FAMILY_ANSWER_TURN if u not in by_id]
+    if missing:
+        raise RuntimeError(f"two-hop-roots: fixture units missing from archive: {missing}")
+    return [_FAMILY_ANSWER_TURN]
+
+
 async def _uncle_exhausted_state(group_id: str) -> List[List[str]]:
     return await _verified_uncle_state(
         "uncle-then-more-exhausted", _UNCLE_EXHAUSTED_TURNS, group_id, friend_exhausted=True
@@ -288,6 +334,21 @@ EXTRA: List[Tuple[str, str, List[dict], Optional[object]]] = [
           "content": "×™×© ×œ×™ ×’× ×“×•×“ ×ž×¦×“ ××‘× ×©×§×•×¨××™× ×œ×• ××ž× ×•×Ÿ ×•×™×© ×œ×• ×©×ª×™ ×™×œ×“×™× ×‘×¨ ×•×“×•×¨"},
          {"role": "user", "content": "×™×© ×¢×•×“ ×¡×™×¤×•×¨ ×¢×œ ××ž× ×•×Ÿ?"}],
         _uncle_exhausted_state,
+    ),
+    # Two-hop follow-up acceptance (added 2026-08-20): after the broad family
+    # answer played, the listener says yes to the roots offer - the offered
+    # question goes through the normal path (byte-identical string, as the
+    # button/voice layer sends it). The roots recording should answer;
+    # answering with already-shown family units instead would be the
+    # offer-leads-nowhere failure.
+    (
+        "two-hop-roots",
+        "רוצה לשמוע על השורשים של המשפחה שלי מצד אמא ומצד אבא?",
+        [
+            {"role": "user", "content": "ספר לי על המשפחה שלך"},
+            {"role": "assistant", "content": "http://localhost:8000/uploads/video-clips/f.mp4"},
+        ],
+        _family_then_roots_state,
     ),
 ]
 
@@ -367,6 +428,14 @@ async def _run_once(
         # Recorded too: a prompt edit can switch clarification on or off for a
         # question, and that is a behaviour change even when the units match.
         "clarify": bool(selection.clarify),
+        # And the follow-up OFFER (added 2026-08-20): PRESENCE only â€”
+        # _validate_follow_up validates the offered unit ids against the
+        # archive and shown-set, then deliberately strips them from its
+        # return, so ids are not observable here. "Offers stopped
+        # appearing" is the drift this catches; id-level conservation
+        # needs the engine to expose them (a decision that belongs to the
+        # gated core-vs-offer step, not this harness).
+        "follow_up": bool(selection.follow_up),
     }
 
 
@@ -383,6 +452,7 @@ async def measure(group_id: str, runs: int) -> dict:
         results[label] = {
             "variants": [list(v) for v in variants],
             "clarified": sum(1 for r in rows if r["clarify"]),
+            "follow_up_offered": sum(1 for r in rows if r["follow_up"]),
             "runs": runs,
         }
         stable = "stable" if len(variants) == 1 else f"{len(variants)} variants"
@@ -425,7 +495,10 @@ def compare(before: dict, after: dict) -> int:
         b_units = {tuple(v) for v in b["variants"]}
         a_units = {tuple(v) for v in a["variants"]}
         note = f"   ({MARGINAL[label]})" if label in MARGINAL else ""
-        if b_units == a_units and b["clarified"] == a["clarified"]:
+        b_fu = b.get("follow_up_offered")
+        a_fu = a.get("follow_up_offered")
+        fu_same = ("follow_up_offered" not in b) or (b_fu == a_fu)
+        if b_units == a_units and b["clarified"] == a["clarified"] and fu_same:
             print(f"  {label:24} same")
             continue
         drifted.append(label)
@@ -439,6 +512,8 @@ def compare(before: dict, after: dict) -> int:
             print(f"      only AFTER : {only_after}")
         if b["clarified"] != a["clarified"]:
             print(f"      clarify {b['clarified']}/{b['runs']} -> {a['clarified']}/{a['runs']}")
+        if "follow_up_offered" in b and b_fu != a_fu:
+            print(f"      follow-up offered {b_fu}/{b['runs']} -> {a_fu}/{a['runs']}")
 
     print("\n" + "=" * 74)
     if not drifted:

@@ -138,10 +138,15 @@ exactly as they are.
 
 Unit ids are positional across the whole archive, and the harness refuses
 to compare across a changed fingerprint — this is a feature (it is how
-seed_sweep's references died and were caught). New recordings sort AFTER
-all existing ones, so existing unit ids survive an append — but the
-fingerprint still changes, and the uncle fixtures pin an explicit
-`archive_version`. Therefore the sequence is fixed:
+seed_sweep's references died and were caught). ⚠️ CORRECTED 2026-08-20
+during execution: the original claim here that "new recordings sort AFTER
+all existing ones" was WRONG — archive order is (question_index,
+created_at), so the gap recordings inserted MID-archive (career at
+u23-35, spouse at u39-44) and shifted every unit id after their insertion
+points. The constraint is therefore STRONGER than first written: ANY new
+recording invalidates every stored unit-id reference, wherever it lands.
+The uncle fixtures pin an explicit `archive_version` (which caught
+exactly this). Therefore the sequence is fixed:
 
 1. **Record all gap content first** (producer, §2), ingest, confirm.
 2. **Verify existing unit ids unchanged** (append-only check), update the

@@ -1,0 +1,96 @@
+{
+ "cases": {
+  "accept-plain": {
+   "labels": {
+    "accept": 5
+   },
+   "expected": "accept",
+   "runs": 5
+  },
+  "accept-casual": {
+   "labels": {
+    "accept": 5
+   },
+   "expected": "accept",
+   "runs": 5
+  },
+  "accept-imperative": {
+   "labels": {
+    "accept": 5
+   },
+   "expected": "accept",
+   "runs": 5
+  },
+  "accept-eager": {
+   "labels": {
+    "accept": 5
+   },
+   "expected": "accept",
+   "runs": 5
+  },
+  "decline-soft": {
+   "labels": {
+    "decline": 5
+   },
+   "expected": "decline",
+   "runs": 5
+  },
+  "decline-later": {
+   "labels": {
+    "decline": 5
+   },
+   "expected": "decline",
+   "runs": 5
+  },
+  "decline-polite": {
+   "labels": {
+    "decline": 5
+   },
+   "expected": "decline",
+   "runs": 5
+  },
+  "no-plus-request": {
+   "labels": {
+    "unrelated": 5
+   },
+   "expected": "unrelated",
+   "runs": 5
+  },
+  "no-negation": {
+   "labels": {
+    "unrelated": 5
+   },
+   "expected": "unrelated",
+   "runs": 5
+  },
+  "fresh-question": {
+   "labels": {
+    "unrelated": 5
+   },
+   "expected": "unrelated",
+   "runs": 5
+  },
+  "yes-but-other": {
+   "labels": {
+    "unrelated": 5
+   },
+   "expected": "unrelated",
+   "runs": 5
+  },
+  "new-topic": {
+   "labels": {
+    "unrelated": 5
+   },
+   "expected": "unrelated",
+   "runs": 5
+  },
+  "kan-mishearing": {
+   "labels": {
+    "unrelated": 5
+   },
+   "expected": null,
+   "runs": 5
+  }
+ },
+ "runs": 5
+}

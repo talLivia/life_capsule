@@ -141,4 +141,24 @@ QUESTION_SET: List[Tuple[str, str, List[Dict[str, str]]]] = [
     ),
     ("school", "מה למדת בבית הספר?", []),
     ("no-answer", "איזה חיות מחמד היו לך?", []),
+    # ── added 2026-08-20 with the gap-filling recordings (docs/
+    # VALIDATION_COVERAGE_PLAN.md §2). rebaseline_accuracy filters by
+    # REFERENCES, so these join the drift panel without touching the
+    # accuracy metric. ──
+    # A second/third broad domain, so core-vs-offer work can't be tuned
+    # against the single family case it was designed around.
+    ("career-broad", "ספר לי על הקריירה שלך", []),
+    ("childhood-broad", "ספר לי על הילדות שלך", []),
+    # The spouse recording (relationships_q03) — she is never NAMED in the
+    # archive, so the follow-up's "עליה" must resolve purely from history:
+    # the harder, more realistic pronoun case.
+    ("spouse", "ספר לי על בת הזוג שלך", []),
+    (
+        "spouse-pronoun (followup)",
+        "ספר לי עוד עליה",
+        [
+            {"role": "user", "content": "ספר לי על בת הזוג שלך"},
+            {"role": "assistant", "content": "http://localhost:8000/uploads/video-clips/y.mp4"},
+        ],
+    ),
 ]
