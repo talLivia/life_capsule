@@ -554,6 +554,9 @@ async def main() -> int:
                         help="record the CURRENT behaviour as the baseline")
     parser.add_argument("--runs", type=int, default=int(os.environ.get("PROMPT_REGRESSION_RUNS", "3")))
     parser.add_argument("--group-id", default=crm.DEFAULT_GROUP_ID)
+    parser.add_argument("--check-annotations", action="store_true",
+                        help="evaluate the core-vs-offer conservation contract "
+                             "(scripts/core_offer_annotations.py) on this run")
     args = parser.parse_args()
 
     _install_hard_failing_llm()
@@ -572,6 +575,17 @@ async def main() -> int:
         )
         return 3
 
+    annotation_failures = []
+    if args.check_annotations:
+        import core_offer_annotations as coa
+        print()
+        print("=" * 74)
+        print("CORE-VS-OFFER CONSERVATION (producer annotations, 2026-08-21)")
+        print("=" * 74)
+        annotation_failures = coa.check(current["questions"])
+        for f in annotation_failures:
+            print(f"  FAIL: {f}")
+
     if args.save:
         BASELINE.write_text(json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"\nBaseline saved to {BASELINE.name} "
@@ -584,7 +598,10 @@ async def main() -> int:
               "the prompt, from a checkout without the edit.")
         return 2
 
-    return compare(json.loads(BASELINE.read_text(encoding="utf-8")), current)
+    rc = compare(json.loads(BASELINE.read_text(encoding="utf-8")), current)
+    if annotation_failures:
+        return 3
+    return rc
 
 
 if __name__ == "__main__":
