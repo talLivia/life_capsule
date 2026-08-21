@@ -496,8 +496,8 @@ def compare(before: dict, after: dict) -> int:
     for label in before["questions"]:
         b, a = before["questions"][label], after["questions"].get(label)
         if a is None:
-            print(f"  {label:24} MISSING from this run")
-            drifted.append(label)
+            # With --labels, unmeasured cases are deliberately absent.
+            print(f"  {label:24} (not measured this run)")
             continue
         b_units = {tuple(v) for v in b["variants"]}
         a_units = {tuple(v) for v in a["variants"]}
@@ -554,6 +554,10 @@ async def main() -> int:
                         help="record the CURRENT behaviour as the baseline")
     parser.add_argument("--runs", type=int, default=int(os.environ.get("PROMPT_REGRESSION_RUNS", "3")))
     parser.add_argument("--group-id", default=crm.DEFAULT_GROUP_ID)
+    parser.add_argument("--labels", default=None,
+                        help="comma-separated case labels to measure (others "
+                             "skipped in the diff too) - for finishing "
+                             "deadline-prone giants in a calm window")
     parser.add_argument("--check-annotations", action="store_true",
                         help="evaluate the core-vs-offer conservation contract "
                              "(scripts/core_offer_annotations.py) on this run")
@@ -561,6 +565,15 @@ async def main() -> int:
 
     _install_hard_failing_llm()
 
+    if args.labels:
+        wanted = {s.strip() for s in args.labels.split(",")}
+        global panel
+        full = panel()
+        chosen = [c for c in full if c[0] in wanted]
+        missing = wanted - {c[0] for c in chosen}
+        if missing:
+            print(f"unknown labels: {sorted(missing)}"); return 2
+        panel = lambda: chosen  # noqa: E731
     print(f"{len(panel())} questions x {args.runs} runs   (archive {args.group_id})")
     print("=" * 74)
     try:

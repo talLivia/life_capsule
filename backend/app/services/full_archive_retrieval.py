@@ -225,6 +225,16 @@ though it were more would be worse than offering nothing.
 something the archive cannot actually show.
 - Its unit ids must not overlap the answer's own unit_ids, and must not be \
 already shown.
+- A BROAD question answered by several distinct stretches is where \
+including and offering meet: include the stretches that address the \
+question's subject directly, and when one stretch is a SELF-CONTAINED \
+side branch - a related but distinct aspect, origin, or group, often a \
+stretch whose own recording answers a different interview question - \
+prefer to leave that stretch out of the answer and make it the follow_up \
+suggestion instead. The answer should feel complete without it; the \
+offer is how the listener reaches it. This never shrinks a NARROW \
+question's answer: when only a few units answer, include them all and \
+this rule does not apply.
 - If there is no such material, omit "follow_up" or set it to null. No \
 suggestion is perfectly fine - never invent one to seem helpful.
 {disambiguation_block}
