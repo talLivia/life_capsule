@@ -1395,3 +1395,64 @@ async def test_v2_clarify_arms_and_spoken_name_reasks(monkeypatch):
 
     await m._handle_video_clip_question_inner("s1", "אמנון נחום")
     assert asked == ["ספר לי על אמנון", "ספר לי על אמנון — אמנון נחום"]
+
+
+# ── unit_ids never cross the WS boundary (2026-08-21) ───────────────────────
+# The engine now exposes follow_up.unit_ids server-side; every client event
+# must carry the question ONLY. (The avatar-side `follow_up` event is
+# already pinned by exact-equality in
+# test_a_follow_up_turn_arms_the_prompt_and_sends_the_chat_event.)
+
+
+@pytest.mark.asyncio
+async def test_v2_response_event_strips_follow_up_unit_ids(monkeypatch):
+    from app.services import full_archive_retrieval as far
+
+    async def fake_v2(question, group_id, recording_language, session_id):
+        return _v2_result(
+            shown_units=[{"key": "k", "unit_id": "u1", "text": "טקסט"}],
+            follow_up={"question": "רוצה לשמוע על הצבא?", "unit_ids": ["u9", "u10"]},
+        )
+
+    monkeypatch.setattr(far, "assemble_video_clip_response_v2", fake_v2)
+
+    m = ConnectionManager()
+    ws = _wire_v2(m)
+    monkeypatch.setattr(m, "_persist_message", AsyncMock())
+    monkeypatch.setattr(m, "_ensure_conversation_title", AsyncMock())
+
+    await m._handle_video_clip_question_inner("s1", "ספר לי על אבא שלך")
+
+    responses = [msg for msg in ws.sent if msg.get("type") == "video_clip_response"]
+    assert len(responses) == 1
+    assert responses[0]["follow_up"] == {"question": "רוצה לשמוע על הצבא?"}
+    assert "unit_ids" not in responses[0]["follow_up"]
+    # The SERVER side still knows the ids: pending arming saw the question.
+    assert m.session_data["s1"]["pending_prompt"]["question"] == "רוצה לשמוע על הצבא?"
+
+
+@pytest.mark.asyncio
+async def test_v2_no_story_event_strips_follow_up_unit_ids(monkeypatch):
+    from app.services import full_archive_retrieval as far
+
+    async def fake_v2(question, group_id, recording_language, session_id):
+        return _v2_result(
+            video_url=None,
+            no_story=True,
+            fallback_text="אין לי סיפור על זה",
+            follow_up={"question": "רוצה לשמוע על הצבא?", "unit_ids": ["u9"]},
+        )
+
+    monkeypatch.setattr(far, "assemble_video_clip_response_v2", fake_v2)
+
+    m = ConnectionManager()
+    ws = _wire_v2(m)
+    monkeypatch.setattr(m, "_persist_message", AsyncMock())
+    monkeypatch.setattr(m, "_ensure_conversation_title", AsyncMock())
+
+    await m._handle_video_clip_question_inner("s1", "מה עוד?")
+
+    events = [msg for msg in ws.sent if msg.get("type") == "video_clip_no_story"]
+    assert len(events) == 1
+    assert events[0]["follow_up"] == {"question": "רוצה לשמוע על הצבא?"}
+    assert "unit_ids" not in events[0]["follow_up"]

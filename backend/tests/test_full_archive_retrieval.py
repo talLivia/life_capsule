@@ -971,7 +971,7 @@ def test_follow_up_kept_when_it_points_at_real_unseen_units():
     out = ar._validate_follow_up(
         {"question": "want to hear more?", "unit_ids": ["u3"]}, by_id, [units[0]], set()
     )
-    assert out == {"question": "want to hear more?"}
+    assert out == {"question": "want to hear more?", "unit_ids": ["u3"]}
 
 
 def test_follow_up_dropped_when_unit_unknown():
@@ -1709,3 +1709,46 @@ async def test_a_failed_read_never_names_a_subject_or_offers_anything(monkeypatc
     assert selection.no_story_text is None
     assert selection.follow_up is None
     assert selection.clarify is None
+
+
+# ── _validate_follow_up exposes the validated unit_ids (2026-08-21) ─────────
+# Server-side only: the WS layer strips them (tested in test_websocket.py).
+
+
+def _fu_unit(uid, seg, index, start):
+    return ar.UtteranceUnit(
+        unit_id=uid, segment_id=seg, index=index,
+        start_sec=start, end_sec=start + 1.0, text=f"טקסט {uid}",
+    )
+
+
+def test_validate_follow_up_exposes_surviving_unit_ids():
+    u1, u2, u3 = _fu_unit("u1", "s", 1, 0.0), _fu_unit("u2", "s", 2, 2.0), _fu_unit("u3", "s", 3, 4.0)
+    by_id = {"u1": u1, "u2": u2, "u3": u3}
+    out = ar._validate_follow_up(
+        {"question": "עוד?", "unit_ids": ["u2", "u3"]},
+        by_id, answer_units=[u1], shown_keys=set(),
+    )
+    assert out == {"question": "עוד?", "unit_ids": ["u2", "u3"]}
+
+
+def test_validate_follow_up_unit_ids_exclude_answer_and_shown():
+    u1, u2, u3 = _fu_unit("u1", "s", 1, 0.0), _fu_unit("u2", "s", 2, 2.0), _fu_unit("u3", "s", 3, 4.0)
+    by_id = {"u1": u1, "u2": u2, "u3": u3}
+    shown = {ar._unit_key("s", 2.0)}  # u2 already played
+    out = ar._validate_follow_up(
+        {"question": "עוד?", "unit_ids": ["u1", "u2", "u3"]},
+        by_id, answer_units=[u1], shown_keys=shown,
+    )
+    # u1 is the answer, u2 is shown — only u3 survives, and the exposed
+    # ids say exactly that.
+    assert out == {"question": "עוד?", "unit_ids": ["u3"]}
+
+
+def test_validate_follow_up_all_covered_still_drops_entirely():
+    u1 = _fu_unit("u1", "s", 1, 0.0)
+    out = ar._validate_follow_up(
+        {"question": "עוד?", "unit_ids": ["u1"]},
+        {"u1": u1}, answer_units=[u1], shown_keys=set(),
+    )
+    assert out is None

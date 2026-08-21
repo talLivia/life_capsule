@@ -1712,7 +1712,11 @@ def _validate_follow_up(
         kept.append(unit)
     if not kept:
         return None
-    return {"question": raw["question"]}
+    # unit_ids are the validated survivors, exposed for SERVER-SIDE use
+    # only (the eval harness's conservation metric, and any future offer
+    # bookkeeping). The WS layer strips them before any client event —
+    # clients get the question text, never raw ids.
+    return {"question": raw["question"], "unit_ids": [u.unit_id for u in kept]}
 
 
 # ── Step 5: orchestrate, reusing the existing assembly/caching/storage ──────

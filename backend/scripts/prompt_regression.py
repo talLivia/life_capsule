@@ -436,6 +436,11 @@ async def _run_once(
         # needs the engine to expose them (a decision that belongs to the
         # gated core-vs-offer step, not this harness).
         "follow_up": bool(selection.follow_up),
+        # unit_ids became observable on 2026-08-21 (exposed server-side for
+        # the conservation metric; stripped at the WS boundary). Compared
+        # only when the baseline carries them â€” a presence-only baseline
+        # stays valid until its next --save.
+        "follow_up_units": sorted((selection.follow_up or {}).get("unit_ids", [])),
     }
 
 
@@ -449,10 +454,12 @@ async def measure(group_id: str, runs: int) -> dict:
             for _ in range(runs)
         ]
         variants = sorted({tuple(r["units"]) for r in rows})
+        fu_variants = sorted({tuple(r["follow_up_units"]) for r in rows})
         results[label] = {
             "variants": [list(v) for v in variants],
             "clarified": sum(1 for r in rows if r["clarify"]),
             "follow_up_offered": sum(1 for r in rows if r["follow_up"]),
+            "follow_up_unit_variants": [list(v) for v in fu_variants],
             "runs": runs,
         }
         stable = "stable" if len(variants) == 1 else f"{len(variants)} variants"
@@ -497,7 +504,11 @@ def compare(before: dict, after: dict) -> int:
         note = f"   ({MARGINAL[label]})" if label in MARGINAL else ""
         b_fu = b.get("follow_up_offered")
         a_fu = a.get("follow_up_offered")
-        fu_same = ("follow_up_offered" not in b) or (b_fu == a_fu)
+        b_fuv = b.get("follow_up_unit_variants")
+        a_fuv = a.get("follow_up_unit_variants")
+        fu_same = ("follow_up_offered" not in b) or (
+            b_fu == a_fu and (b_fuv is None or b_fuv == a_fuv)
+        )
         if b_units == a_units and b["clarified"] == a["clarified"] and fu_same:
             print(f"  {label:24} same")
             continue
@@ -512,8 +523,10 @@ def compare(before: dict, after: dict) -> int:
             print(f"      only AFTER : {only_after}")
         if b["clarified"] != a["clarified"]:
             print(f"      clarify {b['clarified']}/{b['runs']} -> {a['clarified']}/{a['runs']}")
-        if "follow_up_offered" in b and b_fu != a_fu:
+        if "follow_up_offered" in b and not fu_same:
             print(f"      follow-up offered {b_fu}/{b['runs']} -> {a_fu}/{a['runs']}")
+            if b_fuv is not None:
+                print(f"      follow-up units  {b_fuv} -> {a_fuv}")
 
     print("\n" + "=" * 74)
     if not drifted:

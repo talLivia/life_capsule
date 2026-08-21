@@ -986,7 +986,14 @@ class ConnectionManager:
                         # that, but do you want to hear about X?" is a real
                         # answer, and dropping it is how the system came to
                         # say there was nothing more when there was.
-                        "follow_up": result.follow_up,
+                        # QUESTION ONLY: the validated unit_ids on the
+                        # internal dict are server-side bookkeeping, never
+                        # sent to a client.
+                        "follow_up": (
+                            {"question": result.follow_up["question"]}
+                            if result.follow_up
+                            else None
+                        ),
                     },
                 )
                 armed = pending_prompt.pending_from_result(
@@ -1030,7 +1037,13 @@ class ConnectionManager:
                     # text only — the client renders it as a message with
                     # Yes/No; Yes re-asks it through this same handler so the
                     # answer goes through the normal validation/assembly path.
-                    "follow_up": result.follow_up,
+                    # QUESTION ONLY — unit_ids stay server-side (same rule
+                    # as the no-story event above).
+                    "follow_up": (
+                        {"question": result.follow_up["question"]}
+                        if result.follow_up
+                        else None
+                    ),
                 },
             )
             # Voice-answering the offer: same one-shot arming as the avatar
