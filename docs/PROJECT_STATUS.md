@@ -1798,6 +1798,23 @@ test (the WS e2e still mocked the old seam) because a tail pipe
 swallowed pytest's exit code; fixed in the next commit and the gate now
 checks PIPESTATUS.
 
+**Unit-id stability: measured, flip VETOED, 2026-08-22** (branch
+`unit-id-stability`, docs/UNIT_ID_STABILITY_PLAN.md): recording_no
+anchors + the UNIT_ID_SCHEME toggle landed (byte-proven inert by
+default); the §4 A/B answered the copy question decisively — 0
+malformed compound ids in 100 reads — and then vetoed the flip on the
+grounds nobody predicted quantitatively: id labels are semantic context,
+and swapping them re-anchored judgments archive-wide (5 non-marginal
+drifts, family/childhood re-answered stably-differently, both
+discrimination canaries destabilized). Conversation memory verified
+scheme-independent live (51/51 persisted keys resolve under both).
+Revisit bundled with the next model upgrade's mandatory re-baseline,
+where the adoption cost is already sunk. Also discovered en route:
+_group_siblings keys on question_index — a per-category step index with
+cross-category collisions — so unrelated recordings sharing a step
+number render as "takes of this question" (father/army/studies/career);
+pre-existing, its own future gated round.
+
 **Core-vs-offer prompt edit LANDED on the branch, 2026-08-22** (the
 validation plan's gated cycle, docs/VALIDATION_COVERAGE_PLAN.md): one
 subject-neutral bullet mid-FOLLOW-UP-block — a broad answer's

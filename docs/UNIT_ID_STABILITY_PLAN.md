@@ -12,7 +12,35 @@ worse as the eval surface grows.
 **Goal.** A new recording only ever ADDS ids. Nothing existing renumbers.
 Deleting or re-analyzing a recording invalidates only ITS OWN ids.
 
-**Status: PLAN ONLY. Nothing below is implemented.**
+**STATUS 2026-08-22 — MEASURED, FLIP VETOED (steps 1-2 + §4 executed).**
+Steps 1-2 are built and committed (recording_no + high-water assignment;
+the UNIT_ID_SCHEME toggle, byte-proven inert under the default). The §4
+A/B ran in full: 20 cases × 5 runs under `scoped`, key-level comparison.
+
+* **Copy reliability: PERFECT — 0 malformed ids across 100 reads.** The
+  original open question is answered: the model copies compound ids
+  flawlessly. Size cost: +178 chars (~3%), negligible.
+* **But the scheme is NOT judgment-neutral, and that vetoes the flip**:
+  five non-marginal drifts (brothers/ilana/tzvi/army follow-up presence;
+  spouse-pronoun now mostly ANSWERS instead of empty), plus family
+  selecting an entirely different stable answer (both nickname takes,
+  dropping parents+roots — overturning the just-accepted core-vs-offer
+  verdict), childhood-broad stably dropping two recordings, and the two
+  discrimination canaries destabilized (army-narrow 2/4-wobble, school
+  8/0-flicker). The id labels are themselves semantic context; changing
+  them re-anchors marginal judgments archive-wide — the documented
+  instruction-leak mechanism at its largest possible scale (~108
+  rendered atoms + every header).
+* **What stays**: recording_no + assignment (harmless, ready),
+  the inert toggle, the malformed-id instrument, the A/B harness
+  (eval_id_scheme_ab.py), and the history renderer's render-time key→id
+  resolution (an independent win, live-verified: 51/51 persisted keys
+  resolve under both schemes).
+* **Recommended path**: revisit the flip WHEN a model upgrade forces a
+  full re-baseline anyway — at that moment the re-annotation/re-verdict
+  cost is already being paid, so adopting scoped ids is nearly free; the
+  A/B harness re-measures the new model's judgment shift in one run.
+  Until then the re-baseline tax on new recordings remains, unchanged.
 
 ## 1. The new scheme
 
