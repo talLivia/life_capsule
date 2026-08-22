@@ -408,8 +408,17 @@ async def ingest_segment(
     # No lookup of an "existing" segment: several are legitimate now. The old
     # code used scalar_one_or_none() here, which RAISES on a second row — so
     # this had to change in the same commit that allows siblings, not after.
+    # Stable recording number (UNIT_ID_STABILITY_PLAN §1): the producer's
+    # high-water counter, bumped in the SAME transaction as the row — row
+    # lock via with_for_update makes concurrent ingests serialize, and the
+    # counter never decrements, so numbers are never reused even after the
+    # newest recording is deleted.
+    producer_row = await db.get(User, session.user_id, with_for_update=True)
+    producer_row.recording_seq = (producer_row.recording_seq or 0) + 1
+
     segment = RawSegment(
         interview_session_id=session.id,
+        recording_no=producer_row.recording_seq,
         question_asked=payload.question_asked,
         question_index=payload.question_index,
         question_id=question_id,

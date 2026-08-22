@@ -35,6 +35,13 @@ class User(Base):
     full_name = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
     is_superuser = Column(Boolean, default=False)
+    # High-water counter for recording_no assignment (UNIT_ID_STABILITY_PLAN
+    # §1): incremented atomically at every segment ingestion, NEVER
+    # decremented — so recording numbers are strictly monotonic and are not
+    # reused even if the newest recording is deleted and re-recorded (a
+    # naive MAX(recording_no)+1 would reuse in exactly that case, silently
+    # re-pointing any artifact that referenced the deleted recording's ids).
+    recording_seq = Column(Integer, nullable=False, default=0, server_default="0")
     # producer: owns a story archive, records segments via /record.
     # family: invited viewer, /talk-only, scoped to a producer's archive via
     # producer_id below (Prompt 9's invite/redeem flow, family_invites
@@ -312,6 +319,15 @@ class RawSegment(Base):
     __tablename__ = "raw_segments"
 
     id = Column(String, primary_key=True, default=generate_uuid)
+    # Stable per-producer recording number (UNIT_ID_STABILITY_PLAN §1):
+    # assigned once at ingestion from users.recording_seq and NEVER
+    # renumbered. The anchor for the scoped unit-id scheme
+    # (r<recording_no>u<local>). Gaps after deletion are correct — they are
+    # how deletions stay local. Nullable at the schema level only for
+    # test-fixture convenience; ingestion always assigns it, migration 0028
+    # backfills every existing row, and the scoped renderer refuses a ready
+    # segment without one rather than inventing an anchor.
+    recording_no = Column(Integer, nullable=True)
     interview_session_id = Column(
         String,
         ForeignKey("interview_sessions.id", ondelete="CASCADE"),
