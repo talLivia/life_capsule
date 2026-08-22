@@ -74,6 +74,10 @@ A/B ran in full: 20 cases × 5 runs under `scoped`, key-level comparison.
   envelope covers most of what the format experiments "measured" — the
   A/B fail verdicts are CONFOUNDED and must be read as NOT PROVEN
   (in either direction), not as "format changes cause drift".
+  ⚠️ ITSELF SUPERSEDED by the multi-window replication in the next
+  bullet, which resolved the confound: part of the FAIL lists was
+  indeed day-scale variance, but three format effects replicated
+  across cache epochs and the veto stands as MEASURED.
   Surviving hard results: 0 malformed compound ids in 100 reads (not
   variance-dependent), the byte-identity proofs, and the stable core
   band (narrow selections, empties, disambiguation) which never moved

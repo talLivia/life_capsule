@@ -52,6 +52,27 @@ impossible**, which no prompt wording could guarantee back when the model
 emitted raw `{start_sec, end_sec}`. Units are numbered across the *whole*
 archive so one answer can draw on several recordings.
 
+**Unit ids renumber on every ingest, and that is a measured decision, not
+an oversight** (2026-08-22/23, docs/UNIT_ID_STABILITY_PLAN.md). A stable
+scheme exists fully built and dormant: `raw_segments.recording_no` +
+`users.recording_seq` (migration 0028, assigned at ingest, never reused)
+and a `UNIT_ID_SCHEME` toggle whose `global` default renders
+byte-identically to before the column existed — `recording_no` reaches
+nothing model-visible under it. The flip to `scoped` (`r<n>u<k>`) is
+VETOED on the current model because rendered id bytes are semantic
+context: in cross-epoch replication, scoped ids regressed exactly the
+discrimination this design exists for (army-narrow absorbing broader
+units 4/10 vs 0/15 global; childhood-broad narrowing 10/10 vs 0/15;
+spouse-pronoun re-serving already-shown footage 8/10 vs 0/15 — every
+deviation recording-boundary-shaped), and even bare renumbering with
+unchanged format suppressed a follow-up offer 25/25→1/10. Do not flip
+the toggle, and do not re-run the decision from a single-block panel —
+marginal judgments vary at day-scale, so only fresh-epoch replication
+(blocks on separate days/cache epochs, global control alongside) can
+attribute drift. Revisit only at a model upgrade's mandatory
+re-baseline. Anything persisted across turns keys on
+`segment_id:start_sec` (`_unit_key`), never on unit ids.
+
 Two things follow from this design and should not be "fixed":
 
 - **Breadth falls out of the question.** A narrow question selects one unit, a

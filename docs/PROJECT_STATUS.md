@@ -1798,7 +1798,29 @@ test (the WS e2e still mocked the old seam) because a tail pipe
 swallowed pytest's exit code; fixed in the next commit and the gate now
 checks PIPESTATUS.
 
-**⚠️ A/A CONTROL FINDING, 2026-08-22 (supersedes the interpretation
+**✅ FINAL VERDICT, 2026-08-23 (supersedes the A/A reframe below —
+this is the settled state): the flip veto is MEASURED, not
+confounded.** A targeted fresh-epoch replication (4 suspect cases ×
+5 runs per arm, same-day global control) resolved the A/A confound in
+both directions: the brothers/ilana/tzvi/army follow-up flickers and
+family's composition swings ARE day-scale variance/ambiguity
+(exonerated as evidence against scoped), but three format-caused
+regressions replicated across independent cache epochs —
+spouse-pronoun re-selecting already-shown wife units (8/10 scoped vs
+0/15 global), childhood-broad narrowing (10/10 vs 0/15), army-narrow
+absorbing broader material (4/10 vs 0/15) — and the displacement
+arm's career-offer suppression replicated too (1/10 displaced vs
+25/25 intact). Every scoped deviation was recording-boundary-shaped
+(whole recordings added/dropped/re-served) — mechanism hypothesis:
+the r-prefix moves selection granularity from units to recordings.
+Rendered id bytes are semantic context; the flip stays VETOED on this
+model; recording_no + UNIT_ID_SCHEME remain dormant infrastructure;
+revisit at the next model upgrade's mandatory re-baseline using the
+fresh-epoch replication protocol, not a single-block panel. Full
+record in UNIT_ID_STABILITY_PLAN's status block.
+
+**⚠️ A/A CONTROL FINDING, 2026-08-22 (superseded above; kept as the
+methodology record — supersedes the interpretation
 below and of the core-vs-offer conservation): the unchanged production
 prompt drifted 11/20 against its own day-old baseline** — same
 non-marginal case-set both format A/Bs flagged, family composition
