@@ -1777,6 +1777,12 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
 
         invalidate_archive_cache(state["group_id"])
         await warm_archive_cache(state["group_id"])
+        # Phase B billing hygiene (gemini_cache): the version fingerprint
+        # just moved, orphaning any explicit Gemini cache — deletion only
+        # stops its storage billing early; correctness never needs it.
+        from app.services import gemini_cache
+
+        await gemini_cache.drop_cache(state["group_id"])
     except Exception as e:  # never fail ingestion over a cache refresh
         logger.warning(f"Could not refresh archive cache for {state['group_id']}: {e}")
 

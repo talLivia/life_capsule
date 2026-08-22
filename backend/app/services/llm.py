@@ -260,6 +260,7 @@ class LLMService:
         temperature: Optional[float] = None,
         model: Optional[str] = None,
         thinking_budget: Optional[int] = None,
+        cached_content: Optional[str] = None,
     ) -> str:
         """`temperature` overrides settings.LLM_TEMPERATURE for this call only
         — e.g. Prompt 6's topic classifier wants temperature=0 (deterministic)
@@ -277,7 +278,15 @@ class LLMService:
         budget=128 the archive-read call actually spent 656-806 thinking
         tokens, and budgets of 128 and 512 produced identical thinking. It is
         therefore a LATENCY lever only; it does NOT make output reproducible
-        (see full_archive_retrieval's ARCHIVE_READ_THINKING_BUDGET note)."""
+        (see full_archive_retrieval's ARCHIVE_READ_THINKING_BUDGET note).
+
+        `cached_content` (Gemini only, GEMINI_CONTEXT_CACHING_PLAN Phase B):
+        the resource name of an explicit cachedContents entry holding this
+        call's system prompt. When set, the request references the cache
+        INSTEAD of sending system_prompt inline — the API rejects both at
+        once. Callers still pass system_prompt so the fail-soft wrapper in
+        gemini_cache can retry uncached on a stale handle; a non-Gemini
+        provider ignores the handle entirely (there is nothing to reference)."""
         if self.provider == "anthropic":
             return await self._generate_anthropic(
                 messages, system_prompt, thinking, temperature, model
@@ -286,7 +295,8 @@ class LLMService:
             return await self._generate_openai(messages, system_prompt, temperature, model)
         if self.provider == "gemini":
             return await self._generate_gemini(
-                messages, system_prompt, temperature, model, thinking_budget
+                messages, system_prompt, temperature, model, thinking_budget,
+                cached_content,
             )
         raise LLMError(f"Unsupported LLM provider: {self.provider}")
 
@@ -380,6 +390,7 @@ class LLMService:
         temperature: Optional[float] = None,
         model: Optional[str] = None,
         thinking_budget: Optional[int] = None,
+        cached_content: Optional[str] = None,
     ) -> str:
         if not system_prompt:
             raise LLMError("system_prompt is required — see module docstring")
@@ -387,9 +398,15 @@ class LLMService:
         config_kwargs: dict = dict(
             temperature=temperature if temperature is not None else self.temperature,
             max_output_tokens=self.max_tokens,
-            system_instruction=system_prompt,
             seed=_DETERMINISTIC_SEED,  # reproducibility — see constant's comment
         )
+        if cached_content:
+            # The cache already holds the system instruction; sending both is
+            # an API error. The caller keeps system_prompt for the uncached
+            # fallback path (gemini_cache.read_with_cache).
+            config_kwargs["cached_content"] = cached_content
+        else:
+            config_kwargs["system_instruction"] = system_prompt
         if thinking_budget is not None:
             # Soft cap, latency lever only — see generate_response's docstring.
             config_kwargs["thinking_config"] = genai_types.ThinkingConfig(

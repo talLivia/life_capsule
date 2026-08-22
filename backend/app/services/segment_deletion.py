@@ -181,5 +181,12 @@ async def _refresh_caches(group_id: str, *, warm: bool) -> None:
         invalidate_archive_cache(group_id)
         if warm:
             await warm_archive_cache(group_id)
+        # Phase B billing hygiene: a deleted recording moved the version
+        # fingerprint, orphaning any explicit Gemini cache; drop it so the
+        # deleted words stop being resident at the provider (privacy) and
+        # stop billing. Correctness never depends on this succeeding.
+        from app.services import gemini_cache
+
+        await gemini_cache.drop_cache(group_id)
     except Exception as e:
         logger.warning(f"Could not refresh archive cache for {group_id}: {e}")

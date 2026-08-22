@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     # moves only where the shown FACTS appear. Default stays inline
     # until the plan's §6 gate passes.
     SHOWN_STATE_PLACEMENT: str = "inline"
+    # Phase B (same plan): explicit per-producer Gemini cachedContents.
+    # off = every gemini_cache function is an inert no-op (the skeleton
+    # exists, nothing is created or billed). Flip to "on" only AFTER
+    # SHOWN_STATE_PLACEMENT=message has cleared its gate — an explicit
+    # cache over the marks-bearing inline transcript would serve stale
+    # shown-state, an ungated prompt change.
+    GEMINI_CONTEXT_CACHE: str = "off"
 
     # AWS (retained for the base project's Terraform/EC2 GPU deploy path —
     # NOT used for object storage in this project; see R2_* below)
