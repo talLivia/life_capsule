@@ -36,6 +36,29 @@ A/B ran in full: 20 cases × 5 runs under `scoped`, key-level comparison.
   (eval_id_scheme_ab.py), and the history renderer's render-time key→id
   resolution (an independent win, live-verified: 51/51 persisted keys
   resolve under both schemes).
+* **DISPLACEMENT A/B (2026-08-22, the decisive experiment)**: the third
+  option — bare u<int> ids appended at the high-water mark, format,
+  order, headers and rule text all UNCHANGED, nothing altered but
+  thirteen id strings (career u23-35 rendered as u109-121 in place) —
+  ALSO fails: family destabilized outright (one 30-unit and four 5-unit
+  runs), school wobbling 7/0 with a new variant shape, career's own
+  offer presence collapsing 5/5→1/5, and three non-marginal follow-up
+  drifts (brothers/tzvi/army). Narrow selections, empties, and the
+  disambiguation cases all held. CONCLUSION, now measured from three
+  directions: ANY change to the rendered id bytes — format, headers, or
+  mere numeric continuity — re-anchors marginal judgments. No
+  rendering-visible id-stability scheme is judgment-safe. The deeper
+  reframe this forces: this week's own baselines show that ADDING
+  CONTENT alone moves marginal judgments too (the family selection
+  changed when career/relationships were recorded, before any scheme
+  work) — so re-measurement after an archive change is epistemically
+  necessary regardless of ids, and id stability could only ever have
+  removed the mechanical renumbering chore, not the re-measurement.
+  The rational investment is therefore re-measurement CHEAPNESS: a
+  baseline auto-remap tool (old id → segment:start key → new id for all
+  surviving units, new-content cases flagged for re-measurement), which
+  the key infrastructure already enables and which mechanizes the one
+  genuinely expensive part (fixture re-derivation) permanently.
 * **Recommended path**: revisit the flip WHEN a model upgrade forces a
   full re-baseline anyway — at that moment the re-annotation/re-verdict
   cost is already being paid, so adopting scoped ids is nearly free; the
