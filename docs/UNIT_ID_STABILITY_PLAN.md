@@ -90,11 +90,45 @@ A/B ran in full: 20 cases × 5 runs under `scoped`, key-level comparison.
   product verdicts too: the core-vs-offer conservation results were
   validated within one draw and the family contract already failed
   under today's draw.
-* **Recommended path**: revisit the flip WHEN a model upgrade forces a
-  full re-baseline anyway — at that moment the re-annotation/re-verdict
-  cost is already being paid, so adopting scoped ids is nearly free; the
-  A/B harness re-measures the new model's judgment shift in one run.
-  Until then the re-baseline tax on new recordings remains, unchanged.
+* **✅ TARGETED MULTI-WINDOW REPLICATION (2026-08-22, run after the A/A
+  reframe) — the confound is RESOLVED, in both directions.** The
+  producer's ambiguity-partition question (is the drift semantic fault
+  lines + offer flicker, not "system-wide"?) held up for the A/A: only
+  family/school/army±1/corners moved on SELECTION there, six other
+  drifts were pure offer-presence flicker, and 9 cases held everything.
+  That partition exposed exactly three scoped-arm signals the A/A could
+  NOT explain, so they were replicated in fresh blocks (new cache
+  epoch), 4 cases × 5 runs per arm, same-day global control alongside:
+  - **spouse-pronoun**: global 0 units in 15/15 runs across three
+    blocks; scoped re-selects the already-shown wife units u39-44 in
+    8/10 runs across two blocks. REPLICATED regression — shown-state /
+    pronoun handling breaks under scoped.
+  - **childhood-broad**: global 21 units 15/15; scoped 15-19 units in
+    10/10 (always dropping ~u1/u104-108). REPLICATED — scoped
+    systematically narrows a broad composition.
+  - **army-narrow**: global 2 units 15/15; scoped gains the broader
+    u13-14 in 4/10. REPLICATED — the narrow-vs-broad discrimination
+    (the design's core mechanism) degrades.
+  - **displacement, career offer**: intact-id arms offered the cooking
+    digression 25/25 (baseline, scoped, A/A, both fresh blocks);
+    displaced-id blocks 1/10. REPLICATED — mere renumbering of a
+    recording's own ids suppresses its follow-up offer.
+  - career-broad sentinel: 7 units 5/5 in every arm, every block.
+  So: the original FAIL lists were indeed ~half artifact (the
+  brothers/ilana/tzvi/army offer flickers are day-scale variance, and
+  family's composition moves under pure ambiguity in every arm), but
+  the surviving format effects are real, replicated, and sit precisely
+  on discrimination-sensitive behavior. Rendered id bytes are semantic
+  context to the model; both candidate schemes (scoped format, bare
+  high-water renumbering) measurably shift judgment.
+* **Recommended path (updated)**: do NOT flip on current model —
+  scoped is now measured (not just suspected) to regress
+  narrow-vs-broad discrimination and shown-state handling. Revisit at
+  the next model-upgrade re-baseline, gating on this exact 3-case
+  replication protocol (fresh-epoch blocks, both arms) rather than a
+  single-block panel. The re-baseline tax on new recordings is instead
+  addressed off-surface via the key-based baseline auto-remap tool
+  (proposed above), which needs no prompt-surface change at all.
 
 ## 1. The new scheme
 
