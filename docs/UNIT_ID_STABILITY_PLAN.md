@@ -1,0 +1,143 @@
+# Stable unit ids — plan (2026-08-22, branch `unit-id-stability`)
+
+**Problem.** Unit ids are one global monotonic sequence over the whole
+archive in its load order — and that order is `(question_index,
+created_at)`, so a new recording inserts MID-archive and renumbers every
+unit after it (measured 2026-08-20: the career recording shifted
+everything from the old u23 by +13). Every recording therefore voids
+every unit-id artifact — baselines, fixtures, annotations — and forces a
+full re-baseline cycle. Adding content is expensive forever, and gets
+worse as the eval surface grows.
+
+**Goal.** A new recording only ever ADDS ids. Nothing existing renumbers.
+Deleting or re-analyzing a recording invalidates only ITS OWN ids.
+
+**Status: PLAN ONLY. Nothing below is implemented.**
+
+## 1. The new scheme
+
+`r<recording_no>u<local_index>` — e.g. `r7u3` = recording 7's third unit.
+
+* **`recording_no` is a persisted, ingestion-assigned integer** — a new
+  column on `raw_segments`, set to `max+1` at ingestion, never reused,
+  never renumbered. This is the load-bearing choice: anchoring the prefix
+  to the recording's *position in archive order* would just recreate
+  today's instability one level up (a mid-order insertion would shift
+  every later recording's prefix). Anchored to the ROW, the prefix is
+  append-only by construction. Deletion leaves a gap (r4 missing) — gaps
+  are correct, not a problem: they are how deletions stay local.
+* **`local_index` is 1..k within the recording**, in speech order. Stable
+  because unit boundaries are computed from the recording's own word
+  timestamps and its own 90th-percentile pause threshold — nothing
+  outside the recording can move them. The one thing that CAN move them
+  is re-analyzing that recording (re-transcription/re-ingestion), which
+  correctly invalidates only `r<n>u*` for that recording.
+* Migration backfill: existing 18 recordings get `recording_no` 1..18 in
+  the current archive order (so v18's mental model carries over); all
+  future assignments are by ingestion time.
+
+## 2. Every current dependent of global ids, and what changes
+
+| Site | Today | Change |
+|---|---|---|
+| `_build_units` / `_split_segment_into_units` (full_archive_retrieval.py:495, 511) | `unit_id=f"u{index}"`, one `next_index` across the archive | id becomes `f"r{seg.recording_no}u{local}"`; keep a global `index` field ONLY as an in-memory ordering key (computed per load, never rendered, never persisted) |
+| Prompt: id-form rule (line ~245 "unit ids of the form u<number>") and the JSON contract example ("u3", "u4", "u9") | bare-number form is IN the prompt text | rule + examples change to the new form — **this makes the whole redesign a prompt edit**, with everything §4 implies |
+| Bare-int tolerance in the id normalizer (line ~1241: a lone `7` becomes `"u7"`) | rescues a model that outputs numbers | DELETE the rescue — a bare int is ambiguous under the new scheme (r?u7); tolerate instead `rXuY` with stray whitespace/case. Malformed-rate is measured in §4 |
+| `_group_selected_runs` contiguity (":1439 same segment AND next global index") | global index adjacency | same-segment check already exists; adjacency becomes local-index +1. Behavior-identical (runs never span segments); the oracle test battery re-proves it mechanically |
+| `_recording_ordinals` (:586) + `RECORDING N` headers + entity-map labels | positional ordinals recomputed per load | print `recording_no` instead — headers may show gaps after deletions (RECORDING 3, 5, 6…), which is honest; the prompt already forbids the model outputting recording numbers |
+| History block (`_format_history_block`) quoting `unit_id` from PERSISTED message metadata | stale after ANY renumbering (true today too) | resolve the rendered id from the persisted `key` (`segment_id:start_sec`) at render time instead of trusting the stored `unit_id` — makes history rendering immune to this migration AND to any future re-analysis |
+| Persisted `shown_units` metadata (`{key, unit_id, text}`) | `key` is the identity; `unit_id` is informational | **no DB rewrite needed**: all matching/marking keys off `segment_id:start_sec`, which this plan does not touch — conversation history and already-shown memory survive verbatim (confirmed: `_load_shown_units` builds marks from keys; `_unit_key` unchanged). New writes carry new-form ids naturally |
+| Eval artifacts: `prompt_regression_baseline.json`, uncle/two-hop fixtures, `core_offer_annotations.py` | v18 global ids | one-time mechanical rewrite via the key-level mapping (old id → key → new id), by script; the fixtures' semantic guards re-verify the result, as they did on 08-20 |
+| `eval_prompt_reply` panel, presenter videos, pending-prompt, frontend | no unit ids anywhere | untouched (verified by grep) |
+
+Out of scope, unchanged: question ids, segment uuids, `_unit_key`,
+clip assembly (times, not ids), everything client-side.
+
+## 3. Migration path (v18 → stable ids), ordered
+
+1. Alembic migration: add `raw_segments.recording_no` (nullable →
+   backfilled 1..18 in current archive order → NOT NULL + unique);
+   ingestion assigns `max+1` in the same transaction as the row.
+2. Engine changes per §2, behind a temporary env toggle
+   `UNIT_ID_SCHEME=global|scoped` (default `global`) so both renderers
+   coexist for the measurement phase — the toggle selects id
+   construction + prompt id-form text + normalizer, nothing else.
+3. §4 measurement on `scoped`. Only if it passes:
+4. Flip the default, rewrite eval artifacts via the mapping script,
+   `--save` the new baseline (5 runs) + stability compare, update the
+   worksheet/annotation headers, then DELETE the toggle and the global
+   path in the same series (no permanent dual scheme).
+5. Docs: CLAUDE.md's unit-numbering paragraph, VALIDATION plan §4's
+   constraint text (recordings stop voiding baselines; re-analysis of a
+   recording voids only its own ids), PROJECT_STATUS landing record.
+6. Freeze rule: no new recordings between step 3's measurement and step
+   4's re-baseline (one last time that this rule ever matters).
+
+Rollback at any point before step 4 completes: flip the toggle back;
+nothing persisted depends on the new scheme except the inert
+`recording_no` column.
+
+## 4. The gated validation cycle (in-plan, not optional)
+
+The open empirical question flagged when this was first proposed: does
+the model copy compound ids (`r12u7`) as reliably as bare ones (`u84`)?
+Bare ids were chosen originally FOR copy reliability. This is measured,
+never assumed:
+
+* **Key-level equivalence is the metric.** Selections are compared as
+  `segment_id:start_sec` KEY SETS, not id strings — scheme-independent
+  by construction. The acceptance test: the full 20-case panel at 5
+  runs under `scoped`, mapped to keys, must equal the current v18
+  baseline mapped to keys (same tolerance discipline: MARGINAL cases
+  judged over more runs; the exhausted case's two pinned variants
+  compared as variant sets).
+* **Malformed-output rate**, new counter: model outputs that fail id
+  parsing (wrong prefix, bare numbers now that the rescue is gone,
+  invented recording numbers). Baseline expectation: ~0 today; anything
+  persistent above 0 under `scoped` is a finding that blocks the flip.
+* **Conservation re-checked** against the annotations (key-mapped), and
+  the **classifier panel re-run** (should be untouched — different
+  model, no unit ids — but "should" is what panels exist to check).
+* **Token/latency delta** recorded honestly: compound ids cost more
+  tokens per unit line and per output id (~4-6 chars extra × ~108
+  units); expected noise-level against a ~7.6s turn, but recorded.
+* Panel runs use `--labels` for the deadline-prone giants if the 504
+  storms recur (the mechanism added 2026-08-21).
+
+Anything drifting at the KEY level that is not known-marginal vetoes the
+flip — same standard as any prompt edit, because §2 makes this literally
+a prompt edit.
+
+## 5. Honest costs and risks
+
+* **It IS a full gated cycle** — the prompt's id-form rule changes, so
+  no shortcut exists. The payoff is that it is the LAST forced
+  archive-wide re-baseline: after the flip, recordings stop invalidating
+  anything.
+* **Copy-reliability is genuinely open.** If the model degrades on
+  compound ids (drops, truncations, invented prefixes), options in
+  order: (a) shorter compound form (`7.3`), (b) letter prefixes
+  (`g7u3`), (c) abandon — the plan explicitly reserves abandonment; the
+  toggle makes it cheap.
+* **History rendered from OLD conversations**: solved structurally by
+  the render-time key→id resolution (§2), which is worth doing even if
+  the scheme change is abandoned — it fixes today's staleness too.
+* **Deletion semantics improve but need one test**: deleting a recording
+  today renumbers everything after it (same class of pain); under the
+  new scheme it only kills its own ids. A panel-adjacent test should pin
+  that (delete-a-recording fixture on a scratch archive, not the live
+  one).
+* **The eval-artifact rewrite is mechanical but must be guarded**: the
+  mapping script goes old-id → key → new-id and refuses on any key
+  mismatch, and the fixtures' semantic guards (uncle coverage,
+  family-answer membership) re-verify the rewrite exactly as they
+  verified the 08-20 re-derivation.
+
+## 6. Execution estimate
+
+Engine + toggle + normalizer + ordinals: one careful session. Migration
++ backfill: small. Mapping script + artifact rewrite: small. Measurement:
+two panel cycles (one `scoped` A/B, one post-flip re-baseline) — the
+dominant wall-clock cost, subject to API weather. Total: roughly the
+size of tonight's core-vs-offer cycle, executed once, to never pay the
+re-baseline tax again.
