@@ -240,9 +240,9 @@ suggestion is perfectly fine - never invent one to seem helpful.
 {disambiguation_block}
 Rules:
 - Output ONLY a JSON object, nothing else, exactly: \
-{{"unit_ids": ["u3", "u4", ...], "follow_up": {{"question": "...", \
-"unit_ids": ["u9"]}}}}  (or {{"unit_ids": [...], "follow_up": null}})
-- Use ONLY unit ids of the form u<number> that literally appear below, \
+{{"unit_ids": ["{id_ex1}", "{id_ex2}", ...], "follow_up": {{"question": "...", \
+"unit_ids": ["{id_ex3}"]}}}}  (or {{"unit_ids": [...], "follow_up": null}})
+- Use ONLY unit ids of the form {id_form} that literally appear below, \
 listed in the order they should be played and stitched together. NEVER \
 output a recording number, an interview question, a time, or any other \
 kind of id - unit ids only.
@@ -401,6 +401,48 @@ def _group_siblings(archive: List[ArchiveSegment]) -> List[ArchiveSegment]:
 _GAP_PERCENTILE = 90.0
 
 
+def _id_atoms() -> Dict[str, str]:
+    """The id-form fragments formatted into the reader prompt
+    (UNIT_ID_STABILITY_PLAN §2). Under the default global scheme these
+    render the EXACT bytes the prompt has always contained — pinned by
+    test_the_prompt_is_byte_identical_when_no_two_people_share_a_name."""
+    from app.config import settings
+
+    if settings.UNIT_ID_SCHEME == "scoped":
+        return dict(
+            id_ex1="r2u3", id_ex2="r2u4", id_ex3="r5u1",
+            id_form="r<recording>u<number> (for example r7u3)",
+        )
+    return dict(id_ex1="u3", id_ex2="u4", id_ex3="u9", id_form="u<number>")
+
+
+def _unit_id_for(item: "ArchiveSegment", global_index: int, local_index: int) -> str:
+    """The rendered unit id, per settings.UNIT_ID_SCHEME
+    (UNIT_ID_STABILITY_PLAN §1-2):
+
+      global (today's default): u<global_index> — one monotonic sequence
+        across the archive in load order; any new recording renumbers
+        everything after its insertion point.
+      scoped: r<recording_no>u<local_index> — anchored to the recording's
+        ingestion-assigned number, so ids never renumber. Refuses a ready
+        segment without recording_no rather than inventing an anchor.
+
+    `global_index` stays on every unit REGARDLESS of scheme, as the
+    in-memory ordering/contiguity key (_group_selected_runs) — it is never
+    persisted and never rendered under `scoped`."""
+    from app.config import settings
+
+    if settings.UNIT_ID_SCHEME == "scoped":
+        rec_no = item.segment.recording_no
+        if rec_no is None:
+            raise RuntimeError(
+                f"segment {item.segment.id} has no recording_no — migration "
+                "0028 assigns it; a scoped unit id cannot be invented"
+            )
+        return f"r{rec_no}u{local_index}"
+    return f"u{global_index}"
+
+
 @dataclass
 class UtteranceUnit:
     """One uninterrupted stretch of speech — the atom the model selects.
@@ -485,14 +527,15 @@ def _split_segment_into_units(
     threshold = _segment_gap_threshold(item.chunks)
     units: List[UtteranceUnit] = []
     index = next_index
+    local = 1
 
     def _emit(words: List[Tuple[str, float, float]]) -> None:
-        nonlocal index
+        nonlocal index, local
         if not words:
             return
         units.append(
             UtteranceUnit(
-                unit_id=f"u{index}",
+                unit_id=_unit_id_for(item, index, local),
                 segment_id=item.segment.id,
                 index=index,
                 start_sec=words[0][1],
@@ -501,6 +544,7 @@ def _split_segment_into_units(
             )
         )
         index += 1
+        local += 1
 
     for chunk in item.chunks:
         words = _chunk_words(chunk)
@@ -508,7 +552,7 @@ def _split_segment_into_units(
             if chunk.end_sec > chunk.start_sec and (chunk.text or "").strip():
                 units.append(
                     UtteranceUnit(
-                        unit_id=f"u{index}",
+                        unit_id=_unit_id_for(item, index, local),
                         segment_id=item.segment.id,
                         index=index,
                         start_sec=chunk.start_sec,
@@ -517,6 +561,7 @@ def _split_segment_into_units(
                     )
                 )
                 index += 1
+                local += 1
             continue
 
         current: List[Tuple[str, float, float]] = [words[0]]
@@ -600,6 +645,13 @@ def _recording_ordinals(
     """
     by_segment = _units_by_segment(units)
     printed = [item for item in archive if by_segment.get(item.segment.id)]
+    from app.config import settings
+
+    if settings.UNIT_ID_SCHEME == "scoped":
+        # Stable recording numbers, gaps allowed (a deleted recording's
+        # number is simply absent — honest, and the prompt already forbids
+        # the model outputting recording numbers as ids).
+        return {item.segment.id: item.segment.recording_no for item in printed}
     return {item.segment.id: i for i, item in enumerate(printed, start=1)}
 
 
@@ -836,7 +888,9 @@ async def _load_shown_units(session_id: str) -> Tuple[set, List[List[dict]]]:
 
 
 def _format_history_block(
-    turns: List[Dict[str, str]], per_turn_units: List[List[dict]]
+    turns: List[Dict[str, str]],
+    per_turn_units: List[List[dict]],
+    key_to_id: Optional[Dict[str, str]] = None,
 ) -> str:
     """Render the recent conversation so a follow-up has a real antecedent.
 
@@ -864,8 +918,20 @@ def _format_history_block(
         units = aligned[seen_assistant] if seen_assistant < len(aligned) else []
         seen_assistant += 1
         if units:
+            # Resolve each unit's CURRENT id from its stable key
+            # (segment_id:start_sec) rather than trusting the id persisted
+            # at play time - persisted ids go stale on any renumbering
+            # (they already had, before the scoped scheme existed). The
+            # stored id is only a fallback for pre-key rows.
+            def _rid(u: dict) -> str:
+                if key_to_id:
+                    resolved = key_to_id.get(u.get("key", ""))
+                    if resolved:
+                        return resolved
+                return u.get("unit_id", "?")
+
             rendered = "; ".join(
-                f"{u.get('unit_id', '?')}: \"{u.get('text', '')}\"" for u in units
+                f"{_rid(u)}: \"{u.get('text', '')}\"" for u in units
             )
             lines.append(f"assistant: (played {rendered})")
         elif content and not content.startswith(("http://", "https://")):
@@ -1204,7 +1270,7 @@ def _resolve_about(
     return None
 
 
-def _parse_unit_selection(text: str) -> List[str]:
+def _parse_unit_selection(text: str) -> Tuple[List[str], int]:
     """Extract the selected unit ids, preserving the model's stitch order.
 
     Accepts the documented {"unit_ids": [...]} object and also a bare JSON
@@ -1230,16 +1296,35 @@ def _parse_unit_selection(text: str) -> List[str]:
                 if isinstance(data, list):
                     candidates = data
             except json.JSONDecodeError:
-                return []
+                return [], 0
 
+    from app.config import settings
+
+    scoped = settings.UNIT_ID_SCHEME == "scoped"
     out: List[str] = []
+    malformed = 0
     for item in candidates:
         if isinstance(item, str) and item.strip():
-            out.append(item.strip())
+            token = item.strip()
+            if scoped and not re.fullmatch(r"r\d+u\d+", token):
+                # Wrong shape under the scoped scheme (bare number, bare
+                # u<number>, invented prefix). Counted for the
+                # copy-reliability measurement (UNIT_ID_STABILITY_PLAN §4)
+                # and dropped — a malformed id can never be resolved.
+                malformed += 1
+                logger.info(f"malformed unit id from model: {token!r}")
+                continue
+            out.append(token)
         elif isinstance(item, int):
+            if scoped:
+                # A bare number is AMBIGUOUS under scoped ids (r?u<n>) —
+                # the global scheme's rescue would have to guess.
+                malformed += 1
+                logger.info(f"malformed unit id from model: bare int {item}")
+                continue
             # Tolerate a bare number where an id was asked for.
             out.append(f"u{item}")
-    return out
+    return out, malformed
 
 
 @dataclass
@@ -1264,6 +1349,9 @@ class ArchiveRead:
     clarify: Optional[dict] = None
     about: Optional[str] = None
     failed: bool = False
+    # Model outputs that failed id-shape parsing (UNIT_ID_STABILITY_PLAN
+    # §4's copy-reliability instrument). Server-side measurement only.
+    malformed_ids: int = 0
 
 
 async def _read_archive_for_ranges(
@@ -1290,10 +1378,14 @@ async def _read_archive_for_ranges(
     # 8 units to 0 and "what did אמנון do in the army" from 4 to 0, both 3/3,
     # returning empty selections rather than clarifications. Neither question
     # was even about an ambiguous name in the first place.
+    # Id-form atoms per scheme (UNIT_ID_STABILITY_PLAN §2): under the
+    # default global scheme these render the EXACT bytes the prompt has
+    # always contained; scoped swaps only the atoms, nothing else.
     system_prompt = _ARCHIVE_READER_SYSTEM_PROMPT_TEMPLATE.format(
         transcript_block=transcript_block,
         entity_map_block=entity_map_block,
         disambiguation_block=_DISAMBIGUATION_BLOCK if disambiguation else "",
+        **_id_atoms(),
     )
 
     user_parts: List[str] = []
@@ -1326,7 +1418,8 @@ async def _read_archive_for_ranges(
     # an answerable question into a question back.
     clarify = _parse_clarify(raw) if disambiguation else None
     return ArchiveRead(
-        unit_ids=_parse_unit_selection(raw),
+        unit_ids=(parsed := _parse_unit_selection(raw))[0],
+        malformed_ids=parsed[1],
         follow_up=_parse_follow_up(raw),
         clarify=clarify,
         about=_parse_about(raw),
@@ -1580,7 +1673,15 @@ async def select_units(
     transcript_block = _format_annotated_transcript(archive, units, shown_keys, name_tags)
     # Same ordinals the transcript block just printed — see _recording_ordinals.
     entity_map_block = _format_entity_map(entity_map, _recording_ordinals(archive, units))
-    history_block = _format_history_block(turns, per_turn_units) if turns else ""
+    history_block = (
+        _format_history_block(
+            turns,
+            per_turn_units,
+            {_unit_key(u.segment_id, u.start_sec): u.unit_id for u in units},
+        )
+        if turns
+        else ""
+    )
 
     read = await _read_archive_for_ranges(
         question,

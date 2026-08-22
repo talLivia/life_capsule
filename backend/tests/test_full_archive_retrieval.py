@@ -318,27 +318,27 @@ def test_entity_map_ordinals_match_the_headings_the_transcript_prints():
 
 
 def test_parse_unit_selection_object_form():
-    assert ar._parse_unit_selection('{"unit_ids": ["u3", "u4"]}') == ["u3", "u4"]
+    assert ar._parse_unit_selection('{"unit_ids": ["u3", "u4"]}') == (["u3", "u4"], 0)
 
 
 def test_parse_unit_selection_bare_array_fallback():
-    assert ar._parse_unit_selection('["u3", "u4"]') == ["u3", "u4"]
+    assert ar._parse_unit_selection('["u3", "u4"]') == (["u3", "u4"], 0)
 
 
 def test_parse_unit_selection_empty():
-    assert ar._parse_unit_selection('{"unit_ids": []}') == []
+    assert ar._parse_unit_selection('{"unit_ids": []}') == ([], 0)
 
 
 def test_parse_unit_selection_non_json_returns_empty():
-    assert ar._parse_unit_selection("I could not find anything.") == []
+    assert ar._parse_unit_selection("I could not find anything.") == ([], 0)
 
 
 def test_parse_unit_selection_extracts_from_surrounding_text():
-    assert ar._parse_unit_selection('Here: {"unit_ids": ["u7"]} done') == ["u7"]
+    assert ar._parse_unit_selection('Here: {"unit_ids": ["u7"]} done') == (["u7"], 0)
 
 
 def test_parse_unit_selection_tolerates_bare_numbers():
-    assert ar._parse_unit_selection('{"unit_ids": [7, "u8"]}') == ["u7", "u8"]
+    assert ar._parse_unit_selection('{"unit_ids": [7, "u8"]}') == (["u7", "u8"], 0)
 
 
 # ── resolve_units_to_clips ───────────────────────────────────────────────────
@@ -1330,7 +1330,8 @@ def test_the_prompt_is_byte_identical_when_no_two_people_share_a_name():
     silently invalidate every measurement taken against this arm.
     """
     plain = ar._ARCHIVE_READER_SYSTEM_PROMPT_TEMPLATE.format(
-        transcript_block="T", entity_map_block="E", disambiguation_block=""
+        transcript_block="T", entity_map_block="E", disambiguation_block="",
+        **ar._id_atoms(),
     )
     assert "TWO PEOPLE WITH THE SAME NAME" not in plain
     assert "clarify" not in plain
@@ -1340,6 +1341,7 @@ def test_the_prompt_is_byte_identical_when_no_two_people_share_a_name():
     tagged = ar._ARCHIVE_READER_SYSTEM_PROMPT_TEMPLATE.format(
         transcript_block="T", entity_map_block="E",
         disambiguation_block=ar._DISAMBIGUATION_BLOCK,
+        **ar._id_atoms(),
     )
     assert "TWO PEOPLE WITH THE SAME NAME" in tagged
     # The output form must travel WITH the instruction, not as a trailing
@@ -1752,3 +1754,92 @@ def test_validate_follow_up_all_covered_still_drops_entirely():
         {"u1": u1}, answer_units=[u1], shown_keys=set(),
     )
     assert out is None
+
+
+# ── the scoped unit-id scheme (UNIT_ID_STABILITY_PLAN, 2026-08-22) ──────────
+# Under the default global scheme every rendered byte is unchanged (the
+# byte-identity control above now formats via _id_atoms()); these tests pin
+# the scoped side of the toggle.
+
+from types import SimpleNamespace
+
+
+def _seg_item(rec_no):
+    return SimpleNamespace(segment=SimpleNamespace(id="seg-x", recording_no=rec_no))
+
+
+def test_unit_id_scheme_global_is_default_and_unchanged():
+    from app.config import settings
+
+    assert settings.UNIT_ID_SCHEME == "global"
+    assert ar._unit_id_for(_seg_item(7), global_index=42, local_index=3) == "u42"
+
+
+def test_unit_id_scheme_scoped_anchors_to_recording_no(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "UNIT_ID_SCHEME", "scoped")
+    assert ar._unit_id_for(_seg_item(7), global_index=42, local_index=3) == "r7u3"
+
+
+def test_unit_id_scheme_scoped_refuses_missing_recording_no(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "UNIT_ID_SCHEME", "scoped")
+    with pytest.raises(RuntimeError, match="recording_no"):
+        ar._unit_id_for(_seg_item(None), global_index=1, local_index=1)
+
+
+def test_scoped_parse_counts_and_drops_malformed_ids(monkeypatch):
+    """The §4 copy-reliability instrument: bare numbers and bare u-ids are
+    AMBIGUOUS under scoped ids — counted, logged, dropped, never guessed."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "UNIT_ID_SCHEME", "scoped")
+    ids, malformed = ar._parse_unit_selection(
+        '{"unit_ids": ["r2u3", "u7", 9, "x1", "r12u40"]}'
+    )
+    assert ids == ["r2u3", "r12u40"]
+    assert malformed == 3
+
+
+def test_scoped_ordinals_print_recording_no(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "UNIT_ID_SCHEME", "scoped")
+    seg_a = SimpleNamespace(segment=SimpleNamespace(id="sa", recording_no=4))
+    seg_b = SimpleNamespace(segment=SimpleNamespace(id="sb", recording_no=17))
+    units = [
+        ar.UtteranceUnit(unit_id="r4u1", segment_id="sa", index=1,
+                         start_sec=0.0, end_sec=1.0, text="a"),
+        ar.UtteranceUnit(unit_id="r17u1", segment_id="sb", index=2,
+                         start_sec=0.0, end_sec=1.0, text="b"),
+    ]
+    # Gaps allowed: deletion leaves the numbering honest.
+    assert ar._recording_ordinals([seg_a, seg_b], units) == {"sa": 4, "sb": 17}
+
+
+def test_scoped_prompt_atoms_change_only_the_id_form(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "UNIT_ID_SCHEME", "scoped")
+    atoms = ar._id_atoms()
+    assert atoms["id_ex1"] == "r2u3"
+    assert "r<recording>u<number>" in atoms["id_form"]
+
+
+def test_history_block_resolves_ids_from_stable_keys():
+    """Persisted unit_ids go stale on any renumbering; the renderer resolves
+    the CURRENT id from the stable segment:start key, falling back to the
+    stored id only when the key is unknown (pre-key rows)."""
+    turns = [
+        {"role": "assistant", "content": "http://x/clip.mp4"},
+        {"role": "user", "content": "ומה עוד?"},
+    ]
+    per_turn = [[
+        {"key": "seg-a:1.00", "unit_id": "u84", "text": "אנחנו חמישה משפחה"},
+        {"key": "unknown:9.99", "unit_id": "u85", "text": "אני טל"},
+    ]]
+    out = ar._format_history_block(turns, per_turn, {"seg-a:1.00": "r11u1"})
+    assert 'r11u1: "אנחנו חמישה משפחה"' in out  # resolved from the key
+    assert 'u85: "אני טל"' in out  # unknown key -> stored id fallback

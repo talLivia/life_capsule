@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     # entirely from the question text and reproducible by deleting it and
     # asking again, so it is not archive data and nothing is lost with it.
     QUESTION_AUDIO_DIR: str = "uploads/question_audio"
+    # Unit-id scheme (UNIT_ID_STABILITY_PLAN): global = u<n> archive-wide
+    # (renumbers on every recording); scoped = r<recording_no>u<local>
+    # (stable forever). Toggle exists ONLY for the gated A/B measurement;
+    # the losing scheme is deleted once the winner is proven.
+    UNIT_ID_SCHEME: str = "global"
 
     # AWS (retained for the base project's Terraform/EC2 GPU deploy path —
     # NOT used for object storage in this project; see R2_* below)
