@@ -59,6 +59,37 @@ A/B ran in full: 20 cases × 5 runs under `scoped`, key-level comparison.
   surviving units, new-content cases flagged for re-measurement), which
   the key infrastructure already enables and which mechanizes the one
   genuinely expensive part (fixture re-derivation) permanently.
+* **⚠️ THE A/A CONTROL (2026-08-22, producer-requested, run AFTER the
+  verdicts above) REFRAMES BOTH A/B RESULTS.** Today's exact production
+  format — zero code or prompt changes, byte-identical rendering,
+  pinned model still echoing gemini-3.6-flash — drifted 11/20 against
+  its own day-old baseline: 6 non-marginal (brothers/ilana/tzvi/army
+  follow-up presence — THE SAME cases both A/Bs flagged — plus
+  uncle-then-more now clarifying 4/5 and the exhausted case swinging
+  back), family's composition moving wholesale, and the family
+  conservation contract failing under pure variance (roots offered,
+  violating the just-accepted annotation). What held even here: every
+  narrow SELECTION, every empty, about-a-person, career-broad,
+  army-broad, spouse. CONCLUSION: the system's own day-scale variance
+  envelope covers most of what the format experiments "measured" — the
+  A/B fail verdicts are CONFOUNDED and must be read as NOT PROVEN
+  (in either direction), not as "format changes cause drift".
+  Surviving hard results: 0 malformed compound ids in 100 reads (not
+  variance-dependent), the byte-identity proofs, and the stable core
+  band (narrow selections, empties, disambiguation) which never moved
+  in any arm. LIKELY MECHANISM (unconfirmed): temperature-0 +
+  prompt-cached prefix pins one thinking path per cache epoch — stable
+  5/5 within any run block, a fresh draw when the cache rotates
+  (time) or the prefix changes (any byte edit) — which would make
+  every single-block measurement a sample of ONE draw, not of the
+  distribution. METHODOLOGY CONSEQUENCE: single-block panels can gate
+  the stable band only; the marginal band (broad-case composition,
+  follow-up presence, state-corner behavior) requires multi-window
+  sampling (blocks separated across cache epochs/days) before any
+  drift there means anything. This applies retroactively to the week's
+  product verdicts too: the core-vs-offer conservation results were
+  validated within one draw and the family contract already failed
+  under today's draw.
 * **Recommended path**: revisit the flip WHEN a model upgrade forces a
   full re-baseline anyway — at that moment the re-annotation/re-verdict
   cost is already being paid, so adopting scoped ids is nearly free; the

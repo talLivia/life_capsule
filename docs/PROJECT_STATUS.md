@@ -1798,6 +1798,22 @@ test (the WS e2e still mocked the old seam) because a tail pipe
 swallowed pytest's exit code; fixed in the next commit and the gate now
 checks PIPESTATUS.
 
+**⚠️ A/A CONTROL FINDING, 2026-08-22 (supersedes the interpretation
+below and of the core-vs-offer conservation): the unchanged production
+prompt drifted 11/20 against its own day-old baseline** — same
+non-marginal case-set both format A/Bs flagged, family composition
+moving wholesale, the family conservation contract failing under pure
+variance, model pin verified still serving. The format-experiment
+verdicts are therefore CONFOUNDED (not proven either direction); the
+stable band (narrow selections, empties, disambiguation) held in every
+arm including A/A and remains strictly gateable; the marginal band
+(broad composition, follow-up presence, state corners) varies at
+day-scale with zero changes and requires multi-window sampling to
+measure at all. Likely mechanism, unconfirmed: temp-0 + cached prefix
+pins one thinking path per cache epoch. Recorded in
+UNIT_ID_STABILITY_PLAN's status block; methodology upgrade is the open
+item.
+
 **Unit-id stability: measured, flip VETOED, 2026-08-22** (branch
 `unit-id-stability`, docs/UNIT_ID_STABILITY_PLAN.md): recording_no
 anchors + the UNIT_ID_SCHEME toggle landed (byte-proven inert by
