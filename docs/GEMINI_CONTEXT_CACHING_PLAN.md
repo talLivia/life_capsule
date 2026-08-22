@@ -12,11 +12,35 @@ different cost/benefit:
   (free, automatic) prefix cache work mid-conversation where today it
   breaks on the first played clip, and it needs no new infrastructure.
   It IS a prompt-surface change and gets the full gated cycle (§6).
-* **Phase B — explicit per-producer `cachedContents` management**:
-  DEFER. At today's archive (~7K-token prefix) and traffic, the math
-  (§5) saves effectively nothing while adding an ops surface, a billing
-  surface, and a privacy surface. Build it when the scale gate (§5.3)
-  is met, on top of Phase A, which does all the hard prompt work.
+* **Phase B — explicit per-producer `cachedContents` management**
+  (REVISED 2026-08-23, producer decision — the original pure deferral
+  is superseded): build **now, in two stages**. The producer's
+  risk-reduction argument was accepted: billing/lifecycle/expiry
+  machinery is exactly the category where mistakes at scale are
+  expensive and mistakes at today's scale cost pennies, so the value
+  of building early is live derisking, not savings. Sequencing:
+  1. The **model-agnostic skeleton** (registry, version-fingerprint
+     keying, deletion hooks, fail-soft read wrapper, llm.py
+     cachedContent plumbing) is built IN PARALLEL with Phase A's
+     multi-day gate window — zero interaction with prompt bytes, no
+     activation.
+  2. **Activation is flag-ON for the current producer immediately
+     after Phase A clears its gate — live, not dormant.** Dormant
+     infrastructure doesn't derisk (TTL races, expiry-mid-
+     conversation, billing shape only surface under real traffic);
+     live-at-small-scale does, for cents. Activation strictly AFTER
+     Phase A: a cache pinned on today's marks-bearing transcript
+     would silently serve turns 2+ a prefix whose shown-marks don't
+     match the conversation — an UNGATED prompt change (§1.2's canary
+     case is exactly the behavior at risk).
+  3. **§5.3's scale gate is repurposed**: no longer "when to build"
+     but "when the metrics start mattering" — until then, hit rate
+     and storage-hours are health signals, not KPIs.
+  4. **Cache-semantics re-verification joins the model-upgrade
+     checklist** (min cacheable tokens, storage pricing, TTL-update
+     API are per-model surface; the upgrade's mandatory re-baseline
+     re-validates the cache path too — a planned line item, not a
+     surprise).
 
 ## 0. Current state, measured
 

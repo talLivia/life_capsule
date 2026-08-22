@@ -612,6 +612,51 @@ def _build_units(archive: List[ArchiveSegment]) -> List[UtteranceUnit]:
     return units
 
 
+def _format_shown_block(units: List[UtteranceUnit], shown_keys: set) -> str:
+    """The shown-state as ONE line for the per-turn user message
+    (SHOWN_STATE_PLACEMENT=message). Ids are CURRENT ids resolved from the
+    persisted stable keys, in archive order — the same render-time key→id
+    resolution the history block does, so a renumbering ingest can never
+    make the list point at the wrong units. Empty state renders NOTHING
+    (no vestigial header), which is what keeps the empty-shown user
+    message byte-identical to today's.
+
+    The bridging phrase maps the list onto the convention the system
+    prompt already establishes — the system template is deliberately NOT
+    reworded per mode (its bytes are the cacheable prefix and the whole
+    point is that they never change)."""
+    if not shown_keys:
+        return ""
+    ids = [
+        u.unit_id
+        for u in units
+        if _unit_key(u.segment_id, u.start_sec) in shown_keys
+    ]
+    if not ids:
+        return ""
+    return (
+        "ALREADY SHOWN: "
+        + ", ".join(ids)
+        + " (these units were played earlier in this conversation — treat"
+        " them exactly as if marked [ALREADY SHOWN] in the transcript)"
+    )
+
+
+def _build_user_message(
+    question: str, history_block: str, shown_block: str = ""
+) -> str:
+    """The variable half of the prompt. With shown_block empty this
+    renders byte-for-byte what the inline path always sent — pinned by
+    test, because it is the Phase A blast-radius boundary."""
+    user_parts: List[str] = []
+    if history_block:
+        user_parts.append(f"Recent conversation:\n{history_block}\n")
+    if shown_block:
+        user_parts.append(f"{shown_block}\n")
+    user_parts.append(f"Question:\n{question}")
+    return "\n".join(user_parts)
+
+
 def _unit_key(segment_id: str, start_sec: float) -> str:
     """Stable identity for a unit ACROSS reads. Unit ids (u1, u2, …) are
     positional — ingesting a new recording renumbers everything — so anything
@@ -1361,6 +1406,7 @@ async def _read_archive_for_ranges(
     history_block: str,
     recording_language: str,
     disambiguation: bool = False,
+    shown_block: str = "",
 ) -> ArchiveRead:
     """The ONE LLM call. Still fail-soft — a live turn must produce a sentence
     rather than a stack trace — but the failure is now REPORTED rather than
@@ -1388,11 +1434,7 @@ async def _read_archive_for_ranges(
         **_id_atoms(),
     )
 
-    user_parts: List[str] = []
-    if history_block:
-        user_parts.append(f"Recent conversation:\n{history_block}\n")
-    user_parts.append(f"Question:\n{question}")
-    user_message = "\n".join(user_parts)
+    user_message = _build_user_message(question, history_block, shown_block)
 
     try:
         raw = await llm_service.generate_response(
@@ -1670,7 +1712,14 @@ async def select_units(
 
     shown_keys, per_turn_units = shown
 
-    transcript_block = _format_annotated_transcript(archive, units, shown_keys, name_tags)
+    # Phase A toggle (GEMINI_CONTEXT_CACHING_PLAN): under `message` the
+    # transcript never carries per-turn marks — it is the stable cacheable
+    # prefix — and the shown facts travel in the user message instead.
+    inline_shown = settings.SHOWN_STATE_PLACEMENT != "message"
+    transcript_block = _format_annotated_transcript(
+        archive, units, shown_keys if inline_shown else set(), name_tags
+    )
+    shown_block = "" if inline_shown else _format_shown_block(units, shown_keys)
     # Same ordinals the transcript block just printed — see _recording_ordinals.
     entity_map_block = _format_entity_map(entity_map, _recording_ordinals(archive, units))
     history_block = (
@@ -1690,6 +1739,7 @@ async def select_units(
         history_block,
         recording_language,
         disambiguation=bool(name_tags),
+        shown_block=shown_block,
     )
     if read.failed:
         # Straight out. Nothing below this line can say anything true about

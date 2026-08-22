@@ -1843,3 +1843,89 @@ def test_history_block_resolves_ids_from_stable_keys():
     out = ar._format_history_block(turns, per_turn, {"seg-a:1.00": "r11u1"})
     assert 'r11u1: "אנחנו חמישה משפחה"' in out  # resolved from the key
     assert 'u85: "אני טל"' in out  # unknown key -> stored id fallback
+
+
+# ── shown-state placement (GEMINI_CONTEXT_CACHING_PLAN Phase A) ─────────────
+# The system prompt template is deliberately untouched by the toggle: under
+# `message` only the transcript loses its per-turn marks (becoming the
+# stable cacheable prefix) and the shown facts move to the user message.
+# These tests pin the blast-radius boundary: with nothing shown, BOTH modes
+# render byte-for-byte what production has always sent.
+
+
+def _shown_unit(uid, seg, idx, start):
+    return ar.UtteranceUnit(
+        unit_id=uid, segment_id=seg, index=idx,
+        start_sec=start, end_sec=start + 1.0, text="t",
+    )
+
+
+def test_shown_state_placement_default_is_inline():
+    from app.config import settings
+
+    assert settings.SHOWN_STATE_PLACEMENT == "inline"
+
+
+def test_user_message_bytes_unchanged_when_nothing_shown():
+    # Exactly the string the pre-Phase-A inline code assembled.
+    assert ar._build_user_message("שאלה", "") == "Question:\nשאלה"
+    assert (
+        ar._build_user_message("שאלה", "TURNS")
+        == "Recent conversation:\nTURNS\n\nQuestion:\nשאלה"
+    )
+    # Empty shown_block explicitly - the empty-shown identity invariant.
+    assert ar._build_user_message("שאלה", "TURNS", "") == (
+        "Recent conversation:\nTURNS\n\nQuestion:\nשאלה"
+    )
+
+
+def test_user_message_places_shown_block_between_history_and_question():
+    out = ar._build_user_message("שאלה", "TURNS", "ALREADY SHOWN: u5")
+    assert out == (
+        "Recent conversation:\nTURNS\n\nALREADY SHOWN: u5\n\nQuestion:\nשאלה"
+    )
+
+
+def test_shown_block_empty_state_renders_nothing():
+    units = [_shown_unit("u1", "sa", 1, 0.0)]
+    assert ar._format_shown_block(units, set()) == ""
+    # Keys that resolve to no current unit (deleted recording) also render
+    # nothing rather than inventing ids.
+    assert ar._format_shown_block(units, {"gone:9.99"}) == ""
+
+
+def test_shown_block_resolves_current_ids_in_archive_order():
+    units = [
+        _shown_unit("u1", "sa", 1, 0.0),
+        _shown_unit("u2", "sa", 2, 5.0),
+        _shown_unit("u3", "sb", 3, 0.0),
+    ]
+    keys = {ar._unit_key("sb", 0.0), ar._unit_key("sa", 0.0)}
+    out = ar._format_shown_block(units, keys)
+    assert out == (
+        "ALREADY SHOWN: u1, u3 (these units were played earlier in this "
+        "conversation — treat them exactly as if marked [ALREADY SHOWN] "
+        "in the transcript)"
+    )
+
+
+def test_message_mode_transcript_carries_no_marks(monkeypatch):
+    """Under `message` the transcript builder receives an EMPTY shown set at
+    the call site; a mark-free transcript is what makes the prefix stable.
+    Pinned at the formatter level: no shown keys, no marks, ever."""
+    archive = [
+        ar.ArchiveSegment(
+            segment=_segment("sa", "ש"),
+            chunks=[_chunk_with("sa", 0, _paced_words(11, break_after=[5]), "t")],
+        ),
+    ]
+    units = ar._build_units(archive)
+    shown = {ar._unit_key(units[0].segment_id, units[0].start_sec)}
+    # Inline path: the mark appears. Message path passes set() instead —
+    # and with an empty shown set no mark can ever render.
+    assert "[ALREADY SHOWN]" in ar._format_annotated_transcript(
+        archive, units, shown, {}
+    )
+    assert "[ALREADY SHOWN]" not in ar._format_annotated_transcript(
+        archive, units, set(), {}
+    )
