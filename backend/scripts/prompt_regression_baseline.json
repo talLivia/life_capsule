@@ -20,11 +20,6 @@
           "u36",
           "u37",
           "u38",
-          "u45",
-          "u46",
-          "u47",
-          "u48",
-          "u49",
           "u50",
           "u51",
           "u52",
@@ -42,6 +37,16 @@
       ],
       "clarified": 0,
       "follow_up_offered": 5,
+      "follow_up_unit_variants": [
+        [
+          "u87",
+          "u88",
+          "u89",
+          "u90",
+          "u91",
+          "u92"
+        ]
+      ],
       "runs": 5
     },
     "brothers": {
@@ -54,6 +59,9 @@
       ],
       "clarified": 0,
       "follow_up_offered": 0,
+      "follow_up_unit_variants": [
+        []
+      ],
       "runs": 5
     },
     "ilana": {
@@ -65,7 +73,16 @@
         ]
       ],
       "clarified": 0,
-      "follow_up_offered": 0,
+      "follow_up_offered": 5,
+      "follow_up_unit_variants": [
+        [
+          "u45",
+          "u46",
+          "u47",
+          "u48",
+          "u49"
+        ]
+      ],
       "runs": 5
     },
     "tzvi": {
@@ -81,7 +98,15 @@
         ]
       ],
       "clarified": 0,
-      "follow_up_offered": 0,
+      "follow_up_offered": 5,
+      "follow_up_unit_variants": [
+        [
+          "u55",
+          "u56",
+          "u57",
+          "u58"
+        ]
+      ],
       "runs": 5
     },
     "army": {
@@ -94,7 +119,20 @@
         ]
       ],
       "clarified": 0,
-      "follow_up_offered": 5,
+      "follow_up_offered": 4,
+      "follow_up_unit_variants": [
+        [],
+        [
+          "u15",
+          "u16",
+          "u17",
+          "u18",
+          "u19",
+          "u20",
+          "u21",
+          "u22"
+        ]
+      ],
       "runs": 5
     },
     "montreal": {
@@ -103,6 +141,9 @@
       ],
       "clarified": 0,
       "follow_up_offered": 0,
+      "follow_up_unit_variants": [
+        []
+      ],
       "runs": 5
     },
     "army-narrow": {
@@ -114,6 +155,9 @@
       ],
       "clarified": 0,
       "follow_up_offered": 0,
+      "follow_up_unit_variants": [
+        []
+      ],
       "runs": 5
     },
     "army-broad": {
@@ -127,6 +171,18 @@
       ],
       "clarified": 0,
       "follow_up_offered": 5,
+      "follow_up_unit_variants": [
+        [
+          "u15",
+          "u16",
+          "u17",
+          "u18",
+          "u19",
+          "u20",
+          "u21",
+          "u22"
+        ]
+      ],
       "runs": 5
     },
     "influence-1": {
@@ -135,6 +191,9 @@
       ],
       "clarified": 0,
       "follow_up_offered": 0,
+      "follow_up_unit_variants": [
+        []
+      ],
       "runs": 5
     },
     "influence-2 (followup)": {
@@ -143,6 +202,9 @@
       ],
       "clarified": 0,
       "follow_up_offered": 0,
+      "follow_up_unit_variants": [
+        []
+      ],
       "runs": 5
     },
     "school": {
@@ -160,6 +222,9 @@
       ],
       "clarified": 0,
       "follow_up_offered": 0,
+      "follow_up_unit_variants": [
+        []
+      ],
       "runs": 5
     },
     "no-answer": {
@@ -168,6 +233,9 @@
       ],
       "clarified": 0,
       "follow_up_offered": 0,
+      "follow_up_unit_variants": [
+        []
+      ],
       "runs": 5
     },
     "career-broad": {
@@ -183,7 +251,17 @@
         ]
       ],
       "clarified": 0,
-      "follow_up_offered": 0,
+      "follow_up_offered": 5,
+      "follow_up_unit_variants": [
+        [
+          "u30",
+          "u31",
+          "u32",
+          "u33",
+          "u34",
+          "u35"
+        ]
+      ],
       "runs": 5
     },
     "childhood-broad": {
@@ -213,7 +291,17 @@
         ]
       ],
       "clarified": 0,
-      "follow_up_offered": 0,
+      "follow_up_offered": 5,
+      "follow_up_unit_variants": [
+        [
+          "u73",
+          "u74",
+          "u75",
+          "u76",
+          "u77",
+          "u78"
+        ]
+      ],
       "runs": 5
     },
     "spouse": {
@@ -229,6 +317,9 @@
       ],
       "clarified": 0,
       "follow_up_offered": 0,
+      "follow_up_unit_variants": [
+        []
+      ],
       "runs": 5
     },
     "spouse-pronoun (followup)": {
@@ -237,6 +328,9 @@
       ],
       "clarified": 0,
       "follow_up_offered": 0,
+      "follow_up_unit_variants": [
+        []
+      ],
       "runs": 5
     },
     "about-a-person": {
@@ -258,6 +352,9 @@
       ],
       "clarified": 0,
       "follow_up_offered": 0,
+      "follow_up_unit_variants": [
+        []
+      ],
       "runs": 5
     },
     "uncle-then-more": {
@@ -266,14 +363,27 @@
       ],
       "clarified": 0,
       "follow_up_offered": 0,
+      "follow_up_unit_variants": [
+        []
+      ],
       "runs": 5
     },
     "uncle-then-more-exhausted": {
       "variants": [
+        [],
+        [
+          "u93",
+          "u94",
+          "u95",
+          "u96",
+          "u97"
+        ]
+      ],
+      "clarified": 4,
+      "follow_up_offered": 0,
+      "follow_up_unit_variants": [
         []
       ],
-      "clarified": 0,
-      "follow_up_offered": 0,
       "runs": 5
     },
     "two-hop-roots": {
@@ -293,6 +403,16 @@
       ],
       "clarified": 0,
       "follow_up_offered": 5,
+      "follow_up_unit_variants": [
+        [
+          "u73",
+          "u74",
+          "u75",
+          "u76",
+          "u77",
+          "u78"
+        ]
+      ],
       "runs": 5
     }
   }

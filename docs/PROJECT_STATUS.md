@@ -1798,6 +1798,31 @@ test (the WS e2e still mocked the old seam) because a tail pipe
 swallowed pytest's exit code; fixed in the next commit and the gate now
 checks PIPESTATUS.
 
+**Core-vs-offer prompt edit LANDED on the branch, 2026-08-22** (the
+validation plan's gated cycle, docs/VALIDATION_COVERAGE_PLAN.md): one
+subject-neutral bullet mid-FOLLOW-UP-block — a broad answer's
+self-contained side branch becomes the offer instead of inline material,
+never shrinking narrow answers. Measured at 5 runs/case, everything
+stable: career-broad = the proof case (7-unit core byte-identical, the
+previously-INVISIBLE cooking digression now offered 5/5); childhood
+untouched; every narrow selection byte-identical; classifier panel no
+drift; two-hop acceptance still lands exactly on the roots units. Three
+findings were ruled on by the producer: (1) family's split came out
+INVERTED vs the worksheet (model kept roots inline, offered
+how-they-met) — ACCEPTED, annotation flipped, worksheet marked
+superseded on that one point; (2) narrow person questions (ilana/tzvi)
+now carry offers with unchanged units — ACCEPTED as-is; (3) the
+exhausted same-name case now CLARIFIES instead of answering empty
+(units still 0) — accepted FOR NOW and pinned in the baseline; any
+future fix is a prompt edit and therefore a full gated cycle of its
+own, however small the wording change (this project's own measured
+lesson: no prompt edit is 'small'). ⚠️ The re-baseline run then showed
+this corner is UNSTABLE post-edit: 4/5 clarify, one run answered with
+5 units (the pre-fix bug's shape). Both variants are pinned; the
+future fix-cycle for this corner gained urgency. Baselines re-saved
+against the corrected contract post-verdict: conservation PASS on all
+three annotated cases, 19/20 cases fully stable.
+
 **Voice-answering prompts in BOTH modes, 2026-08-19** (branch
 `v2-voice-prompts`, stacked on `retire-avatar-retrieval`): the
 pending-prompt core (bare-word fast path, 3-label classifier, arming

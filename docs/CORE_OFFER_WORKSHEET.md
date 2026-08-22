@@ -1,4 +1,12 @@
-# Core-vs-offer annotation worksheet — archive v18 (2026-08-21)
+# Core-vs-offer annotation worksheet — archive v18 (ACCEPTED FINAL, 2026-08-22)
+
+⚠️ SUPERSEDED IN ONE PLACE by the producer's verdict on the gated
+cycle's finding 1: for **family**, the roots units (u50-59) are CORE and
+the how-parents-met units (u45-49) are OFFER — the inverse of the marks
+below. The measured model behavior produced that split, and the producer
+accepted it as the final annotation (encoded in
+scripts/core_offer_annotations.py, which is the authoritative contract).
+Career and childhood marks below stand exactly as filled.
 
 For each unit, fill **your mark**: `core` (belongs in the direct
 answer), `offer` (should be offered as a follow-up instead), or

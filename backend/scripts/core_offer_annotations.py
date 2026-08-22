@@ -29,13 +29,19 @@ def _u(*ranges) -> Set[str]:
 
 ANNOTATIONS: Dict[str, dict] = {
     "family": {
-        # father, mother, how-parents-met, the sibling names. The producer's
-        # core/offer boundary at u86/u87 splits the contiguous nickname
-        # stretch — accepted deliberately: the CURRENT engine already stops
-        # at exactly u86, and the cut sits on a real speech pause.
-        "core": _u((4, 10), (36, 38), (45, 49), (84, 86)),
-        # roots (a whole recording) + the extended-family enumeration.
-        "offer": _u((50, 59), (87, 97)),
+        # PRODUCER VERDICT 2026-08-22 (finding 1 of the gated cycle): the
+        # measured post-edit behavior INVERTED the original worksheet — the
+        # model kept roots inline and moved how-parents-met to the offer —
+        # and the producer accepted the model's split as defensible ("how
+        # they met" is a story branch; roots are family facts). Core is
+        # therefore father, mother, ROOTS, and the sibling names; the
+        # u86/u87 nickname-run split stands as before (the engine already
+        # cuts there, on a real speech pause).
+        "core": _u((4, 10), (36, 38), (50, 59), (84, 86)),
+        # how-they-met + the extended-family enumeration. A single turn
+        # offers ONE branch; unoffered offer-units stay reachable by
+        # direct question — membership here bounds, never obligates.
+        "offer": _u((45, 49), (87, 97)),
         # nickname take 2 — absent from the worksheet (generator bug:
         # recordings with no selected units were skipped), so unannotated.
         "soft": _u((98, 103)),
