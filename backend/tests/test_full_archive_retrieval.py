@@ -1886,26 +1886,47 @@ def test_user_message_places_shown_block_between_history_and_question():
     )
 
 
+def _two_recording_archive():
+    archive = [
+        ar.ArchiveSegment(
+            segment=_segment("sa", "Q1"),
+            chunks=[_chunk_with("sa", 0, _paced_words(11, break_after=[5]), "a")],
+        ),
+        ar.ArchiveSegment(
+            segment=_segment("sb", "Q2"),
+            chunks=[_chunk_with("sb", 0, _paced_words(11, break_after=[5]), "b")],
+        ),
+    ]
+    return archive, ar._build_units(archive)  # u1,u2 in sa; u3,u4 in sb
+
+
 def test_shown_block_empty_state_renders_nothing():
-    units = [_shown_unit("u1", "sa", 1, 0.0)]
-    assert ar._format_shown_block(units, set()) == ""
+    archive, units = _two_recording_archive()
+    assert ar._format_shown_block(archive, units, set()) == ""
     # Keys that resolve to no current unit (deleted recording) also render
     # nothing rather than inventing ids.
-    assert ar._format_shown_block(units, {"gone:9.99"}) == ""
+    assert ar._format_shown_block(archive, units, {"gone:9.99"}) == ""
 
 
-def test_shown_block_resolves_current_ids_in_archive_order():
-    units = [
-        _shown_unit("u1", "sa", 1, 0.0),
-        _shown_unit("u2", "sa", 2, 5.0),
-        _shown_unit("u3", "sb", 3, 0.0),
-    ]
-    keys = {ar._unit_key("sb", 0.0), ar._unit_key("sa", 0.0)}
-    out = ar._format_shown_block(units, keys)
+def test_shown_block_groups_by_recording_and_states_completeness():
+    """The gate-failure fix: the exhaustion fact ("ALL units of this
+    recording already shown") is STATED, not left to be derived by
+    counting ids — that derivation is exactly what the flat list's
+    replicated uncle-corner failure showed the model dropping."""
+    archive, units = _two_recording_archive()
+    # All of recording sa shown, part of sb.
+    keys = {
+        ar._unit_key(u.segment_id, u.start_sec)
+        for u in units
+        if u.segment_id == "sa"
+    }
+    keys.add(ar._unit_key(units[2].segment_id, units[2].start_sec))
+    out = ar._format_shown_block(archive, units, keys)
     assert out == (
-        "ALREADY SHOWN: u1, u3 (these units were played earlier in this "
-        "conversation — treat them exactly as if marked [ALREADY SHOWN] "
-        "in the transcript)"
+        "ALREADY SHOWN (played earlier in this conversation — treat these"
+        " units exactly as if marked [ALREADY SHOWN] in the transcript):\n"
+        "RECORDING 1: u1, u2 — ALL units of this recording already shown\n"
+        "RECORDING 2: u3 (1 of 2 units)"
     )
 
 

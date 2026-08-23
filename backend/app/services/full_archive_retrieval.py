@@ -612,8 +612,10 @@ def _build_units(archive: List[ArchiveSegment]) -> List[UtteranceUnit]:
     return units
 
 
-def _format_shown_block(units: List[UtteranceUnit], shown_keys: set) -> str:
-    """The shown-state as ONE line for the per-turn user message
+def _format_shown_block(
+    archive: List[ArchiveSegment], units: List[UtteranceUnit], shown_keys: set
+) -> str:
+    """The shown-state block for the per-turn user message
     (SHOWN_STATE_PLACEMENT=message). Ids are CURRENT ids resolved from the
     persisted stable keys, in archive order — the same render-time key→id
     resolution the history block does, so a renumbering ingest can never
@@ -621,25 +623,51 @@ def _format_shown_block(units: List[UtteranceUnit], shown_keys: set) -> str:
     (no vestigial header), which is what keeps the empty-shown user
     message byte-identical to today's.
 
-    The bridging phrase maps the list onto the convention the system
+    GROUPED PER RECORDING, with completeness stated outright. The first
+    (flat-list) rendering FAILED its gate: on the exhaustion corners the
+    model re-served 9-12 already-shown units instead of clarifying —
+    replicated under `message` across cache epochs, absent in the inline
+    control. The inline mark sits adjacent to the unit text at the moment
+    of judgment; a flat id list demands a join the "everything about this
+    is already shown" inference didn't survive. Grouping by the SAME
+    recording ordinals the transcript prints, and saying "ALL units"
+    explicitly, hands the model the exhaustion fact instead of asking it
+    to derive one by counting ids.
+
+    The bridging phrase maps the block onto the convention the system
     prompt already establishes — the system template is deliberately NOT
     reworded per mode (its bytes are the cacheable prefix and the whole
     point is that they never change)."""
     if not shown_keys:
         return ""
-    ids = [
-        u.unit_id
-        for u in units
-        if _unit_key(u.segment_id, u.start_sec) in shown_keys
+    shown_units = [
+        u for u in units if _unit_key(u.segment_id, u.start_sec) in shown_keys
     ]
-    if not ids:
+    if not shown_units:
         return ""
-    return (
-        "ALREADY SHOWN: "
-        + ", ".join(ids)
-        + " (these units were played earlier in this conversation — treat"
-        " them exactly as if marked [ALREADY SHOWN] in the transcript)"
-    )
+    by_segment_all = _units_by_segment(units)
+    ordinals = _recording_ordinals(archive, units)
+    by_segment_shown: Dict[str, List[UtteranceUnit]] = {}
+    for u in shown_units:
+        by_segment_shown.setdefault(u.segment_id, []).append(u)
+    lines = [
+        "ALREADY SHOWN (played earlier in this conversation — treat these"
+        " units exactly as if marked [ALREADY SHOWN] in the transcript):"
+    ]
+    # Archive order, matching the transcript's own recording order.
+    for item in archive:
+        seg_id = item.segment.id
+        shown_here = by_segment_shown.get(seg_id)
+        if not shown_here or seg_id not in ordinals:
+            continue
+        ids = ", ".join(u.unit_id for u in shown_here)
+        total = len(by_segment_all.get(seg_id, []))
+        if len(shown_here) == total:
+            suffix = " — ALL units of this recording already shown"
+        else:
+            suffix = f" ({len(shown_here)} of {total} units)"
+        lines.append(f"RECORDING {ordinals[seg_id]}: {ids}{suffix}")
+    return "\n".join(lines)
 
 
 def _build_user_message(
@@ -1719,7 +1747,9 @@ async def select_units(
     transcript_block = _format_annotated_transcript(
         archive, units, shown_keys if inline_shown else set(), name_tags
     )
-    shown_block = "" if inline_shown else _format_shown_block(units, shown_keys)
+    shown_block = (
+        "" if inline_shown else _format_shown_block(archive, units, shown_keys)
+    )
     # Same ordinals the transcript block just printed — see _recording_ordinals.
     entity_map_block = _format_entity_map(entity_map, _recording_ordinals(archive, units))
     history_block = (
