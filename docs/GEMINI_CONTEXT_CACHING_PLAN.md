@@ -1,6 +1,39 @@
 # Gemini context caching — plan (2026-08-23)
 
-**STATUS: PLAN ONLY — nothing built.** Written after the unit-id-stability
+**STATUS UPDATE 2026-08-23 (after execution began): Phase A BUILT,
+byte-proven inert under the inline default; Phase B skeleton BUILT,
+off, unwired. Phase A's §6 gate: FAILED at the fresh-epoch replication
+step — flip blocked, awaiting a producer verdict on the fix.**
+
+* Panel block 1 under `message`: stable band + spouse-pronoun canary
+  held; offer flickers and family/school within the A/A envelope; NEW
+  answer shapes on the two uncle state-corners (9-unit and 12-unit
+  re-serves of the fixture's already-shown army material; exhausted
+  clarify 4/5→0/5).
+* Fresh-epoch replication (2.5h gap, 5 cases × 5 runs × both arms):
+  the re-serve REPRODUCED under `message` (then-more 9-unit 1/5;
+  exhausted 12-unit 3/5, clarify 0/5) and NEVER appeared under the
+  same-epoch inline control (then-more 0×5; exhausted [5,5,0,0,5] —
+  the pre-existing corner variants only). Same-epoch flickers
+  (brothers fu 1/5, two-hop fu 1/5) appeared identically in BOTH arms
+  — epoch noise, not mode. Attribution clean: **the id-list
+  representation weakens the exhaustion inference exactly where many
+  units are shown and rules collide.** The inline mark sits adjacent
+  to the unit text; the list requires a join by id, and the "all of
+  this is already shown → don't re-serve, clarify/decline" judgment
+  degrades under the join.
+* What this does NOT touch: every narrow selection, empties,
+  childhood/career compositions, two-hop selection, spouse-pronoun —
+  all byte-stable under `message` in both blocks.
+* Consequence: `inline` stays the default (byte-frozen, nothing
+  shipped); Phase B stays unwired (its activation was contingent on
+  this gate). The fix space — a strengthened shown-list rendering
+  (e.g. grouped per recording, or an explicit exhaustion summary
+  line) vs accepting corner regression vs abandoning `message` — is a
+  producer decision; any rewording is a NEW gated cycle of its own.
+
+**Original plan follows (recommendation block superseded where the
+status above says so).** Written after the unit-id-stability
 round closed; inherits its methodology verdicts (fresh-epoch replication
 for anything touching prompt bytes; single-block panels gate the stable
 band only). Recommendation up front, because the phases have very
