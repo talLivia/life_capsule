@@ -1853,6 +1853,24 @@ cross-category collisions — so unrelated recordings sharing a step
 number render as "takes of this question" (father/army/studies/career);
 pre-existing, its own future gated round.
 
+**Gemini context caching SHIPPED, 2026-08-23** (main,
+docs/GEMINI_CONTEXT_CACHING_PLAN.md): SHOWN_STATE_PLACEMENT=message —
+the transcript is now a stable cacheable prefix (byte-identical system
+template across modes; shown-state travels as a per-recording grouped
+ALREADY SHOWN block in the user message) — and GEMINI_CONTEXT_CACHE=on
+— per-producer explicit cachedContents, version-fingerprint keyed
+(stale caches can be paid for, never served), lazy-created, TTL 45min,
+fail-soft everywhere, best-effort drops at ingest/deletion. The FIRST
+shown-list rendering (flat ids) FAILED its gate — replicated re-serves
+of 9-12 already-shown units on the exhaustion corners — and was
+strengthened to the grouped completeness-stating form, which passed
+the full cycle (panel + fresh-epoch two-arm replication + live
+three-turn smoke). Live-verified mid-504-storm: 6,474/6,487 prompt
+tokens cached on the first referenced call; fail-soft uncached retry
+under the outage. Implicit-cache hits measured zero — the explicit
+cache is the working mechanism. Evals and pytest force the cache off
+(eval_common / conftest). Baseline re-saved under the new default.
+
 **Core-vs-offer prompt edit LANDED on the branch, 2026-08-22** (the
 validation plan's gated cycle, docs/VALIDATION_COVERAGE_PLAN.md): one
 subject-neutral bullet mid-FOLLOW-UP-block — a broad answer's

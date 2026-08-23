@@ -81,3 +81,13 @@ async def auth_headers(test_user):
     """Authorization headers for the test user."""
     token = create_access_token(data={"sub": test_user.id})
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture(autouse=True)
+def _no_real_gemini_caches(monkeypatch):
+    """The explicit-cache flag defaults ON in production; tests must never
+    create real cachedContents (billing + network). Tests that exercise the
+    cache path re-enable it explicitly against a mocked client."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "GEMINI_CONTEXT_CACHE", "off")

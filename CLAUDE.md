@@ -73,6 +73,26 @@ attribute drift. Revisit only at a model upgrade's mandatory
 re-baseline. Anything persisted across turns keys on
 `segment_id:start_sec` (`_unit_key`), never on unit ids.
 
+**The transcript block is a stable cacheable prefix — keep it that way**
+(2026-08-23, docs/GEMINI_CONTEXT_CACHING_PLAN.md). Shown-state is NOT
+written inline: `SHOWN_STATE_PLACEMENT=message` renders the transcript
+mark-free and carries already-shown units as a per-recording grouped
+block in the per-turn user message (grouping is load-bearing: a flat id
+list measurably broke the exhaustion corners — the model re-served
+already-shown material instead of clarifying; stating "ALL units of
+this recording already shown" fixed it, full gated cycle both times).
+Per-producer explicit Gemini caches (`gemini_cache.py`,
+`GEMINI_CONTEXT_CACHE=on`) reference that prefix; identity includes the
+archive-version fingerprint, so a stale cache can be paid for but never
+served, and every path is fail-soft — a cache problem degrades to a
+full-price call, never a failed answer. Evals and tests force the cache
+OFF (eval_common / conftest autouse); don't undo that — eval traffic
+must not create billable storage, and measurements must not depend on
+cache-epoch dynamics. Anything that would put per-turn bytes back into
+the system prompt (marks, per-question annotations) silently kills
+caching for the rest of the conversation — that's a design constraint
+now, not a style preference.
+
 Two things follow from this design and should not be "fixed":
 
 - **Breadth falls out of the question.** A narrow question selects one unit, a

@@ -32,6 +32,14 @@ if sys.platform == "win32":
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.services import full_archive_retrieval  # noqa: E402
+
+# Measurement isolation (GEMINI_CONTEXT_CACHING_PLAN Phase B): evals must
+# never reference or create explicit Gemini caches. The cache holds
+# byte-identical content, but referencing it changes cache-epoch dynamics —
+# and eval traffic must not create billable storage as a side effect.
+from app.config import settings as _settings  # noqa: E402
+
+_settings.GEMINI_CONTEXT_CACHE = "off"
 from app.services.llm import llm_service  # noqa: E402
 from app.services.video_clip_assembler import ExpandedClip  # noqa: E402
 

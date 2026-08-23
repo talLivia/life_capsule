@@ -1435,6 +1435,8 @@ async def _read_archive_for_ranges(
     recording_language: str,
     disambiguation: bool = False,
     shown_block: str = "",
+    group_id: Optional[str] = None,
+    archive_version: Optional[tuple] = None,
 ) -> ArchiveRead:
     """The ONE LLM call. Still fail-soft — a live turn must produce a sentence
     rather than a stack trace — but the failure is now REPORTED rather than
@@ -1464,8 +1466,8 @@ async def _read_archive_for_ranges(
 
     user_message = _build_user_message(question, history_block, shown_block)
 
-    try:
-        raw = await llm_service.generate_response(
+    async def _call(cached_content: Optional[str] = None) -> str:
+        return await llm_service.generate_response(
             messages=[{"role": "user", "content": user_message}],
             system_prompt=system_prompt,
             temperature=0,
@@ -1475,7 +1477,25 @@ async def _read_archive_for_ranges(
             model=settings.ARCHIVE_READ_MODEL or None,
             # Latency lever, NOT a determinism one — see the setting's comment.
             thinking_budget=settings.ARCHIVE_READ_THINKING_BUDGET or None,
+            cached_content=cached_content,
         )
+
+    try:
+        # Phase B (GEMINI_CONTEXT_CACHING_PLAN): reference the per-producer
+        # explicit cache when active. gemini_cache is fail-soft throughout —
+        # off/missing/expired/errored all degrade to the plain uncached call.
+        if (
+            settings.GEMINI_CONTEXT_CACHE == "on"
+            and group_id is not None
+            and archive_version is not None
+        ):
+            from app.services import gemini_cache
+
+            raw, _used_cache = await gemini_cache.read_with_cache(
+                group_id, archive_version, system_prompt, _call
+            )
+        else:
+            raw = await _call()
     except Exception as e:
         # error, not warning: this is now a reportable failure rather than a
         # quiet degradation, and it is the line to look for when a listener
@@ -1770,6 +1790,13 @@ async def select_units(
         recording_language,
         disambiguation=bool(name_tags),
         shown_block=shown_block,
+        group_id=group_id,
+        # The version the bundle was just validated/rebuilt against — read
+        # from the in-process cache to avoid a second aggregate query. A
+        # cold miss (None) simply skips the explicit cache this turn.
+        archive_version=(
+            _ARCHIVE_CACHE[group_id].version if group_id in _ARCHIVE_CACHE else None
+        ),
     )
     if read.failed:
         # Straight out. Nothing below this line can say anything true about

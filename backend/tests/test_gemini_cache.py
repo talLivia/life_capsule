@@ -32,10 +32,13 @@ def _explosive_client():
     )
 
 
-# ── off by default: inert, and provably no API surface touched ──────────────
+# ── off in tests: inert, and provably no API surface touched ────────────────
+# (Production default flipped to "on" at Phase B activation, 2026-08-23; the
+# conftest autouse fixture forces it off for every test so no test can create
+# real billable caches. This test pins that isolation.)
 
 
-def test_flag_is_off_by_default():
+def test_flag_is_forced_off_under_tests():
     assert settings.GEMINI_CONTEXT_CACHE == "off"
 
 
@@ -158,3 +161,58 @@ async def test_drop_cache_swallows_delete_errors(monkeypatch):
     monkeypatch.setattr(llm_service, "client", client)
     await gc.drop_cache("p1")  # no raise
     assert "p1" not in gc._REGISTRY
+
+
+# ── the wired read path (_read_archive_for_ranges) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_archive_read_references_cache_when_active(monkeypatch):
+    from app.services import full_archive_retrieval as ar
+    from app.services.llm import llm_service
+
+    monkeypatch.setattr(settings, "GEMINI_CONTEXT_CACHE", "on")
+    v = (18, "a", "b")
+    gc._REGISTRY["p1"] = gc._Handle(
+        name="cachedContents/x",
+        version_key=gc.version_hash(v),
+        expires_at=time.time() + gc.CACHE_TTL_SECONDS,
+    )
+    # TTL renewal path is exercised by touch_cache after a hit; give the
+    # mocked client an update method that succeeds silently.
+    client = SimpleNamespace(
+        aio=SimpleNamespace(caches=SimpleNamespace(update=AsyncMock()))
+    )
+    monkeypatch.setattr(llm_service, "client", client)
+    seen = {}
+
+    async def fake_generate(**kwargs):
+        seen["cached_content"] = kwargs.get("cached_content")
+        return '{"unit_ids": []}'
+
+    monkeypatch.setattr(llm_service, "generate_response", fake_generate)
+    read = await ar._read_archive_for_ranges(
+        "q", "T", "E", "", "he", group_id="p1", archive_version=v
+    )
+    assert not read.failed
+    assert seen["cached_content"] == "cachedContents/x"
+
+
+@pytest.mark.asyncio
+async def test_archive_read_uncached_when_flag_off(monkeypatch):
+    from app.services import full_archive_retrieval as ar
+    from app.services.llm import llm_service
+
+    # autouse fixture already forces the flag off
+    seen = {}
+
+    async def fake_generate(**kwargs):
+        seen["cached_content"] = kwargs.get("cached_content")
+        return '{"unit_ids": []}'
+
+    monkeypatch.setattr(llm_service, "generate_response", fake_generate)
+    read = await ar._read_archive_for_ranges(
+        "q", "T", "E", "", "he", group_id="p1", archive_version=(1, "a", "b")
+    )
+    assert not read.failed
+    assert seen["cached_content"] is None

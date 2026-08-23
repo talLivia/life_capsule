@@ -1860,10 +1860,13 @@ def _shown_unit(uid, seg, idx, start):
     )
 
 
-def test_shown_state_placement_default_is_inline():
+def test_shown_state_placement_default_is_message():
+    """Flipped 2026-08-23 after the full §6 gate passed (grouped rendering;
+    the flat list failed and was strengthened first). `inline` remains the
+    byte-frozen fallback — flipping back requires no other change."""
     from app.config import settings
 
-    assert settings.SHOWN_STATE_PLACEMENT == "inline"
+    assert settings.SHOWN_STATE_PLACEMENT == "message"
 
 
 def test_user_message_bytes_unchanged_when_nothing_shown():

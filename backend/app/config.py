@@ -74,21 +74,23 @@ class Settings(BaseSettings):
     UNIT_ID_SCHEME: str = "global"
     # Shown-state placement (GEMINI_CONTEXT_CACHING_PLAN Phase A):
     # inline = [ALREADY SHOWN] marks written inside the transcript block
-    # (today's bytes; mutates the cacheable prefix every turn a clip
-    # plays); message = transcript always rendered mark-free (prefix
-    # stable per archive version) and shown-state carried as an
-    # ALREADY SHOWN id list in the per-turn user message. The system
+    # (mutates the cacheable prefix every turn a clip plays); message =
+    # transcript always rendered mark-free (prefix stable per archive
+    # version) and shown-state carried as a per-recording grouped
+    # ALREADY SHOWN block in the per-turn user message. The system
     # prompt template is byte-identical under BOTH values — the toggle
-    # moves only where the shown FACTS appear. Default stays inline
-    # until the plan's §6 gate passes.
-    SHOWN_STATE_PLACEMENT: str = "inline"
+    # moves only where the shown FACTS appear. Default flipped to
+    # message on 2026-08-23 after the full §6 gate passed (the first,
+    # flat-list rendering FAILED its gate on the exhaustion corners and
+    # was strengthened to the grouped form before the flip — see the
+    # plan doc's status block).
+    SHOWN_STATE_PLACEMENT: str = "message"
     # Phase B (same plan): explicit per-producer Gemini cachedContents.
-    # off = every gemini_cache function is an inert no-op (the skeleton
-    # exists, nothing is created or billed). Flip to "on" only AFTER
-    # SHOWN_STATE_PLACEMENT=message has cleared its gate — an explicit
-    # cache over the marks-bearing inline transcript would serve stale
-    # shown-state, an ungated prompt change.
-    GEMINI_CONTEXT_CACHE: str = "off"
+    # off = every gemini_cache function is an inert no-op. Activated
+    # (default on) 2026-08-23 immediately after Phase A cleared its
+    # gate, per the approved live-at-small-scale sequencing; fail-soft
+    # everywhere, so any cache problem degrades to a full-price call.
+    GEMINI_CONTEXT_CACHE: str = "on"
 
     # AWS (retained for the base project's Terraform/EC2 GPU deploy path —
     # NOT used for object storage in this project; see R2_* below)

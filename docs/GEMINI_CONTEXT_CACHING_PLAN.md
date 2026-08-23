@@ -1,9 +1,37 @@
 # Gemini context caching — plan (2026-08-23)
 
-**STATUS UPDATE 2026-08-23 (after execution began): Phase A BUILT,
-byte-proven inert under the inline default; Phase B skeleton BUILT,
-off, unwired. Phase A's §6 gate: FAILED at the fresh-epoch replication
-step — flip blocked, awaiting a producer verdict on the fix.**
+**STATUS 2026-08-23, FINAL: SHIPPED. Phase A default = `message`
+(cycle-2 grouped rendering, full §6 gate PASSED); Phase B ACTIVE
+(GEMINI_CONTEXT_CACHE=on), live-verified. The cycle-1 FAIL below is
+kept as the record of why the rendering is grouped.**
+
+* **Cycle 2 (producer-approved option 1)**: the shown block is grouped
+  per recording with completeness stated outright ("RECORDING N: ids —
+  ALL units of this recording already shown"), handing the model the
+  exhaustion fact instead of asking it to derive one by counting ids.
+  Gate results: byte-identity invariants re-proven; full panel the
+  quietest block of any arm (18 clean + 2 storm-retried clean; school
+  stable 8×5, family 2 variants; conservation PASS ×2, family FAIL =
+  the known pure-variance failure); cycle-1's re-serve shape GONE in
+  both blocks; fresh-epoch two-arm replication shows NO mode effect
+  (exhausted corner: same variants similar mix, clarify 0/5 vs 1/5 —
+  within the corner's 1-4/5 inline range; brothers/two-hop flickers
+  landed in OPPOSITE arms). Live three-turn smoke through the real DB
+  path: PASS under both placements (answer → no-reserve+shown-block →
+  standalone repeat).
+* **Phase B activation, live-verified during a real 504 storm**: first
+  referenced call billed 6,474 of 6,487 prompt tokens at the cached
+  rate (99.8%); the storm then hit a cached call and the fail-soft
+  wrapper retried uncached, answered correctly, and dropped the
+  handle; drop_cache cleaned up. Evals pin GEMINI_CONTEXT_CACHE=off
+  (eval_common) and pytest forces it off (conftest autouse) — no
+  measurement or test can create billable caches.
+* **Honest cost finding**: implicit-cache hits measured ZERO across
+  all smoke calls even on byte-identical prefixes — the implicit-cache
+  benefit assumed in §5 is unproven at this archive size; the explicit
+  cache is the mechanism that demonstrably delivers cached tokens.
+* Baseline re-saved under the new default (message placement, caches
+  off) so future panel runs compare like-with-like.
 
 * Panel block 1 under `message`: stable band + spouse-pronoun canary
   held; offer flickers and family/school within the A/A envelope; NEW
