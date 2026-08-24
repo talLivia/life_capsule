@@ -55,6 +55,7 @@ from app.database import AsyncSessionLocal
 from app.models import InterviewSession, Message, RawSegment, TranscriptChunk
 from app.services import (
     entity_store,
+    prefilter,
     response_assembler,
     retrieval_service,
     video_clip_assembler,
@@ -1760,22 +1761,48 @@ async def select_units(
 
     shown_keys, per_turn_units = shown
 
+    # Recording pre-filter (PREFILTER_PLAN): None = no filtering, and the
+    # f_* views below are the originals — byte-identical rendering. Active
+    # only when the archive exceeds the budget; unit ids/keys are global
+    # and untouched either way (filtering happens after _build_units).
+    bundle_version = (
+        _ARCHIVE_CACHE[group_id].version if group_id in _ARCHIVE_CACHE else None
+    )
+    pf = await prefilter.apply(
+        question, session_id, archive, name_tags, shown_keys, bundle_version
+    )
+    if pf is None:
+        f_archive, f_units, f_entity_map, f_tags = archive, units, entity_map, name_tags
+    else:
+        f_archive = [a for a in archive if a.segment.id in pf.admitted]
+        f_units = [u for u in units if u.segment_id in pf.admitted]
+        f_tags = {k: v for k, v in name_tags.items() if k in pf.admitted}
+        f_entity_map = {
+            n: kept
+            for n, segs in entity_map.items()
+            if (kept := [s for s in segs if s in pf.admitted])
+        }
+
     # Phase A toggle (GEMINI_CONTEXT_CACHING_PLAN): under `message` the
     # transcript never carries per-turn marks — it is the stable cacheable
     # prefix — and the shown facts travel in the user message instead.
     inline_shown = settings.SHOWN_STATE_PLACEMENT != "message"
     transcript_block = _format_annotated_transcript(
-        archive, units, shown_keys if inline_shown else set(), name_tags
+        f_archive, f_units, shown_keys if inline_shown else set(), f_tags
     )
     shown_block = (
-        "" if inline_shown else _format_shown_block(archive, units, shown_keys)
+        "" if inline_shown else _format_shown_block(f_archive, f_units, shown_keys)
     )
     # Same ordinals the transcript block just printed — see _recording_ordinals.
-    entity_map_block = _format_entity_map(entity_map, _recording_ordinals(archive, units))
+    entity_map_block = _format_entity_map(
+        f_entity_map, _recording_ordinals(f_archive, f_units)
+    )
     history_block = (
         _format_history_block(
             turns,
             per_turn_units,
+            # Full (unfiltered) map: history may reference units outside the
+            # admitted set; their stored ids still resolve.
             {_unit_key(u.segment_id, u.start_sec): u.unit_id for u in units},
         )
         if turns
@@ -1788,14 +1815,19 @@ async def select_units(
         entity_map_block,
         history_block,
         recording_language,
-        disambiguation=bool(name_tags),
+        disambiguation=bool(f_tags),
         shown_block=shown_block,
         group_id=group_id,
         # The version the bundle was just validated/rebuilt against — read
         # from the in-process cache to avoid a second aggregate query. A
-        # cold miss (None) simply skips the explicit cache this turn.
+        # cold miss (None) simply skips the explicit cache this turn. When
+        # the pre-filter is active the admitted-set hash joins the cache
+        # identity (PREFILTER_PLAN §1.2): a different pinned set is a
+        # different prefix, so it must be a different cache.
         archive_version=(
-            _ARCHIVE_CACHE[group_id].version if group_id in _ARCHIVE_CACHE else None
+            None
+            if bundle_version is None
+            else (tuple(bundle_version) + ((pf.set_hash,) if pf else ()))
         ),
     )
     if read.failed:
@@ -1824,20 +1856,31 @@ async def select_units(
     # passages HERE, deterministically — see _expand_about_passages for why
     # this is code rather than prompt wording, and why it cannot reach
     # another person's recordings.
-    unit_ids = _expand_about_passages(unit_ids, raw_about, entity_map, units)
+    unit_ids = _expand_about_passages(unit_ids, raw_about, f_entity_map, f_units)
 
-    by_id = {u.unit_id: u for u in units}
+    # Validation is against the ADMITTED units: the model can only cite what
+    # it was shown, and an id from outside the admitted set (impossible in a
+    # well-formed response) drops here rather than resolving blind.
+    by_id = {u.unit_id: u for u in f_units}
     selected = [by_id[uid] for uid in dict.fromkeys(unit_ids) if uid in by_id]
-    clips = resolve_units_to_clips(unit_ids, units)
+    clips = resolve_units_to_clips(unit_ids, f_units)
     follow_up = _validate_follow_up(raw_follow_up, by_id, selected, shown_keys)
     # `about` has TWO readers, split by whether anything plays: with units it
     # drove the passage expansion above; with none it feeds the named no-story
     # line below. Never both.
-    no_story_text = (
-        _no_story_line(raw_about, entity_map, units, shown_keys, question)
-        if not clips
-        else None
-    )
+    #
+    # PREFILTER GUARD (PREFILTER_PLAN §2): a filtered read may never assert
+    # archive-wide absence. The specific no-story line is allowed only when
+    # no filtering happened, or the person's recordings were ALL admitted
+    # and the ranking was trusted — resolved against the FULL entity map,
+    # because the claim is about the whole archive.
+    no_story_text = None
+    if not clips:
+        about_resolved = _resolve_about(raw_about, entity_map)
+        if about_resolved is None or prefilter.covers_entity(pf, about_resolved[1]):
+            no_story_text = _no_story_line(
+                raw_about, entity_map, units, shown_keys, question
+            )
     return UnitSelection(
         clips=clips,
         selected_units=selected,

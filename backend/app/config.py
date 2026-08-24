@@ -91,6 +91,14 @@ class Settings(BaseSettings):
     # gate, per the approved live-at-small-scale sequencing; fail-soft
     # everywhere, so any cache problem degrades to a full-price call.
     GEMINI_CONTEXT_CACHE: str = "on"
+    # Recording pre-filter for over-ceiling archives (PREFILTER_PLAN,
+    # 2026-08-25). INERT BY CONSTRUCTION even when "on": filtering only
+    # happens when the whole archive exceeds PREFILTER_CHAR_BUDGET, so a
+    # producer under the ceiling renders byte-identically regardless of
+    # the toggle. ~300K chars ≈ ~100K tokens of blended Hebrew/English —
+    # two-thirds of the ~150K-token single-prompt ceiling.
+    PREFILTER: str = "off"
+    PREFILTER_CHAR_BUDGET: int = 300_000
 
     # AWS (retained for the base project's Terraform/EC2 GPU deploy path —
     # NOT used for object storage in this project; see R2_* below)
