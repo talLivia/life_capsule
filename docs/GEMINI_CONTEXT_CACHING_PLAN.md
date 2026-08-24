@@ -32,6 +32,24 @@ kept as the record of why the rendering is grouped.**
   cache is the mechanism that demonstrably delivers cached tokens.
 * Baseline re-saved under the new default (message placement, caches
   off) so future panel runs compare like-with-like.
+* **Separate-DAY replication (2026-08-24, producer-requested)**: the
+  two corners, both arms. Message: then-more 0×5 clarify 0/5 (=
+  baseline); exhausted 0×5 clarify 0/5 — NO re-serve shapes, third
+  consecutive clean message block across two days; the fix holds.
+  Inline same-day control: then-more clarify 1/5, exhausted
+  [0,5,0,0,0] clarify 3/5 — the corner's usual wobble. CUMULATIVE
+  FINDING now attributable: the exhausted corner's CLARIFY behavior
+  is suppressed under message — clarify 0/15 across all three message
+  blocks vs 1-4/5 in every inline block of the week (10/20 total).
+  The model declines empty ("no more material") instead of asking the
+  clarifying question. Non-harmful (no wrong footage; this was the
+  corner's own accepted behavior before the 2026-08-22 core-vs-offer
+  round introduced the clarify, which the producer accepted "FOR
+  NOW"), but it is a real, replicated mode effect on one corner —
+  recorded here rather than smoothed over. Producer rules on whether
+  empty-decline is acceptable or the corner warrants its own future
+  cycle (the same slot the exhausted-corner fix already occupies in
+  the backlog).
 
 * Panel block 1 under `message`: stable band + spouse-pronoun canary
   held; offer flickers and family/school within the A/A envelope; NEW
