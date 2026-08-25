@@ -168,3 +168,30 @@ is hereby paid.
 * Pinned-set cache keying folded into gemini_cache's identity
   (producer, archive_version, recording_set_hash).
 * The `_no_story_line` admitted-recordings guard, wired and tested.
+
+## STATUS 2026-08-25/26 — BUILT, GATED, default OFF
+
+Implementation landed (05faef0), synthetic 139K-token archive + gate
+10/10 (0ac7304; the unfiltered read returned EMPTY on an army question
+at that size — the motivating pathology observed directly; filtered
+answered with 28 units). Forced-budget characterization on the real
+archive (budget 800 chars ≈ 40% admitted), TWO blocks across separate
+epochs:
+
+* REPLICATED: every narrow/state selection identical to baseline in
+  both blocks (brothers/ilana/tzvi/army/army-broad/school/spouse/
+  about-a-person/two-hop + empties) — coarse-filter/fine-judgment
+  division holds even starved.
+* REPLICATED FINDING: career-broad 0 units in 10/10 runs — at starved
+  budgets the same-name force-includes consume the budget and the
+  large career recording no longer FITS, so its own question finds
+  nothing. Refinement if tiny effective budgets ever become real:
+  relevance-guaranteed admission before force-includes. Not reachable
+  at the 300K default (375x the stress setting); synthetic gate showed
+  correct admission at 30% scale.
+* Draw-dependent as always: family composition (35-40 vs 17 across
+  epochs), childhood 8-13, spouse-pronoun/uncle corner flicker.
+
+Toggle stays OFF; flip decision parked until the build trigger (§5)
+or a model upgrade re-tests the 139K pathology. The synthetic
+producer is kept dormant as the standing large-archive instrument.
