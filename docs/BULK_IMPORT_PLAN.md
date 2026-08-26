@@ -149,12 +149,47 @@ UNFILTERED archive is not graceful degradation but broken answers
 * Synthetic producer stays the large-scale instrument; a bulk-imported
   REAL large archive eventually supersedes it (then `--delete`).
 
-## 9. Open questions for the producer
+## 9. Producer decisions (ruled 2026-08-26)
 
-1. Max batch size / file size caps for the first version?
-2. Should takes within one question preserve a producer-chosen order
-   (CSV order = created_at order = archive order — proposed: yes)?
-3. Is per-file transcript review (the normal /record confirmation
-   step) required for imports, or is bulk-accept with later editing
-   acceptable? (Proposed: bulk-accept; the confirmation interrupt
-   would stall a 50-file batch 50 times.)
+1. **No batch/file size caps** — 150+ files in one upload is fine; the
+   §5 worker pool is the queuing mechanism regardless of batch size.
+2. **CSV row order = take order = created_at order = archive order.**
+3. The "skip confirmation" proposal is REPLACED by the auto-extraction
+   toggle (§10).
+
+## 10. Auto-extraction toggle (separate Settings feature, consumed here)
+
+**Data model**: `User.auto_extraction` (Boolean, default false =
+today's manual behavior), per-producer, one migration, one Settings
+switch.
+
+**Branch point — investigated, genuinely isolated**: the entire
+confirmation flow funnels through ONE site, `human_confirm_node`
+(analysis_graph.py:1219) — one interrupt per recording carrying all
+its questions, which already has a zero-questions fast path. Auto mode
+adds a single branch at that node: when the producer's flag is on,
+skip the `interrupt(...)` and resolve the payload with its
+default/as-extracted answers (each question type keeps whatever the
+extraction pipeline produced), then continue the graph. Because
+`pending_confirmation` is never persisted in auto mode, the bell
+notification and the "answer the questionnaire" button disappear with
+no frontend changes to those components — they render off pending
+state that never exists. The extraction panel itself stays accessible
+read/edit-anytime (names, dates, relationships editable as today;
+transcript text never editable — unchanged).
+
+**Independence — clarified**: the toggle is a genuine per-producer
+preference, independent of bulk import. A producer may run "auto" for
+regular /record uploads too. Bulk import does NOT force or override
+it: a batch REFUSES to start while the producer is in manual mode,
+with a clear message and an inline affordance to flip the setting
+(then flip back after the batch if they prefer manual day-to-day).
+Rationale: an override would make Settings lie about live behavior
+mid-batch; requiring the explicit flip keeps one mechanism and an
+honest UI.
+
+**Validation additions**: unit tests for the auto branch (no interrupt,
+defaults applied, panel data intact); one integration case in §8's
+batch run with auto ON (the batch's segments reach `ready` with no
+pending confirmations); a manual-mode control confirming today's flow
+is byte-identical when the flag is off.
