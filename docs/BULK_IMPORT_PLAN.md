@@ -178,18 +178,25 @@ state that never exists. The extraction panel itself stays accessible
 read/edit-anytime (names, dates, relationships editable as today;
 transcript text never editable — unchanged).
 
-**Independence — clarified**: the toggle is a genuine per-producer
-preference, independent of bulk import. A producer may run "auto" for
-regular /record uploads too. Bulk import does NOT force or override
-it: a batch REFUSES to start while the producer is in manual mode,
-with a clear message and an inline affordance to flip the setting
-(then flip back after the batch if they prefer manual day-to-day).
-Rationale: an override would make Settings lie about live behavior
-mid-batch; requiring the explicit flip keeps one mechanism and an
-honest UI.
+**Independence — REVISED 2026-08-26 (producer ruling, supersedes the
+earlier require-the-toggle design)**: the Settings toggle controls
+regular /record uploads ONLY. **Bulk import always runs auto,
+unconditionally** — the producer's stored preference is neither read,
+required, nor changed by a batch, and there is no "batch refuses to
+start in manual mode" blocking. Mechanically this is the same single
+branch at `human_confirm_node`, with the condition widened to:
+producer's `auto_extraction` is on OR the segment carries an
+`import_batch_id` — a nullable RawSegment column the §4/§5
+orchestrator stamps at ingest anyway for per-file batch state and the
+final report, so the auto path costs no new mechanism. Imported
+segments therefore never persist `pending_confirmation` (no bell, no
+questionnaire) regardless of the toggle; the extraction panel remains
+reviewable/editable afterward exactly as in §10's auto mode.
 
 **Validation additions**: unit tests for the auto branch (no interrupt,
-defaults applied, panel data intact); one integration case in §8's
-batch run with auto ON (the batch's segments reach `ready` with no
-pending confirmations); a manual-mode control confirming today's flow
-is byte-identical when the flag is off.
+defaults applied, panel data intact; the import_batch_id condition
+fires regardless of the toggle); one integration case in §8's batch
+run with the producer's toggle OFF (the batch's segments still reach
+`ready` with no pending confirmations — proving the unconditional
+auto path); a regular-upload control confirming today's manual flow
+is unchanged when the toggle is off and no batch id is present.
