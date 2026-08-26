@@ -1853,6 +1853,12 @@ cross-category collisions — so unrelated recordings sharing a step
 number render as "takes of this question" (father/army/studies/career);
 pre-existing, its own future gated round.
 
+**Bulk import IN PROGRESS, 2026-08-26** (docs/BULK_IMPORT_PLAN.md —
+its STATUS block is the authoritative handoff: what is done through
+migration 0029 applied live, the verified human_confirm_node auto-path
+mechanism, and the exact 9-item remaining list including the
+PREFILTER=on launch gate with both pre-flip proofs).
+
 **Gemini context caching SHIPPED, 2026-08-23** (main,
 docs/GEMINI_CONTEXT_CACHING_PLAN.md): SHOWN_STATE_PLACEMENT=message —
 the transcript is now a stable cacheable prefix (byte-identical system

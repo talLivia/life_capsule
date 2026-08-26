@@ -1,6 +1,64 @@
 # Bulk import of legacy videos — plan (2026-08-26)
 
-**STATUS: PLAN ONLY — nothing built. Producer reviews before any code.**
+**STATUS 2026-08-26 — IMPLEMENTATION IN PROGRESS (milestone 1 partial).
+Exact handoff state for a fresh session:**
+
+DONE:
+* Plan finalized and producer-approved through `5f99f20` (all rulings
+  in §9/§10: no size caps; CSV order = take order; bulk import always
+  auto-confirms via import_batch_id, UNCONDITIONALLY, independent of
+  the Settings toggle — no blocking, no toggle read in the batch path).
+* `User.auto_extraction` (Boolean, default false) and
+  `RawSegment.import_batch_id` (nullable, indexed) added to models.py;
+  **migration 0029 written and APPLIED to live Neon** (alembic head =
+  0029).
+* Verified mechanism for the auto path: `human_confirm_node`
+  (analysis_graph.py:1219) is the ONE interrupt site; its downstream
+  answer-application keys off entries in the returned dict, so
+  **`answer = {}` (skip the interrupt) applies no corrections and
+  keeps the extraction as produced** — identical shape to the existing
+  zero-questions fast path. The branch condition:
+  `producer.auto_extraction OR segment.import_batch_id is not None`.
+
+REMAINING (in order; run the full pytest suite green after each
+milestone; report per milestone):
+1. The `human_confirm_node` auto branch itself (NOT yet written) —
+   per the verified mechanism above; must not persist
+   pending_confirmation on the auto path.
+2. The three §10 unit tests (toggle fires; batch id fires regardless
+   of toggle; manual path unchanged with neither).
+3. Full suite green -> milestone 1 report.
+4. CSV template generation + download endpoint (live from
+   app/interview_questions.json, UTF-8 BOM, §2 format).
+5. Upload/validation flow: staging via existing presign to
+   bulk_staging/{producer}/{batch_id}/, §3 all-or-nothing validation
+   report, bulk_batches state record (staging|validated|running|
+   done|done_with_failures, per-file states).
+6. Batch orchestrator: worker pool (concurrency 2-3) driving the REAL
+   presign->ingest path per file with import_batch_id stamped;
+   continue-and-report; per-file retry (delete-and-reingest);
+   PLUS the §5 warm-debounce in finalize_ingest_node (skip archive
+   warm while another same-producer segment is processing).
+7. Settings UI: auto_extraction toggle; bulk-import panel (template
+   download, multi-file select, mapping upload, validation report,
+   start, progress poll, resumable across tab closes).
+8. **PREFILTER=on global flip — REQUIRED launch gate (§7)**: re-run
+   BOTH proofs against then-current code/model immediately before the
+   flip — (a) inertness byte-proof (small-archive prompt hash
+   unchanged with toggle on; last known-good hash 4de2869d1b0b9ddf at
+   18,652 chars), (b) scripts/gate_prefilter_synthetic.py 10/10.
+   Either failing BLOCKS launch. Fold in the punch list: pin-dict
+   eviction in prefilter.py, per-read filtered/admitted metric,
+   crowd-out re-check at the real budget ratio.
+9. Full §8 validation suite: integration batch test (real pipeline,
+   throwaway producer, toggle OFF + batch id present -> segments
+   reach ready with ZERO pending confirmations); regular-upload
+   control (toggle off, no batch id -> today's manual flow
+   unchanged); CSV/mapping validator unit tests; standard
+   prompt_regression panel as a no-change control (bulk import
+   touches no prompt bytes).
+
+Producer reviews before any code beyond this list.**
 
 ## 0. Goal and non-negotiables
 
