@@ -438,6 +438,33 @@ class RawSegment(Base):
     )
 
 
+class BulkImportBatch(Base):
+    """One bulk-import batch (BULK_IMPORT_PLAN §3-§6): server-side truth for
+    staging/validation/progress so the flow survives closed tabs. Files are
+    staged under bulk_staging/{producer}/{batch}/ and ingestion runs off
+    this row, not the browser session."""
+
+    __tablename__ = "bulk_import_batches"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    producer_id = Column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # staging -> validated -> running -> done | done_with_failures
+    state = Column(String, nullable=False, default="staging", server_default="staging")
+    #: {filename: {"size": int|None, "staged": bool}}
+    files = Column(JSON, nullable=False, default=dict)
+    #: ordered [{"question_id": str, "filename": str}] — CSV row order = take order
+    mapping = Column(JSON, nullable=True)
+    #: last validation report {"errors": [...], "warnings": [...]}
+    report = Column(JSON, nullable=True)
+    #: {filename: {"state": "pending|ingesting|ready|failed", "error": str|None,
+    #:  "segment_id": str|None}} — written by the orchestrator
+    file_states = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
 class TranscriptChunk(Base):
     """
     One Whisper-detected phrase/sentence from a `RawSegment`'s recording —

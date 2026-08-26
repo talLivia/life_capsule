@@ -33,10 +33,14 @@ milestone; report per milestone):
    template.csv (app/api/v1/bulk_import.py; producer-only, generated
    live via interview_config.get_questions in the producer's
    recording_language, BOM-prefixed; 3 tests; suite 906 green).
-5. Upload/validation flow: staging via existing presign to
-   bulk_staging/{producer}/{batch_id}/, §3 all-or-nothing validation
-   report, bulk_batches state record (staging|validated|running|
-   done|done_with_failures, per-file states).
+5. DONE (2026-08-27): BulkImportBatch model + migration 0030
+   (applied live); staging PUT to bulk_staging/{producer}/{batch}/
+   (re-upload overwrites = resume-by-reselect; any new file voids a
+   prior validation); §3 pure validator (unknown id / missing file /
+   duplicate / non-video / empty errors, unmapped-file warnings, plan
+   in CSV order); mapping upload endpoint stores report+plan and
+   flips staging<->validated; owner-scoped batch list/get for resume.
+   8 tests; suite 911 green.
 6. Batch orchestrator: worker pool (concurrency 2-3) driving the REAL
    presign->ingest path per file with import_batch_id stamped;
    continue-and-report; per-file retry (delete-and-reingest);
