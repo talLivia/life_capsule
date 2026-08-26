@@ -1942,3 +1942,83 @@ async def test_answering_someone_new_does_not_crash(monkeypatch):
         }
     )
     assert result["entity_resolutions"]["אמנון"]["resolved_name"] == "אמנון"
+
+
+# ── auto-extraction (BULK_IMPORT_PLAN §10) ──────────────────────────────────
+# One branch at the single interrupt site: producer's toggle OR the
+# segment's import_batch_id skips the interrupt and lets the documented
+# silence-defaults keep the extraction exactly as produced.
+
+_AUTO_STATE_NAMES = [
+    {
+        "name": "אמנון",
+        "question": "?",
+        "candidates": [{"uuid": "real-row", "name": "אמנון", "summary": "דוד"}],
+    }
+]
+
+
+def _confirm_state(segment_id):
+    return {
+        "segment_id": segment_id,
+        "group_id": "g1",
+        "names_to_check": _AUTO_STATE_NAMES,
+    }
+
+
+async def test_auto_extraction_toggle_skips_interrupt(segment, test_user, db_session):
+    test_user.auto_extraction = True
+    await db_session.commit()
+
+    def boom(payload):  # pragma: no cover - reaching it IS the failure
+        raise AssertionError("interrupt fired despite auto_extraction=True")
+
+    real = ag.interrupt
+    ag.interrupt = boom
+    try:
+        result = await ag.human_confirm_node(_confirm_state(segment.id))
+    finally:
+        ag.interrupt = real
+    # Silence-default: the unanswered identity question resolves as
+    # "someone new" — the as-extracted state, nothing merged.
+    res = (result.get("entity_resolutions") or {}).get("אמנון")
+    assert res is not None and res["same_as_uuid"] is None
+
+
+async def test_import_batch_id_auto_confirms_regardless_of_toggle(
+    segment, test_user, db_session
+):
+    test_user.auto_extraction = False  # the toggle is OFF — batch id alone decides
+    segment.import_batch_id = "batch-abc"
+    await db_session.commit()
+
+    def boom(payload):  # pragma: no cover
+        raise AssertionError("interrupt fired for a bulk-imported segment")
+
+    real = ag.interrupt
+    ag.interrupt = boom
+    try:
+        result = await ag.human_confirm_node(_confirm_state(segment.id))
+    finally:
+        ag.interrupt = real
+    res = (result.get("entity_resolutions") or {}).get("אמנון")
+    assert res is not None and res["same_as_uuid"] is None
+
+
+async def test_manual_path_unchanged_without_toggle_or_batch_id(
+    segment, test_user, db_session
+):
+    assert not test_user.auto_extraction and segment.import_batch_id is None
+    called = {}
+
+    def record(payload):
+        called["payload"] = payload
+        return {}
+
+    real = ag.interrupt
+    ag.interrupt = record
+    try:
+        await ag.human_confirm_node(_confirm_state(segment.id))
+    finally:
+        ag.interrupt = real
+    assert "payload" in called  # today's flow: the interrupt still fires

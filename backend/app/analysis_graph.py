@@ -241,6 +241,27 @@ def _apply_entity_resolutions(
     return resolved
 
 
+async def _auto_confirm(segment_id) -> bool:
+    """Should human_confirm_node skip its interrupt for this segment?
+
+    True when the producer runs auto-extraction, or UNCONDITIONALLY for a
+    bulk-imported segment (import_batch_id set) — the batch path neither
+    reads nor requires the producer's toggle (BULK_IMPORT_PLAN §10).
+    Fail-soft to False: any lookup problem gets today's manual behaviour,
+    never a silently skipped confirmation."""
+    if not segment_id:
+        return False
+    try:
+        async with AsyncSessionLocal() as db:
+            segment, user = await _load_segment_and_user(db, segment_id)
+        if segment is None or user is None:
+            return False
+        return bool(segment.import_batch_id) or bool(user.auto_extraction)
+    except Exception as e:
+        logger.warning(f"auto-confirm lookup failed for {segment_id}; interrupting as usual: {e}")
+        return False
+
+
 async def _load_segment_and_user(db, segment_id: str):
     result = await db.execute(
         select(RawSegment, User)
@@ -1243,7 +1264,24 @@ async def human_confirm_node(state: AnalysisState) -> dict:
         # node is still correct if called directly.
         return {}
 
-    answer = interrupt(
+    # Auto-extraction (BULK_IMPORT_PLAN §10): skip the interrupt when the
+    # producer runs auto mode, or UNCONDITIONALLY for a bulk-imported
+    # segment (import_batch_id set) regardless of the toggle. The empty
+    # answer then flows through the SAME application code below, whose
+    # documented silence-defaults are exactly "keep the extraction as
+    # produced" (identity silence = someone new; types cleared as asked).
+    # pending_confirmation is never persisted (only the interrupt does
+    # that), so no bell and no questionnaire; the extraction panel stays
+    # reviewable/editable afterward.
+    auto_accept = await _auto_confirm(state.get("segment_id"))
+    if auto_accept:
+        logger.info(
+            f"human_confirm_node: auto-accepting extraction for segment "
+            f"{state['segment_id']} ({sum(len(v) for v in payload.values())} "
+            "question(s) resolved as extracted)"
+        )
+
+    answer = {} if auto_accept else interrupt(
         {
             **payload,
             # NOT a question, and deliberately not part of `payload`: every

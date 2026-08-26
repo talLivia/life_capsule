@@ -20,14 +20,15 @@ DONE:
   zero-questions fast path. The branch condition:
   `producer.auto_extraction OR segment.import_batch_id is not None`.
 
+MILESTONE 1 COMPLETE (2026-08-26): the human_confirm_node auto branch
+is live (`answer = {} if auto_accept else interrupt(...)`, flowing
+through the REAL application path whose silence-defaults keep the
+extraction as produced; `_auto_confirm` fail-soft helper; missing
+segment_id = manual). Three §10 unit tests added; full suite 903
+passed.
+
 REMAINING (in order; run the full pytest suite green after each
 milestone; report per milestone):
-1. The `human_confirm_node` auto branch itself (NOT yet written) —
-   per the verified mechanism above; must not persist
-   pending_confirmation on the auto path.
-2. The three §10 unit tests (toggle fires; batch id fires regardless
-   of toggle; manual path unchanged with neither).
-3. Full suite green -> milestone 1 report.
 4. CSV template generation + download endpoint (live from
    app/interview_questions.json, UTF-8 BOM, §2 format).
 5. Upload/validation flow: staging via existing presign to

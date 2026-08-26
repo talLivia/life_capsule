@@ -76,6 +76,12 @@ class User(Base):
     chat_mode = Column(
         String, nullable=False, default="video_clips_v2", server_default="video_clips_v2"
     )
+    # Auto-extraction (BULK_IMPORT_PLAN §10): when on, human_confirm_node
+    # skips its interrupt for REGULAR /record uploads and accepts the
+    # extraction as produced (panel stays editable afterward). Bulk-imported
+    # segments auto-confirm UNCONDITIONALLY via import_batch_id, independent
+    # of this preference.
+    auto_extraction = Column(Boolean, nullable=False, default=False, server_default="false")
     # /record's accordion is locked and sequential by default. Turning this on
     # makes every category openable regardless of progress, so the producer can
     # record or upload out of order — the escape hatch for rehoming footage and
@@ -328,6 +334,10 @@ class RawSegment(Base):
     # backfills every existing row, and the scoped renderer refuses a ready
     # segment without one rather than inventing an anchor.
     recording_no = Column(Integer, nullable=True)
+    # Set only by the bulk-import orchestrator (BULK_IMPORT_PLAN): ties the
+    # segment to its batch for per-file state/reporting, and makes
+    # human_confirm_node auto-confirm it regardless of User.auto_extraction.
+    import_batch_id = Column(String, nullable=True, index=True)
     interview_session_id = Column(
         String,
         ForeignKey("interview_sessions.id", ondelete="CASCADE"),
