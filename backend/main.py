@@ -25,6 +25,7 @@ from sqlalchemy import select, text
 
 from app.api.v1 import (
     avatars,
+    bulk_import,
     conversations,
     entities,
     family,
@@ -232,6 +233,7 @@ app.include_router(interview.router, prefix="/api/v1/interview", tags=["intervie
 app.include_router(family.router, prefix="/api/v1/family", tags=["family"])
 app.include_router(entities.router, prefix="/api/v1/entities", tags=["entities"])
 app.include_router(media.router, prefix="/api/v1/media", tags=["media"])
+app.include_router(bulk_import.router, prefix="/api/v1/bulk-import", tags=["bulk-import"])
 # Internal GPU-inference proxy target (Prompt 9) — shared-secret auth per
 # request (see gpu_internal._check_secret), not JWT; deliberately outside
 # /api/v1 to make clear this isn't a frontend-facing API surface.

@@ -29,8 +29,10 @@ passed.
 
 REMAINING (in order; run the full pytest suite green after each
 milestone; report per milestone):
-4. CSV template generation + download endpoint (live from
-   app/interview_questions.json, UTF-8 BOM, §2 format).
+4. DONE (2026-08-26): CSV template + GET /api/v1/bulk-import/
+   template.csv (app/api/v1/bulk_import.py; producer-only, generated
+   live via interview_config.get_questions in the producer's
+   recording_language, BOM-prefixed; 3 tests; suite 906 green).
 5. Upload/validation flow: staging via existing presign to
    bulk_staging/{producer}/{batch_id}/, §3 all-or-nothing validation
    report, bulk_batches state record (staging|validated|running|
