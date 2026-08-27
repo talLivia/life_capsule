@@ -51,6 +51,12 @@ SIMILARITY_FLOOR = 0.30
 #: session_id -> (version_key, frozenset of admitted segment ids)
 _PINNED: Dict[str, Tuple[str, frozenset]] = {}
 
+#: Fleet hygiene (BULK_IMPORT_PLAN §7 punch list): pins are per-session and
+#: tiny, but unbounded growth over a long-lived process is still a leak.
+#: Insertion-ordered dict -> evicting the oldest is FIFO; an evicted pin
+#: just means one recompute (a price event, never wrongness).
+_PIN_CAP = 500
+
 
 @dataclass
 class PrefilterResult:
@@ -154,6 +160,8 @@ async def apply(
     admitted_f = frozenset(admitted)
     if session_id:
         _PINNED[session_id] = (vkey, admitted_f)
+        while len(_PINNED) > _PIN_CAP:
+            _PINNED.pop(next(iter(_PINNED)))
     result = PrefilterResult(
         admitted=admitted_f,
         excluded=len(archive) - len(admitted_f),

@@ -140,3 +140,22 @@ def test_covers_entity_guard():
         admitted=frozenset({"a", "b"}), excluded=0,
         low_confidence=True, expanded=False, set_hash="x")
     assert not prefilter.covers_entity(lc, ["a"])  # low confidence -> no claim
+
+
+def test_prefilter_default_is_on_since_bulk_import_launch():
+    """Flipped 2026-08-27 (BULK_IMPORT_PLAN §7) after both proofs passed.
+    Safe fleet-wide because activation self-selects per producer via the
+    per-request budget check — under-budget archives render byte-identically
+    (the inertness proof pins that)."""
+    assert settings.model_fields["PREFILTER"].default == "on"
+
+
+@pytest.mark.asyncio
+async def test_pin_cap_evicts_oldest(monkeypatch):
+    _mock_rank(monkeypatch, (1.0, 0.0))
+    monkeypatch.setattr(prefilter, "_PIN_CAP", 3)
+    archive = [_rec(f"r{i}") for i in range(5)]
+    for n in range(5):
+        await prefilter.apply("q", f"sess-{n}", archive, {}, set(), (1,))
+    assert len(prefilter._PINNED) == 3
+    assert "sess-0" not in prefilter._PINNED and "sess-4" in prefilter._PINNED

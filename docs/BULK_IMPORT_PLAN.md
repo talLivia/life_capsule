@@ -66,14 +66,16 @@ milestone; report per milestone):
    running, per-file retry buttons, and mount-time resume via GET
    /batches (the server batch row is the truth; closed tabs lose
    nothing). tsc clean; backend suite 914 green.
-8. **PREFILTER=on global flip — REQUIRED launch gate (§7)**: re-run
-   BOTH proofs against then-current code/model immediately before the
-   flip — (a) inertness byte-proof (small-archive prompt hash
-   unchanged with toggle on; last known-good hash 4de2869d1b0b9ddf at
-   18,652 chars), (b) scripts/gate_prefilter_synthetic.py 10/10.
-   Either failing BLOCKS launch. Fold in the punch list: pin-dict
-   eviction in prefilter.py, per-read filtered/admitted metric,
-   crowd-out re-check at the real budget ratio.
+8. DONE (2026-08-27): **PREFILTER=on globally** — both proofs
+   re-run at flip time and PASSED: inertness byte-proof (pf=None on
+   the real archive with the toggle on; 18,652 chars,
+   4de2869d1b0b9ddf exact) and the synthetic gate 10/10. Punch list
+   landed with it: pin-dict FIFO eviction (_PIN_CAP=500, tested);
+   the per-read filtered/admitted log line stands as the metric until
+   an ops surface exists; crowd-out re-checked at a REAL ratio
+   (150K/203K budget: 40/54 admitted, army 6/6 for its own question —
+   the failure mode remains unreachable outside starved stress
+   settings). Suite 916 green.
 9. Full §8 validation suite: integration batch test (real pipeline,
    throwaway producer, toggle OFF + batch id present -> segments
    reach ready with ZERO pending confirmations); regular-upload

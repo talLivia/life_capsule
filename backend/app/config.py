@@ -97,7 +97,13 @@ class Settings(BaseSettings):
     # producer under the ceiling renders byte-identically regardless of
     # the toggle. ~300K chars ≈ ~100K tokens of blended Hebrew/English —
     # two-thirds of the ~150K-token single-prompt ceiling.
-    PREFILTER: str = "off"
+    # FLIPPED ON 2026-08-27 as bulk-import's launch gate (BULK_IMPORT_PLAN
+    # §7): a bulk-imported archive can cross the ceiling on day one, and
+    # the measured over-ceiling unfiltered behaviour is broken (empty)
+    # answers. Both proofs re-run at flip time: inertness byte-proof
+    # (18652 chars / 4de2869d1b0b9ddf) and the 10-check synthetic gate.
+    # The per-request budget check self-selects per producer.
+    PREFILTER: str = "on"
     PREFILTER_CHAR_BUDGET: int = 300_000
 
     # AWS (retained for the base project's Terraform/EC2 GPU deploy path —
