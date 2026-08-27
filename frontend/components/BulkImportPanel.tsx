@@ -6,7 +6,6 @@
 // the draft/running batch via GET /batches and resumes.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import toast from 'react-hot-toast'
 import { apiClient } from '../lib/api'
 
 type FileState = { state: string; error?: string | null }
@@ -23,6 +22,11 @@ const BASE = '/api/v1/bulk-import'
 export default function BulkImportPanel({ isGuest }: { isGuest: boolean }) {
   const [batch, setBatch] = useState<Batch | null>(null)
   const [busy, setBusy] = useState(false)
+  // Per-file staging progress + a persistent status banner: live testing
+  // found every failure path here was SILENT (no catch on the mapping
+  // upload, disabled inputs with no explanation, resume errors swallowed).
+  const [staging, setStaging] = useState<Record<string, string>>({})
+  const [banner, setBanner] = useState<{ kind: 'ok' | 'err' | 'info'; text: string } | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const refresh = useCallback(async (id: string) => {
@@ -42,7 +46,9 @@ export default function BulkImportPanel({ isGuest }: { isGuest: boolean }) {
         )
         if (open) setBatch(open)
       })
-      .catch(() => {})
+      .catch(() => {
+        setBanner({ kind: 'err', text: 'Could not load your import batches — are you still logged in? Refresh and try again.' })
+      })
   }, [isGuest])
 
   // Poll while running; server state is the truth.
@@ -64,31 +70,50 @@ export default function BulkImportPanel({ isGuest }: { isGuest: boolean }) {
   const stageFiles = async (files: FileList | null) => {
     if (!files?.length) return
     setBusy(true)
+    setBanner({ kind: 'info', text: `Uploading ${files.length} file(s)…` })
+    let failed = 0
     try {
       const b = await ensureBatch()
       for (const f of Array.from(files)) {
-        const form = new FormData()
-        form.append('file', f)
-        await apiClient.put(`${BASE}/batches/${b.id}/files/${encodeURIComponent(f.name)}`, form, {
-          // The instance default is application/json, under which axios
-          // JSON-converts FormData (and throws on File payloads — the
-          // "Upload failed" bug). Multipart here lets the browser set the
-          // boundary.
-          headers: { 'Content-Type': 'multipart/form-data' },
-        })
+        setStaging(prev => ({ ...prev, [f.name]: 'uploading…' }))
+        try {
+          const form = new FormData()
+          form.append('file', f)
+          await apiClient.put(`${BASE}/batches/${b.id}/files/${encodeURIComponent(f.name)}`, form, {
+            // The instance default is application/json, under which axios
+            // JSON-converts FormData (and throws on File payloads). Multipart
+            // here lets the browser set the boundary.
+            headers: { 'Content-Type': 'multipart/form-data' },
+          })
+          setStaging(prev => ({ ...prev, [f.name]: 'done' }))
+        } catch (err: unknown) {
+          failed += 1
+          const detail = (err as { response?: { status?: number } })?.response?.status
+          setStaging(prev => ({ ...prev, [f.name]: `failed${detail ? ` (${detail})` : ''}` }))
+        }
       }
       await refresh(b.id)
-      toast.success(`${files.length} file(s) staged`)
-    } catch {
-      toast.error('Upload failed — re-select the files to resume')
+      setBanner(
+        failed
+          ? { kind: 'err', text: `${files.length - failed} uploaded, ${failed} failed — re-select the failed files to retry them.` }
+          : { kind: 'ok', text: `${files.length} file(s) staged.` }
+      )
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status
+      setBanner({ kind: 'err', text: `Upload failed${status ? ` (HTTP ${status})` : ''} — check you are logged in and try again.` })
     } finally {
       setBusy(false)
     }
   }
 
   const uploadMapping = async (files: FileList | null) => {
-    if (!files?.length || !batch) return
+    if (!files?.length) return
+    if (!batch) {
+      setBanner({ kind: 'err', text: 'Stage your video files first (step 2) — the mapping needs a batch to attach to.' })
+      return
+    }
     setBusy(true)
+    setBanner({ kind: 'info', text: 'Checking the mapping…' })
     try {
       const form = new FormData()
       form.append('file', files[0])
@@ -96,11 +121,17 @@ export default function BulkImportPanel({ isGuest }: { isGuest: boolean }) {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
       setBatch(r.data)
-      toast[r.data.state === 'validated' ? 'success' : 'error'](
-        r.data.state === 'validated'
-          ? 'Mapping valid — ready to start'
-          : 'Mapping has problems — see the report below'
+      const ok = r.data.state === 'validated'
+      setBanner(
+        ok
+          ? { kind: 'ok', text: `Mapping valid — ${r.data.mapping?.length ?? 0} file(s) ready to import.` }
+          : { kind: 'err', text: 'Mapping has problems — fix the rows listed below and upload it again.' }
       )
+    } catch (err: unknown) {
+      // This path used to be SILENT (no catch): any transport/server error
+      // vanished. Now it always lands in the banner.
+      const status = (err as { response?: { status?: number } })?.response?.status
+      setBanner({ kind: 'err', text: `Mapping upload failed${status ? ` (HTTP ${status})` : ''} — is it the filled CSV template?` })
     } finally {
       setBusy(false)
     }
@@ -155,8 +186,22 @@ export default function BulkImportPanel({ isGuest }: { isGuest: boolean }) {
         1. Download question template (CSV)
       </button>
 
+      {banner && (
+        <div
+          className={
+            banner.kind === 'ok'
+              ? 'text-xs font-semibold text-green-600'
+              : banner.kind === 'err'
+                ? 'text-xs font-semibold text-red-600'
+                : 'text-xs font-semibold text-muted animate-pulse'
+          }
+        >
+          {banner.text}
+        </div>
+      )}
+
       <label className="btn-secondary w-fit cursor-pointer">
-        2. Select video files
+        2. {busy ? 'Uploading…' : 'Select video files'}
         <input
           type="file"
           multiple
@@ -166,6 +211,15 @@ export default function BulkImportPanel({ isGuest }: { isGuest: boolean }) {
           onChange={e => stageFiles(e.target.files)}
         />
       </label>
+      {Object.keys(staging).length > 0 && (
+        <div className="text-xs text-muted flex flex-col gap-0.5 max-h-40 overflow-y-auto">
+          {Object.entries(staging).map(([name, st]) => (
+            <span key={name} className={st.startsWith('failed') ? 'text-red-600' : ''}>
+              {name}: {st}
+            </span>
+          ))}
+        </div>
+      )}
       {batch && (
         <span className="text-xs text-muted">
           {Object.keys(batch.files || {}).length} file(s) staged · batch {batch.state}
