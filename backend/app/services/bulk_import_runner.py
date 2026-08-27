@@ -74,7 +74,7 @@ async def _ingest_one(batch: BulkImportBatch, producer: User,
     qindex, qtext = _catalog_index(entry["question_id"], producer.recording_language or "he")
     safe = os.path.basename(filename)
     video_key = f"segments/{producer.id}/{session_id}/{qindex}/bulk_{batch.id[:8]}_{safe}"
-    await storage_service.upload_file(video_key, data)
+    await storage_service.upload_file(data, video_key)
     async with AsyncSessionLocal() as db:
         session = await db.get(InterviewSession, session_id)
         segment = await create_segment_row(

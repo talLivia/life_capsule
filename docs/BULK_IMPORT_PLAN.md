@@ -1,7 +1,8 @@
 # Bulk import of legacy videos — plan (2026-08-26)
 
-**STATUS 2026-08-26 — IMPLEMENTATION IN PROGRESS (milestone 1 partial).
-Exact handoff state for a fresh session:**
+**STATUS 2026-08-27 — COMPLETE AND SHIPPED. All 9 items done (record
+below); PREFILTER=on globally per §7 with both proofs passed at flip
+time; suite 916 green.**
 
 DONE:
 * Plan finalized and producer-approved through `5f99f20` (all rulings
@@ -76,13 +77,19 @@ milestone; report per milestone):
    (150K/203K budget: 40/54 admitted, army 6/6 for its own question —
    the failure mode remains unreachable outside starved stress
    settings). Suite 916 green.
-9. Full §8 validation suite: integration batch test (real pipeline,
-   throwaway producer, toggle OFF + batch id present -> segments
-   reach ready with ZERO pending confirmations); regular-upload
-   control (toggle off, no batch id -> today's manual flow
-   unchanged); CSV/mapping validator unit tests; standard
-   prompt_regression panel as a no-change control (bulk import
-   touches no prompt bytes).
+9. DONE (2026-08-27) — FEATURE COMPLETE. Integration batch PASS on
+   the REAL pipeline (throwaway producer, 2 real-speech takes + 1
+   corrupt file, toggle OFF + batch id): both takes ready via real
+   STT/entities/embeddings (24 chunks), ZERO pending confirmations
+   (unconditional auto path proven end-to-end), corrupt file failed
+   with the real error, batch done_with_failures, cascade cleanup to
+   zero rows (also settles the populated-producer cascade question).
+   Caught en route: upload_file arg-order inversion in runner+staging
+   (unit-test mock had mirrored the wrong order) — fixed everywhere,
+   mock corrected. Panel no-change control: every unit selection
+   baseline-identical 5/5; only the documented day-scale strata moved
+   (offer flickers, exhausted clarify 0-4/5 wobble, known marginals)
+   — bulk import touches no prompt bytes, confirmed. Suite 916 green.
 
 Producer reviews before any code beyond this list.**
 

@@ -185,7 +185,7 @@ async def stage_file(
         raise HTTPException(status_code=409, detail=f"Batch is {batch.state}")
     safe = os.path.basename(filename)
     data = await file.read()
-    await storage_service.upload_file(staging_key(user.id, batch.id, safe), data)
+    await storage_service.upload_file(data, staging_key(user.id, batch.id, safe))
     files = dict(batch.files or {})
     files[safe] = {"size": len(data), "staged": True}
     batch.files = files

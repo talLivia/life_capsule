@@ -97,7 +97,7 @@ async def test_batch_flow_stage_validate_and_resume(client, auth_headers, tmp_pa
 
     stored = {}
 
-    async def fake_upload(key, data, **kw):
+    async def fake_upload(data, key, **kw):
         stored[key] = data
         return f"/uploads/{key}"
 
@@ -169,7 +169,7 @@ async def runner_env(test_engine, monkeypatch):
 
     store = {}
 
-    async def fake_upload(key, data, **kw):
+    async def fake_upload(data, key, **kw):
         store[key] = data
         return f"/uploads/{key}"
 
