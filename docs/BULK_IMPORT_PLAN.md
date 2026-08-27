@@ -1,6 +1,20 @@
 # Bulk import of legacy videos — plan (2026-08-26)
 
-**STATUS 2026-08-27 — COMPLETE AND SHIPPED. All 9 items done (record
+**STATUS 2026-08-28 — UI REDESIGN SHIPPED + 162-SCALE VERIFIED.**
+Derived-rows redesign (migrations 0031): the batch stores raw CSV pairs
++ exclusions; every row status is derived per read; the full-page
+import view (?view=import) renders the live table; start compiles the
+plan from table truth. Live-testing round fixed: axios FormData
+transport, authed template download, 429 retry w/ Retry-After,
+missing-files-skippable ruling, silent-failure UI holes, and a
+PRE-EXISTING pipeline bug the 162-scale test surfaced (Whisper-fallback
+numpy timings crashing the checkpointer — any ingestion that fell back
+from Deepgram; float() fix + regression test). Scale run, real
+pipeline: 162 files staged in 422s (0 rate-limit retries at ~2.6s/file
+pace), 161-row mapping derived in 2.5s, 133 exclusions, 24/24 imports
+READY in 932s, state done, cleanup clean.
+
+**Earlier: 2026-08-27 — COMPLETE AND SHIPPED. All 9 items done (record
 below); PREFILTER=on globally per §7 with both proofs passed at flip
 time; suite 916 green.**
 
