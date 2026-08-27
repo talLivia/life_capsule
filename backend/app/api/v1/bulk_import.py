@@ -66,48 +66,82 @@ async def download_mapping_template(user: User = Depends(require_producer)):
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v"}
 
 
-def validate_mapping(rows, staged_filenames, catalog_ids):
-    """Pure §3 validator — no side effects, whole-batch report.
-
-    `rows` = parsed CSV rows (dicts with question_id/filenames); returns
-    (errors, warnings, plan) where plan is the ordered
-    [{"question_id", "filename"}] ingestion list (CSV row order = take
-    order = archive order). ANY error blocks ingestion; warnings don't.
-    """
-    errors, warnings, plan, seen = [], [], [], {}
-    catalog = set(catalog_ids)
-    staged = set(staged_filenames)
+def parse_mapping_pairs(rows) -> list:
+    """CSV rows -> ordered (line, question_id, filename) pairs, one per
+    referenced file (a semicolon cell or duplicated rows both yield one
+    pair per file). Invalid entries are kept — status is judged at
+    derivation time, so the table can SHOW a bad row rather than hide it."""
+    pairs = []
     for i, row in enumerate(rows, start=2):  # header is line 1
         qid = (row.get("question_id") or "").strip()
         names = [f.strip() for f in (row.get("filenames") or "").split(";") if f.strip()]
-        if not names:
-            continue
-        if qid not in catalog:
-            errors.append({"line": i, "error": "unknown_question_id", "question_id": qid})
-            continue
         for name in names:
-            ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
-            if ext not in VIDEO_EXTENSIONS:
-                errors.append({"line": i, "error": "not_a_video", "filename": name})
-                continue
-            if name in seen:
-                errors.append(
-                    {"line": i, "error": "duplicate_filename_reference",
-                     "filename": name, "first_line": seen[name]}
-                )
-                continue
-            seen[name] = i
-            if name not in staged:
-                # Producer ruling 2026-08-28: a mapped-but-not-uploaded file
-                # is SKIPPABLE, same tier as unmapped_file — the batch runs
-                # with whatever is mapped AND uploaded, and the missing rows
-                # are handled in a later import. Never a blocker.
-                warnings.append(
-                    {"line": i, "warning": "file_not_uploaded_skipped", "filename": name}
-                )
-                continue
-            plan.append({"question_id": qid, "filename": name})
-    for name in sorted(staged - set(seen)):
+            pairs.append({"line": i, "question_id": qid, "filename": name})
+    return pairs
+
+
+def derive_rows(pairs, excluded, staged, catalog_ids, file_states=None):
+    """THE single source of row truth (derived-rows redesign, 2026-08-28):
+    every view of the batch — the table, the report, the start-time plan —
+    is computed here from the stored pairs. Returns (rows, importable_idx).
+
+    Status vocabulary, in judgment order:
+      excluded | unknown_question | not_a_video | duplicate | no_file_yet |
+      ready_to_import | pending | ingesting | done | failed
+    """
+    file_states = file_states or {}
+    catalog = set(catalog_ids)
+    staged_set = set(staged)
+    excluded_set = set(excluded or [])
+    rows, importable, seen = [], [], {}
+    for idx, p in enumerate(pairs):
+        qid, name = p["question_id"], p["filename"]
+        ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+        st, err = "ready_to_import", None
+        if idx in excluded_set:
+            st = "excluded"
+        elif qid not in catalog:
+            st, err = "unknown_question", f"question id {qid!r} is not in the catalog"
+        elif ext not in VIDEO_EXTENSIONS:
+            st, err = "not_a_video", f"{name} is not a video file"
+        elif name in seen:
+            st, err = "duplicate", f"{name} already referenced on line {seen[name]}"
+        elif name not in staged_set:
+            st = "no_file_yet"
+        if st == "ready_to_import":
+            seen[name] = p["line"]
+            fs = file_states.get(name)
+            if fs:  # the batch ran (or is running): live pipeline status
+                st = {"pending": "pending", "ingesting": "ingesting",
+                      "ready": "done", "failed": "failed"}.get(fs.get("state"), fs.get("state"))
+                err = fs.get("error")
+            else:
+                importable.append(idx)
+        rows.append({"index": idx, "line": p["line"], "question_id": qid,
+                     "filename": name, "status": st, "error": err})
+    return rows, importable
+
+
+def validate_mapping(rows, staged_filenames, catalog_ids):
+    """Back-compat adapter over derive_rows: (errors, warnings, plan) in the
+    original report shapes. Kept because the §3 contract (all-or-nothing
+    reporting, plan in CSV order) is now a VIEW of the derivation."""
+    pairs = parse_mapping_pairs(rows)
+    derived, importable = derive_rows(pairs, [], staged_filenames, catalog_ids)
+    errors, warnings, plan = [], [], []
+    kind = {"unknown_question": "unknown_question_id", "not_a_video": "not_a_video",
+            "duplicate": "duplicate_filename_reference"}
+    for r in derived:
+        if r["status"] in kind:
+            errors.append({"line": r["line"], "error": kind[r["status"]],
+                           "filename": r["filename"], "question_id": r["question_id"]})
+        elif r["status"] == "no_file_yet":
+            warnings.append({"line": r["line"], "warning": "file_not_uploaded_skipped",
+                             "filename": r["filename"]})
+        elif r["status"] == "ready_to_import":
+            plan.append({"question_id": r["question_id"], "filename": r["filename"]})
+    referenced = {r["filename"] for r in derived}
+    for name in sorted(set(staged_filenames) - referenced):
         warnings.append({"warning": "unmapped_file", "filename": name})
     if not plan and not errors:
         errors.append({"line": None, "error": "empty_batch"})
@@ -139,15 +173,30 @@ async def _owned_batch(batch_id: str, user: User, db: AsyncSession) -> BulkImpor
     return batch
 
 
-def _batch_view(batch: BulkImportBatch) -> dict:
-    return {
+def _batch_view(batch: BulkImportBatch, language: str = "he") -> dict:
+    view = {
         "id": batch.id,
         "state": batch.state,
         "files": batch.files or {},
         "mapping": batch.mapping,
         "report": batch.report,
         "file_states": batch.file_states or {},
+        "rows": [],
+        "unmapped_files": [],
     }
+    if batch.mapping_rows:
+        questions = {q["id"]: q["text"] for q in interview_config.get_questions(language)}
+        staged = [n for n, m in (batch.files or {}).items() if m.get("staged")]
+        rows, _ = derive_rows(
+            batch.mapping_rows, batch.excluded or [], staged,
+            questions.keys(), batch.file_states or {},
+        )
+        for r in rows:
+            r["question_text"] = questions.get(r["question_id"], "")
+        view["rows"] = rows
+        referenced = {r["filename"] for r in rows}
+        view["unmapped_files"] = sorted(set(staged) - referenced)
+    return view
 
 
 @router.post("/batches", status_code=status.HTTP_201_CREATED)
@@ -230,14 +279,19 @@ async def upload_mapping(
         raise HTTPException(status_code=409, detail="Batch already running")
     text = (await file.read()).decode("utf-8-sig")
     rows = list(_csv.DictReader(_io.StringIO(text)))
-    catalog_ids = [q["id"] for q in interview_config.get_questions(user.recording_language or "he")]
+    lang = user.recording_language or "he"
+    catalog_ids = [q["id"] for q in interview_config.get_questions(lang)]
     staged = [name for name, meta in (batch.files or {}).items() if meta.get("staged")]
+    # Store the RAW pairs (derived-rows redesign): statuses are computed per
+    # read from here on, and the runner plan is compiled at start time.
+    batch.mapping_rows = parse_mapping_pairs(rows)
+    batch.excluded = []
     errors, warnings, plan = validate_mapping(rows, staged, catalog_ids)
     batch.report = {"errors": errors, "warnings": warnings}
     batch.mapping = plan
-    batch.state = "validated" if not errors else "staging"
+    batch.state = "validated" if plan else "staging"
     await db.commit()
-    return _batch_view(batch)
+    return _batch_view(batch, lang)
 
 
 @router.post("/batches/{batch_id}/start")
@@ -255,12 +309,53 @@ async def start_batch(
     batch = await _owned_batch(batch_id, user, db)
     if batch.state != "validated":
         raise HTTPException(status_code=409, detail=f"Batch is {batch.state}, not validated")
+    lang = user.recording_language or "he"
+    if batch.mapping_rows:
+        # Compile the effective plan NOW: importable rows minus exclusions
+        # minus missing files — the table's current truth becomes the plan.
+        questions = [q["id"] for q in interview_config.get_questions(lang)]
+        staged = [n for n, m in (batch.files or {}).items() if m.get("staged")]
+        rows, importable = derive_rows(
+            batch.mapping_rows, batch.excluded or [], staged, questions
+        )
+        batch.mapping = [
+            {"question_id": rows[i]["question_id"], "filename": rows[i]["filename"]}
+            for i in importable
+        ]
+    if not batch.mapping:
+        raise HTTPException(status_code=409, detail="Nothing importable in this batch")
     batch.state = "running"
-    states = {e["filename"]: {"state": "pending"} for e in (batch.mapping or [])}
+    states = {e["filename"]: {"state": "pending"} for e in batch.mapping}
     batch.file_states = states
     await db.commit()
     asyncio.create_task(bulk_import_runner.run_batch(batch.id))
-    return _batch_view(batch)
+    return _batch_view(batch, lang)
+
+
+@router.patch("/batches/{batch_id}/rows/{row_index}")
+async def set_row_exclusion(
+    batch_id: str,
+    row_index: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """Exclude/restore ONE row from THIS batch (never touches the CSV).
+    Body: {"excluded": bool}."""
+    batch = await _owned_batch(batch_id, user, db)
+    if batch.state == "running":
+        raise HTTPException(status_code=409, detail="Batch is running")
+    n = len(batch.mapping_rows or [])
+    if not (0 <= row_index < n):
+        raise HTTPException(status_code=404, detail="No such row")
+    excluded = set(batch.excluded or [])
+    if payload.get("excluded"):
+        excluded.add(row_index)
+    else:
+        excluded.discard(row_index)
+    batch.excluded = sorted(excluded)
+    await db.commit()
+    return _batch_view(batch, user.recording_language or "he")
 
 
 @router.post("/batches/{batch_id}/files/{filename}/retry")

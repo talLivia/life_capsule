@@ -300,3 +300,54 @@ async def test_retry_reruns_only_the_failed_file(client, auth_headers, runner_en
     body = r.json()
     assert body["file_states"]["corrupt.mp4"]["state"] == "ready"
     assert body["state"] == "done"
+
+
+# ── derived rows (2026-08-28 redesign) ──────────────────────────────────────
+
+
+def test_derive_rows_status_vocabulary():
+    pairs = bi.parse_mapping_pairs(_rows(
+        ("childhood_q01", "a.mp4;b.mp4"),
+        ("bogus_q", "c.mp4"),
+        ("childhood_q02", "a.mp4"),      # duplicate
+        ("childhood_q03", "notes.txt"),  # not a video
+        ("childhood_q04", "later.mp4"),  # not staged
+    ))
+    rows, importable = bi.derive_rows(
+        pairs, excluded=[1], staged=["a.mp4", "b.mp4", "c.mp4"],
+        catalog_ids=["childhood_q01", "childhood_q02", "childhood_q03", "childhood_q04"],
+    )
+    # pairs flatten one-per-file: a, b(excluded), c(bogus qid), a-dup, txt, later
+    assert [r["status"] for r in rows] == [
+        "ready_to_import", "excluded", "unknown_question",
+        "duplicate", "not_a_video", "no_file_yet",
+    ]
+    assert importable == [0]
+    # pipeline statuses take over once file_states exist
+    rows2, _ = bi.derive_rows(
+        pairs[:2], [], ["a.mp4", "b.mp4"], ["childhood_q01"],
+        file_states={"a.mp4": {"state": "ready"}, "b.mp4": {"state": "failed", "error": "boom"}},
+    )
+    assert rows2[0]["status"] == "done"
+    assert rows2[1]["status"] == "failed" and rows2[1]["error"] == "boom"
+
+
+@pytest.mark.asyncio
+async def test_exclusion_and_start_compile(client, auth_headers, runner_env):
+    bid = await _validated_batch(client, auth_headers, ["a.mp4", "b.mp4"])
+    r = await client.get(f"/api/v1/bulk-import/batches/{bid}", headers=auth_headers)
+    rows = r.json()["rows"]
+    assert [x["status"] for x in rows] == ["ready_to_import", "ready_to_import"]
+    assert rows[0]["question_text"]  # real catalog text joined in
+
+    # exclude row 1 -> derived status flips; restore works too
+    r = await client.patch(f"/api/v1/bulk-import/batches/{bid}/rows/1",
+                           headers=auth_headers, json={"excluded": True})
+    assert [x["status"] for x in r.json()["rows"]] == ["ready_to_import", "excluded"]
+
+    # start compiles ONLY the non-excluded row into the runner plan
+    r = await client.post(f"/api/v1/bulk-import/batches/{bid}/start", headers=auth_headers)
+    body = r.json()
+    assert body["state"] == "running"
+    assert [e["filename"] for e in body["mapping"]] == ["a.mp4"]
+    assert list(body["file_states"]) == ["a.mp4"]

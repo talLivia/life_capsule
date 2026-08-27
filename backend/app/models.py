@@ -454,8 +454,17 @@ class BulkImportBatch(Base):
     state = Column(String, nullable=False, default="staging", server_default="staging")
     #: {filename: {"size": int|None, "staged": bool}}
     files = Column(JSON, nullable=False, default=dict)
-    #: ordered [{"question_id": str, "filename": str}] — CSV row order = take order
+    #: ordered [{"question_id": str, "filename": str}] — CSV row order = take order.
+    #: Since the derived-rows redesign this is COMPILED AT START TIME from
+    #: mapping_rows minus excluded minus missing; the runner reads only this.
     mapping = Column(JSON, nullable=True)
+    #: ALL parsed (question_id, filename) pairs from the uploaded CSV, in
+    #: order, including invalid ones — the raw material every row status is
+    #: DERIVED from on each read (the table is a renderer over this).
+    mapping_rows = Column(JSON, nullable=True)
+    #: indices into mapping_rows the producer excluded from THIS batch —
+    #: never touches their CSV file.
+    excluded = Column(JSON, nullable=False, default=list)
     #: last validation report {"errors": [...], "warnings": [...]}
     report = Column(JSON, nullable=True)
     #: {filename: {"state": "pending|ingesting|ready|failed", "error": str|None,
