@@ -321,6 +321,12 @@ async def update_current_user(
         if update_data.free_navigation is not None:
             user.free_navigation = update_data.free_navigation
 
+        # Same shape as free_navigation (BULK_IMPORT_PLAN §10): regular
+        # /record uploads skip the confirmation interrupt when true. Bulk
+        # imports auto-confirm regardless of this via import_batch_id.
+        if update_data.auto_extraction is not None:
+            user.auto_extraction = update_data.auto_extraction
+
         await db.commit()
         await db.refresh(user)
 

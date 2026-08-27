@@ -27,6 +27,7 @@ class UserUpdate(BaseModel):
     # Unlocks /record's accordion so any category can be opened out of order.
     # See docs/INTERVIEW_RESTRUCTURE.md §7A.
     free_navigation: Optional[bool] = None
+    auto_extraction: Optional[bool] = None
 
 
 class UserResponse(UserBase):
@@ -37,6 +38,7 @@ class UserResponse(UserBase):
     producer_id: Optional[str] = None
     chat_mode: str
     free_navigation: bool
+    auto_extraction: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -214,6 +216,7 @@ class FlowCategory(BaseModel):
 class InterviewFlow(BaseModel):
     interview_session_id: str
     free_navigation: bool
+    auto_extraction: bool = False
     current_category_id: Optional[str] = None
     complete: bool
     categories: List[FlowCategory]

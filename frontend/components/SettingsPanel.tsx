@@ -6,6 +6,7 @@ import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
 import { useStore } from '@/store/useStore'
 import { FamilyInvitePanel } from '@/components/FamilyInvitePanel'
+import BulkImportPanel from '@/components/BulkImportPanel'
 import type { ApiError, ChatMode } from '@/lib/types'
 
 const CHAT_MODE_LABELS: Record<ChatMode, string> = {
@@ -35,11 +36,13 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
   const [savingPassword, setSavingPassword] = useState(false)
   const [savingChatMode, setSavingChatMode] = useState(false)
   const [savingFreeNav, setSavingFreeNav] = useState(false)
+  const [savingAutoExtract, setSavingAutoExtract] = useState(false)
 
   const isGuest = token === 'guest' || user?.id === 'demo-user'
   const chatMode = user?.chat_mode || 'video_clips_v2'
 
   const freeNavigation = Boolean(user?.free_navigation)
+  const autoExtraction = Boolean(user?.auto_extraction)
   const [resetPhrase, setResetPhrase] = useState('')
   const [resetting, setResetting] = useState(false)
 
@@ -74,6 +77,20 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
       toast.error((err as ApiError)?.response?.data?.detail || 'Could not update navigation')
     } finally {
       setSavingFreeNav(false)
+    }
+  }
+
+  const setAutoExtraction = async (enabled: boolean) => {
+    if (isGuest || enabled === autoExtraction) return
+    setSavingAutoExtract(true)
+    try {
+      const updated = await api.updateProfile({ auto_extraction: enabled })
+      if (token) setAuth(token, updated)
+      toast.success(enabled ? 'Auto-extraction on' : 'Auto-extraction off')
+    } catch (err: unknown) {
+      toast.error((err as ApiError)?.response?.data?.detail || 'Could not update extraction mode')
+    } finally {
+      setSavingAutoExtract(false)
     }
   }
 
@@ -322,6 +339,7 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
       )}
 
       {user?.role === 'producer' && (
+        <>
         <div className="card flex flex-col gap-4 mt-6">
           <div className="flex items-center gap-2">
             <Compass size={16} className="text-primary-400" />
@@ -355,6 +373,35 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
             </span>
           </label>
         </div>
+
+        <div className="card flex flex-col gap-4 mt-6">
+          <h2 className="text-xl font-bold text-ink">Extraction review</h2>
+          <div className="divider" />
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoExtraction}
+              disabled={isGuest || savingAutoExtract}
+              onChange={e => setAutoExtraction(e.target.checked)}
+              className="mt-1 w-4 h-4 accent-primary-500 flex-shrink-0"
+            />
+            <span>
+              <span className="font-semibold text-ink block">
+                Accept extracted details automatically
+              </span>
+              <span className="text-xs text-muted block mt-1">
+                Off by default: after each recording you review the names, dates and
+                relationships the system extracted. Turn this on to accept them as-is with
+                no review step — you can still open any recording&apos;s extraction panel
+                later to check or edit. Bulk imports always run this way regardless of
+                this setting.
+              </span>
+            </span>
+          </label>
+        </div>
+
+        <BulkImportPanel isGuest={isGuest} />
+        </>
       )}
 
       {!isGuest && user?.role !== 'family' && <FamilyInvitePanel />}

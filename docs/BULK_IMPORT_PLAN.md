@@ -57,9 +57,15 @@ milestone; report per milestone):
    tests + debounce test; suite 914 green. (Test note: SQLite's
    single shared connection forces pool-of-1 in unit tests; real
    concurrency is the §8 integration batch's job.)
-7. Settings UI: auto_extraction toggle; bulk-import panel (template
-   download, multi-file select, mapping upload, validation report,
-   start, progress poll, resumable across tab closes).
+7. DONE (2026-08-27): auto_extraction wired through UserUpdate/
+   UserResponse + the update endpoint (free_navigation pattern);
+   Settings gains the "Extraction review" toggle card (with the
+   bulk-always-auto caveat in its copy) and BulkImportPanel.tsx —
+   template download, multi-file staging, mapping upload with the
+   error/warning report rendered, start, 4s progress poll while
+   running, per-file retry buttons, and mount-time resume via GET
+   /batches (the server batch row is the truth; closed tabs lose
+   nothing). tsc clean; backend suite 914 green.
 8. **PREFILTER=on global flip — REQUIRED launch gate (§7)**: re-run
    BOTH proofs against then-current code/model immediately before the
    flip — (a) inertness byte-proof (small-archive prompt hash

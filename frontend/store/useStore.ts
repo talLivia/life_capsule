@@ -18,6 +18,7 @@ interface User {
   chat_mode?: ChatMode
   // Unlocks /record's accordion so any category can be opened out of order.
   // Producer-only; see docs/INTERVIEW_RESTRUCTURE.md §7A.
+  auto_extraction?: boolean
   free_navigation?: boolean
 }
 

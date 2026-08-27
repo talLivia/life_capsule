@@ -98,7 +98,7 @@ export const api = {
     return response.data
   },
 
-  updateProfile: async (data: { email?: string; username?: string; full_name?: string; password?: string; chat_mode?: 'avatar' | 'video_clips_v2'; free_navigation?: boolean }) => {
+  updateProfile: async (data: { email?: string; username?: string; full_name?: string; password?: string; chat_mode?: 'avatar' | 'video_clips_v2'; free_navigation?: boolean; auto_extraction?: boolean }) => {
     const response = await apiClient.put('/api/v1/users/me', data)
     return response.data
   },
