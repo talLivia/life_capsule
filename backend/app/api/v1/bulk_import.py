@@ -98,7 +98,13 @@ def validate_mapping(rows, staged_filenames, catalog_ids):
                 continue
             seen[name] = i
             if name not in staged:
-                errors.append({"line": i, "error": "file_not_uploaded", "filename": name})
+                # Producer ruling 2026-08-28: a mapped-but-not-uploaded file
+                # is SKIPPABLE, same tier as unmapped_file — the batch runs
+                # with whatever is mapped AND uploaded, and the missing rows
+                # are handled in a later import. Never a blocker.
+                warnings.append(
+                    {"line": i, "warning": "file_not_uploaded_skipped", "filename": name}
+                )
                 continue
             plan.append({"question_id": qid, "filename": name})
     for name in sorted(staged - set(seen)):

@@ -79,12 +79,30 @@ export default function BulkImportPanel({ isGuest }: { isGuest: boolean }) {
         try {
           const form = new FormData()
           form.append('file', f)
-          await apiClient.put(`${BASE}/batches/${b.id}/files/${encodeURIComponent(f.name)}`, form, {
-            // The instance default is application/json, under which axios
-            // JSON-converts FormData (and throws on File payloads). Multipart
-            // here lets the browser set the boundary.
-            headers: { 'Content-Type': 'multipart/form-data' },
-          })
+          // The app's own per-user rate limiter (60 req/min) WILL fire on
+          // large batches of small files (live: 1 of 162 staged files
+          // 429'd). Honor Retry-After and retry rather than failing the
+          // file; bounded so a persistent 429 still surfaces.
+          for (let attempt = 0; ; attempt++) {
+            try {
+              await apiClient.put(`${BASE}/batches/${b.id}/files/${encodeURIComponent(f.name)}`, form, {
+                // The instance default is application/json, under which axios
+                // JSON-converts FormData (and throws on File payloads).
+                // Multipart here lets the browser set the boundary.
+                headers: { 'Content-Type': 'multipart/form-data' },
+              })
+              break
+            } catch (err: unknown) {
+              const resp = (err as { response?: { status?: number; headers?: Record<string, string> } })?.response
+              if (resp?.status === 429 && attempt < 3) {
+                const wait = Number(resp.headers?.['retry-after']) || 15
+                setStaging(prev => ({ ...prev, [f.name]: `rate-limited — retrying in ${wait}s…` }))
+                await new Promise(res => setTimeout(res, wait * 1000))
+                continue
+              }
+              throw err
+            }
+          }
           setStaging(prev => ({ ...prev, [f.name]: 'done' }))
         } catch (err: unknown) {
           failed += 1

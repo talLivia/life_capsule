@@ -71,10 +71,10 @@ def test_validator_flags_every_error_kind():
     )
     kinds = sorted(e["error"] for e in errors)
     assert kinds == [
-        "duplicate_filename_reference", "file_not_uploaded",
-        "not_a_video", "unknown_question_id",
+        "duplicate_filename_reference", "not_a_video", "unknown_question_id",
     ]
-    assert [w["filename"] for w in warnings] == ["orphan.mp4"]
+    # Missing files are SKIPPABLE (warning tier), same as unmapped files.
+    assert sorted(w["filename"] for w in warnings) == ["missing.mp4", "orphan.mp4"]
     assert [p["filename"] for p in plan] == ["a.mp4"]
 
 
