@@ -19,6 +19,7 @@ def test_template_has_one_row_per_catalog_question():
     ids = [r[0] for r in rows[1:]]
     assert ids == [q["id"] for q in catalog]  # catalog order preserved
     assert all(r[3] == "" for r in rows[1:])  # filenames start empty
+    assert "duplicate the row" in rows[1][4]  # multi-take note on first row
     assert all(r[2] for r in rows[1:])  # every row carries the question text
 
 

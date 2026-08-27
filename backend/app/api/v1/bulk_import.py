@@ -21,7 +21,16 @@ from app.models import User
 router = APIRouter()
 
 #: Column order is the contract the §3 validator parses back.
-TEMPLATE_COLUMNS = ["question_id", "category", "question_text", "filenames"]
+TEMPLATE_COLUMNS = ["question_id", "category", "question_text", "filenames", "notes"]
+
+#: First-row note (the validator ignores extra columns): both multi-take
+#: formats are supported, and the duplicate-row pattern is the natural
+#: Excel workflow (live finding, 2026-08-28).
+_TEMPLATE_NOTE = (
+    "Several takes for one question: either separate filenames with ; "
+    "in one cell, or duplicate the row (same question_id, one filename "
+    "per row). Rows with an empty filenames cell are skipped."
+)
 
 
 def build_template_csv(language: str) -> str:
@@ -32,8 +41,11 @@ def build_template_csv(language: str) -> str:
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\r\n")  # Excel-friendly
     writer.writerow(TEMPLATE_COLUMNS)
-    for q in interview_config.get_questions(language):
-        writer.writerow([q["id"], q.get("category_label") or q["category"], q["text"], ""])
+    for i, q in enumerate(interview_config.get_questions(language)):
+        writer.writerow([
+            q["id"], q.get("category_label") or q["category"], q["text"], "",
+            _TEMPLATE_NOTE if i == 0 else "",
+        ])
     return out.getvalue()
 
 

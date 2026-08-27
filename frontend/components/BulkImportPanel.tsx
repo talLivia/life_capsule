@@ -69,7 +69,13 @@ export default function BulkImportPanel({ isGuest }: { isGuest: boolean }) {
       for (const f of Array.from(files)) {
         const form = new FormData()
         form.append('file', f)
-        await apiClient.put(`${BASE}/batches/${b.id}/files/${encodeURIComponent(f.name)}`, form)
+        await apiClient.put(`${BASE}/batches/${b.id}/files/${encodeURIComponent(f.name)}`, form, {
+          // The instance default is application/json, under which axios
+          // JSON-converts FormData (and throws on File payloads — the
+          // "Upload failed" bug). Multipart here lets the browser set the
+          // boundary.
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
       }
       await refresh(b.id)
       toast.success(`${files.length} file(s) staged`)
@@ -86,7 +92,9 @@ export default function BulkImportPanel({ isGuest }: { isGuest: boolean }) {
     try {
       const form = new FormData()
       form.append('file', files[0])
-      const r = await apiClient.post(`${BASE}/batches/${batch.id}/mapping`, form)
+      const r = await apiClient.post(`${BASE}/batches/${batch.id}/mapping`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
       setBatch(r.data)
       toast[r.data.state === 'validated' ? 'success' : 'error'](
         r.data.state === 'validated'
@@ -129,14 +137,23 @@ export default function BulkImportPanel({ isGuest }: { isGuest: boolean }) {
         review step; you can edit extracted details afterwards.
       </p>
 
-      <a
+      <button
         className="btn-secondary w-fit"
-        href={`${apiClient.defaults.baseURL}${BASE}/template.csv`}
-        target="_blank"
-        rel="noreferrer"
+        disabled={isGuest}
+        onClick={async () => {
+          // A bare <a href> carries no Authorization header (it 401'd in
+          // live testing) — fetch through the authenticated client instead.
+          const r = await apiClient.get(`${BASE}/template.csv`, { responseType: 'blob' })
+          const url = URL.createObjectURL(r.data as Blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = 'bulk_import_template.csv'
+          a.click()
+          URL.revokeObjectURL(url)
+        }}
       >
         1. Download question template (CSV)
-      </a>
+      </button>
 
       <label className="btn-secondary w-fit cursor-pointer">
         2. Select video files
