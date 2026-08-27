@@ -351,3 +351,24 @@ async def test_exclusion_and_start_compile(client, auth_headers, runner_env):
     assert body["state"] == "running"
     assert [e["filename"] for e in body["mapping"]] == ["a.mp4"]
     assert list(body["file_states"]) == ["a.mp4"]
+
+
+def test_whisper_phrases_are_plain_python_floats():
+    """The 162-scale live test found the Whisper-fallback path leaking
+    numpy.float64 into graph state, crashing the checkpointer msgpack
+    serializer for any ingestion that fell back from Deepgram."""
+    import numpy as np
+
+    from app.services.stt import STTService
+
+    class W:  # faster-whisper word/segment doubles with numpy timings
+        def __init__(s2):
+            s2.word, s2.start, s2.end = "שלום", np.float64(1.0), np.float64(1.5)
+
+    class Seg:
+        def __init__(s2):
+            s2.words, s2.start, s2.end, s2.text = [W()], np.float64(0.9), np.float64(2.0), "שלום"
+
+    out = STTService._segments_to_phrases([Seg()])
+    assert type(out[0]["start_sec"]) is float and type(out[0]["end_sec"]) is float
+    assert type(out[0]["words"][0]["start_sec"]) is float

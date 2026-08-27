@@ -382,14 +382,20 @@ class STTService:
         natural phrase boundary Whisper detected becomes its own entry."""
         phrases = []
         for seg in segments:
+            # float() is LOAD-BEARING: faster-whisper returns numpy.float64,
+            # which the LangGraph Postgres checkpointer cannot msgpack — the
+            # Deepgram paths always converted, this fallback path didn't, so
+            # any ingestion that fell back to Whisper crashed its analysis
+            # run (found live: 2/24 files in the 162-scale bulk test hit
+            # Deepgram rate limits, fell back, and failed exactly here).
             words = [
-                {"word": w.word, "start_sec": w.start, "end_sec": w.end}
+                {"word": w.word, "start_sec": float(w.start), "end_sec": float(w.end)}
                 for w in (seg.words or [])
             ]
             phrases.append(
                 {
-                    "start_sec": seg.start,
-                    "end_sec": seg.end,
+                    "start_sec": float(seg.start),
+                    "end_sec": float(seg.end),
                     "text": seg.text.strip(),
                     "words": words,
                 }
