@@ -36,6 +36,10 @@ const HistoryPanel = dynamic(
   () => import('@/components/HistoryPanel').then(m => m.HistoryPanel),
   { ssr: false, loading: () => <PanelLoader label="Loading history…" /> },
 )
+const BulkImportPage = dynamic(
+  () => import('@/components/BulkImportPage'),
+  { ssr: false }
+)
 const SettingsPanel = dynamic(
   () => import('@/components/SettingsPanel').then(m => m.SettingsPanel),
   { ssr: false, loading: () => <PanelLoader label="Loading settings…" /> },
@@ -152,7 +156,7 @@ const STATS = [
   { value: '100%', label: 'Their own words' },
 ]
 
-type View = 'home' | 'avatars' | 'chat' | 'voice' | 'history' | 'settings' | 'record' | 'tree' | 'timeline'
+type View = 'home' | 'avatars' | 'chat' | 'voice' | 'history' | 'settings' | 'record' | 'tree' | 'timeline' | 'import'
 
 // The complete set of views a family account may occupy — Chat fully
 // usable, Timeline and Family tree view-only. Order here is not the nav
@@ -251,6 +255,7 @@ export default function Home() {
     if (typeof window === 'undefined') return
     const wanted = new URLSearchParams(window.location.search).get('view')
     if (wanted === 'record' && user?.role === 'producer') setView('record')
+    if (wanted === 'import' && user?.role === 'producer') setView('import')
   }, [user])
 
   const handleVoiceSelect = async (voiceId: string) => {
@@ -593,8 +598,11 @@ export default function Home() {
         )}
 
         {/* ── SETTINGS VIEW ── */}
+        {view === 'import' && user?.role === 'producer' && (
+          <BulkImportPage isGuest={user?.id === 'demo-user'} />
+        )}
         {view === 'settings' && (
-          <SettingsPanel onOpenAvatarStudio={() => setView('avatars')} />
+          <SettingsPanel onOpenAvatarStudio={() => setView('avatars')} onOpenImport={() => setView('import')} />
         )}
 
         {/* ── RECORD VIEW ── (was the standalone /record route) */}

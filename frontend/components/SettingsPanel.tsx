@@ -6,7 +6,6 @@ import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
 import { useStore } from '@/store/useStore'
 import { FamilyInvitePanel } from '@/components/FamilyInvitePanel'
-import BulkImportPanel from '@/components/BulkImportPanel'
 import type { ApiError, ChatMode } from '@/lib/types'
 
 const CHAT_MODE_LABELS: Record<ChatMode, string> = {
@@ -23,9 +22,11 @@ interface SettingsPanelProps {
   /** Navigate to Avatar Studio — avatar mode's setup surface, whose nav tab
    *  is hidden while a video-clip mode is active. Wired by the shell. */
   onOpenAvatarStudio?: () => void
+  /** Navigate to the bulk-import page (its own shell view). */
+  onOpenImport?: () => void
 }
 
-export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
+export function SettingsPanel({ onOpenAvatarStudio, onOpenImport }: SettingsPanelProps) {
   const { user, setAuth, token, clearAuth } = useStore()
   const [fullName, setFullName] = useState(user?.full_name || '')
   const [username, setUsername] = useState(user?.username || '')
@@ -400,7 +401,18 @@ export function SettingsPanel({ onOpenAvatarStudio }: SettingsPanelProps) {
           </label>
         </div>
 
-        <BulkImportPanel isGuest={isGuest} />
+        <div className="card flex flex-col gap-3 mt-6">
+          <h2 className="text-xl font-bold text-ink">Import old recordings</h2>
+          <div className="divider" />
+          <p className="text-xs text-muted">
+            Bring videos from another system through the normal pipeline — mapping
+            table, per-file progress, and long-running batches that survive closing
+            the tab. Lives on its own page.
+          </p>
+          <button className="btn-secondary w-fit" onClick={onOpenImport}>
+            Open the import page
+          </button>
+        </div>
         </>
       )}
 
