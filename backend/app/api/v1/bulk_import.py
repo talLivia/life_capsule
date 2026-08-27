@@ -220,3 +220,46 @@ async def upload_mapping(
     batch.state = "validated" if not errors else "staging"
     await db.commit()
     return _batch_view(batch)
+
+
+@router.post("/batches/{batch_id}/start")
+async def start_batch(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """§5: flip a VALIDATED batch to running and hand it to the server-side
+    orchestrator. The browser can go away — progress lives on the batch row."""
+    import asyncio
+
+    from app.services import bulk_import_runner
+
+    batch = await _owned_batch(batch_id, user, db)
+    if batch.state != "validated":
+        raise HTTPException(status_code=409, detail=f"Batch is {batch.state}, not validated")
+    batch.state = "running"
+    states = {e["filename"]: {"state": "pending"} for e in (batch.mapping or [])}
+    batch.file_states = states
+    await db.commit()
+    asyncio.create_task(bulk_import_runner.run_batch(batch.id))
+    return _batch_view(batch)
+
+
+@router.post("/batches/{batch_id}/files/{filename}/retry")
+async def retry_failed_file(
+    batch_id: str,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_producer),
+):
+    """§6: re-run ONE failed file through the same path (delete-and-reingest,
+    never duplicate)."""
+    from app.services import bulk_import_runner
+
+    await _owned_batch(batch_id, user, db)  # ownership check
+    ok = await bulk_import_runner.retry_file(batch_id, os.path.basename(filename))
+    if not ok:
+        raise HTTPException(status_code=409, detail="File is not in a failed state")
+    batch = await _owned_batch(batch_id, user, db)
+    await db.refresh(batch)
+    return _batch_view(batch)

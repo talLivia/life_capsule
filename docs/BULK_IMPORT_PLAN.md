@@ -41,11 +41,22 @@ milestone; report per milestone):
    in CSV order); mapping upload endpoint stores report+plan and
    flips staging<->validated; owner-scoped batch list/get for resume.
    8 tests; suite 911 green.
-6. Batch orchestrator: worker pool (concurrency 2-3) driving the REAL
-   presign->ingest path per file with import_batch_id stamped;
-   continue-and-report; per-file retry (delete-and-reingest);
-   PLUS the §5 warm-debounce in finalize_ingest_node (skip archive
-   warm while another same-producer segment is processing).
+6. DONE (2026-08-27): bulk_import_runner.py — worker pool
+   (semaphore, concurrency 2) AWAITING run_segment_analysis per file
+   (bounds the pipeline AND yields per-file truth); the shared
+   create_segment_row extracted from /segments/ingest so both callers
+   are literally one code path (import_batch_id stamped, recording_no
+   FOR-UPDATE serialized); question_index = GLOBAL catalog position
+   (unique per question — the cross-category collision bug cannot be
+   triggered by imports); continue-and-report with
+   done/done_with_failures; per-file retry via the existing deletion
+   service; file_states writes serialized by an in-process lock
+   (measured lost-update fixed); start + retry endpoints; §5
+   warm-debounce in finalize_ingest_node behind
+   _another_segment_in_flight (fail-soft to warming). 3 orchestrator
+   tests + debounce test; suite 914 green. (Test note: SQLite's
+   single shared connection forces pool-of-1 in unit tests; real
+   concurrency is the §8 integration batch's job.)
 7. Settings UI: auto_extraction toggle; bulk-import panel (template
    download, multi-file select, mapping upload, validation report,
    start, progress poll, resumable across tab closes).

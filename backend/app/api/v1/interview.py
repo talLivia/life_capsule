@@ -60,6 +60,47 @@ def _questions_with_index(language: str) -> List[InterviewQuestion]:
     ]
 
 
+async def create_segment_row(
+    db: AsyncSession,
+    session: InterviewSession,
+    *,
+    question_asked: str,
+    question_index: int,
+    question_id,
+    video_url: str,
+    video_key: str,
+    import_batch_id=None,
+) -> RawSegment:
+    """The ONE place a recording row is born — the /segments/ingest endpoint
+    and the bulk-import orchestrator both call this, keeping CLAUDE.md's
+    "no second ingestion path" invariant literal.
+
+    No lookup of an "existing" segment: several are legitimate (APPEND
+    semantics). Stable recording number (UNIT_ID_STABILITY_PLAN §1): the
+    producer's high-water counter, bumped in the SAME transaction as the
+    row — the with_for_update row lock serializes concurrent ingests, and
+    the counter never decrements, so numbers are never reused even after
+    the newest recording is deleted."""
+    producer_row = await db.get(User, session.user_id, with_for_update=True)
+    producer_row.recording_seq = (producer_row.recording_seq or 0) + 1
+
+    segment = RawSegment(
+        interview_session_id=session.id,
+        recording_no=producer_row.recording_seq,
+        question_asked=question_asked,
+        question_index=question_index,
+        question_id=question_id,
+        video_url=video_url,
+        video_key=video_key,
+        status="pending_transcription",
+        import_batch_id=import_batch_id,
+    )
+    db.add(segment)
+    await db.commit()
+    await db.refresh(segment)
+    return segment
+
+
 async def _get_or_create_session(db: AsyncSession, user: User) -> InterviewSession:
     """The producer's single in-progress interview pass. Resumability
     (Prompt 4's "browser refresh mid-interview resumes at the right
@@ -405,31 +446,15 @@ async def ingest_segment(
     if not question_id:
         question_id = interview_config.question_id_for_text(payload.question_asked)
 
-    # No lookup of an "existing" segment: several are legitimate now. The old
-    # code used scalar_one_or_none() here, which RAISES on a second row — so
-    # this had to change in the same commit that allows siblings, not after.
-    # Stable recording number (UNIT_ID_STABILITY_PLAN §1): the producer's
-    # high-water counter, bumped in the SAME transaction as the row — row
-    # lock via with_for_update makes concurrent ingests serialize, and the
-    # counter never decrements, so numbers are never reused even after the
-    # newest recording is deleted.
-    producer_row = await db.get(User, session.user_id, with_for_update=True)
-    producer_row.recording_seq = (producer_row.recording_seq or 0) + 1
-
-    segment = RawSegment(
-        interview_session_id=session.id,
-        recording_no=producer_row.recording_seq,
+    segment = await create_segment_row(
+        db,
+        session,
         question_asked=payload.question_asked,
         question_index=payload.question_index,
         question_id=question_id,
         video_url=video_url,
         video_key=payload.video_key,
-        status="pending_transcription",
     )
-    db.add(segment)
-
-    await db.commit()
-    await db.refresh(segment)
 
     if settings.DEBUG:
         # Local dev convenience only (never runs in production, where

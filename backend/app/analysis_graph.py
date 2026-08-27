@@ -75,7 +75,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 
 from app.config import settings
 from app.database import AsyncSessionLocal
@@ -239,6 +239,27 @@ def _apply_entity_resolutions(
         else:
             resolved.append(entity)
     return resolved
+
+
+async def _another_segment_in_flight(group_id: str, current_segment_id: str) -> bool:
+    """Is any OTHER segment of this producer still mid-pipeline? Drives the
+    bulk warm-debounce in finalize_ingest_node. Fail-soft to False — a
+    lookup problem just means the warm happens (the old behaviour)."""
+    try:
+        async with AsyncSessionLocal() as db:
+            row = await db.execute(
+                select(func.count(RawSegment.id))
+                .join(InterviewSession, RawSegment.interview_session_id == InterviewSession.id)
+                .where(
+                    InterviewSession.user_id == group_id,
+                    RawSegment.id != current_segment_id,
+                    RawSegment.status.notin_(("ready", "failed")),
+                )
+            )
+            return (row.scalar() or 0) > 0
+    except Exception as e:
+        logger.warning(f"in-flight check failed for {group_id}; warming anyway: {e}")
+        return False
 
 
 async def _auto_confirm(segment_id) -> bool:
@@ -1814,7 +1835,18 @@ async def finalize_ingest_node(state: AnalysisState) -> dict:
         )
 
         invalidate_archive_cache(state["group_id"])
-        await warm_archive_cache(state["group_id"])
+        # Warm-debounce (BULK_IMPORT_PLAN §5): during a bulk batch, every
+        # finalize used to rebuild the archive cache — 50 files, 50 warms.
+        # If ANOTHER of this producer's segments is still mid-pipeline, skip
+        # the warm; the LAST one warms once. Correctness is untouched — the
+        # version check on the next question rebuilds regardless.
+        if await _another_segment_in_flight(state["group_id"], segment_id):
+            logger.info(
+                f"skipping archive warm for {state['group_id']}: another "
+                "segment is still processing (bulk warm-debounce)"
+            )
+        else:
+            await warm_archive_cache(state["group_id"])
         # Phase B billing hygiene (gemini_cache): the version fingerprint
         # just moved, orphaning any explicit Gemini cache — deletion only
         # stops its storage billing early; correctness never needs it.

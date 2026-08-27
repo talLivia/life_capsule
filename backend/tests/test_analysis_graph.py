@@ -2022,3 +2022,21 @@ async def test_manual_path_unchanged_without_toggle_or_batch_id(
     finally:
         ag.interrupt = real
     assert "payload" in called  # today's flow: the interrupt still fires
+
+
+async def test_warm_debounce_skips_while_siblings_in_flight(segment, db_session, test_user):
+    from app.models import RawSegment
+
+    # only `segment` exists and it's pending -> no OTHER in flight
+    assert not await ag._another_segment_in_flight(test_user.id, segment.id)
+    sibling = RawSegment(
+        interview_session_id=segment.interview_session_id,
+        question_asked="q", question_index=1,
+        video_key="segments/x/y/1/z.webm", status="pending_transcription",
+    )
+    db_session.add(sibling)
+    await db_session.commit()
+    assert await ag._another_segment_in_flight(test_user.id, segment.id)
+    sibling.status = "ready"
+    await db_session.commit()
+    assert not await ag._another_segment_in_flight(test_user.id, segment.id)

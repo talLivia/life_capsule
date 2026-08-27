@@ -143,3 +143,159 @@ async def test_batch_is_owner_scoped(client, auth_headers):
     bid = await _make_batch(client, auth_headers)
     r = await client.get(f"/api/v1/bulk-import/batches/{bid}")
     assert r.status_code in (401, 403)
+
+
+# ── §5/§6 orchestrator ──────────────────────────────────────────────────────
+
+
+@pytest.fixture
+async def runner_env(test_engine, monkeypatch):
+    """Retarget the runner's DB access at the test engine and stub the two
+    heavy externals (storage bytes, the analysis graph)."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from app import analysis_graph as ag
+    from app.services import bulk_import_runner as runner
+    from app.services import storage as storage_mod
+
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(runner, "AsyncSessionLocal", factory)
+    monkeypatch.setattr(ag, "AsyncSessionLocal", factory)
+    # SQLite's StaticPool shares ONE connection: two concurrent ingest
+    # transactions clobber each other in ways Postgres's FOR UPDATE lock
+    # prevents. Pool-of-1 here; real concurrency is exercised by the §8
+    # integration batch against Postgres.
+    monkeypatch.setattr(runner, "WORKER_CONCURRENCY", 1)
+
+    store = {}
+
+    async def fake_upload(key, data, **kw):
+        store[key] = data
+        return f"/uploads/{key}"
+
+    async def fake_download(key):
+        return store[key]
+
+    monkeypatch.setattr(storage_mod.storage_service, "upload_file", fake_upload)
+    monkeypatch.setattr(storage_mod.storage_service, "download_file", fake_download)
+
+    async def fake_analysis(segment_id):
+        # The REAL graph is exercised elsewhere; here each segment just
+        # lands in the status the filename asks for.
+        async with factory() as db:
+            from app.models import RawSegment
+
+            seg = await db.get(RawSegment, segment_id)
+            seg.status = "failed" if "corrupt" in (seg.video_key or "") else "ready"
+            await db.commit()
+
+    monkeypatch.setattr(ag, "run_segment_analysis", fake_analysis)
+    # The start endpoint fires run_batch as a background task; tests drive
+    # the REAL run_batch deterministically instead, so the endpoint's copy
+    # becomes a no-op here (production runs it exactly once).
+    real_run_batch = runner.run_batch
+    from unittest.mock import AsyncMock as _AM
+    monkeypatch.setattr(runner, "run_batch", _AM())
+    return {"store": store, "run_batch": real_run_batch}
+
+
+async def _validated_batch(client, auth_headers, filenames):
+    bid = (await client.post("/api/v1/bulk-import/batches", headers=auth_headers)).json()["id"]
+    for name in filenames:
+        r = await client.put(
+            f"/api/v1/bulk-import/batches/{bid}/files/{name}",
+            headers=auth_headers,
+            files={"file": (name, b"bytes-" + name.encode(), "video/mp4")},
+        )
+        assert r.status_code == 200
+    rows = "\r\n".join(f"childhood_q0{i+1},c,t,{n}" for i, n in enumerate(filenames))
+    csv_body = "question_id,category,question_text,filenames\r\n" + rows + "\r\n"
+    r = await client.post(
+        f"/api/v1/bulk-import/batches/{bid}/mapping",
+        headers=auth_headers,
+        files={"file": ("m.csv", csv_body.encode(), "text/csv")},
+    )
+    assert r.json()["state"] == "validated", r.json()
+    return bid
+
+
+@pytest.mark.asyncio
+async def test_batch_runs_continue_and_report(client, auth_headers, runner_env, db_session):
+    from sqlalchemy import select
+
+    from app.models import RawSegment
+    from app.services import bulk_import_runner as runner
+
+    bid = await _validated_batch(client, auth_headers, ["a.mp4", "corrupt.mp4", "b.mp4"])
+    r = await client.post(f"/api/v1/bulk-import/batches/{bid}/start", headers=auth_headers)
+    assert r.status_code == 200 and r.json()["state"] == "running"
+    await runner_env["run_batch"](bid)
+
+    r = await client.get(f"/api/v1/bulk-import/batches/{bid}", headers=auth_headers)
+    body = r.json()
+    assert body["state"] == "done_with_failures"
+    states = body["file_states"]
+    assert states["a.mp4"]["state"] == "ready"
+    assert states["b.mp4"]["state"] == "ready"
+    assert states["corrupt.mp4"]["state"] == "failed"
+
+    await db_session.commit()  # end the fixture's snapshot; see fresh rows
+    segs = (await db_session.execute(
+        select(RawSegment).where(RawSegment.import_batch_id == bid)
+    )).scalars().all()
+    assert len(segs) == 3
+    assert all(s.import_batch_id == bid for s in segs)
+    assert sorted(s.question_id for s in segs) == ["childhood_q01", "childhood_q02", "childhood_q03"]
+    assert len({s.recording_no for s in segs}) == 3  # unique, serialized
+
+
+@pytest.mark.asyncio
+async def test_retry_reruns_only_the_failed_file(client, auth_headers, runner_env, db_session):
+    from app.services import bulk_import_runner as runner
+
+    bid = await _validated_batch(client, auth_headers, ["corrupt.mp4"])
+    await client.post(f"/api/v1/bulk-import/batches/{bid}/start", headers=auth_headers)
+    await runner_env["run_batch"](bid)
+
+    # heal the file: re-stage under a name the fake analysis passes
+    staged = [k for k in runner_env["store"] if k.endswith("corrupt.mp4") and "bulk_staging" in k]
+    assert staged
+    # monkey-fix: make the analysis succeed this time by rewriting the staged key content path
+    from app.services import segment_deletion
+
+    async def fake_delete(segment_id, group_id, **kw):
+        from app.models import RawSegment
+
+        seg = await db_session.get(RawSegment, segment_id)
+        if seg:
+            await db_session.delete(seg)
+            await db_session.commit()
+        return None
+
+    segment_deletion_real = segment_deletion.delete_segment_data
+    segment_deletion.delete_segment_data = fake_delete
+    try:
+        import app.services.bulk_import_runner as r2
+
+        async def analysis_ok(segment_id):
+            from app.models import RawSegment
+            factory = r2.AsyncSessionLocal
+            async with factory() as db:
+                seg = await db.get(RawSegment, segment_id)
+                seg.status = "ready"
+                await db.commit()
+
+        import app.analysis_graph as ag
+        old = ag.run_segment_analysis
+        ag.run_segment_analysis = analysis_ok
+        try:
+            ok = await runner.retry_file(bid, "corrupt.mp4")
+        finally:
+            ag.run_segment_analysis = old
+    finally:
+        segment_deletion.delete_segment_data = segment_deletion_real
+    assert ok
+    r = await client.get(f"/api/v1/bulk-import/batches/{bid}", headers=auth_headers)
+    body = r.json()
+    assert body["file_states"]["corrupt.mp4"]["state"] == "ready"
+    assert body["state"] == "done"
