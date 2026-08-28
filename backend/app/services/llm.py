@@ -261,6 +261,7 @@ class LLMService:
         model: Optional[str] = None,
         thinking_budget: Optional[int] = None,
         cached_content: Optional[str] = None,
+        max_output_tokens: Optional[int] = None,
     ) -> str:
         """`temperature` overrides settings.LLM_TEMPERATURE for this call only
         — e.g. Prompt 6's topic classifier wants temperature=0 (deterministic)
@@ -296,7 +297,7 @@ class LLMService:
         if self.provider == "gemini":
             return await self._generate_gemini(
                 messages, system_prompt, temperature, model, thinking_budget,
-                cached_content,
+                cached_content, max_output_tokens,
             )
         raise LLMError(f"Unsupported LLM provider: {self.provider}")
 
@@ -391,13 +392,14 @@ class LLMService:
         model: Optional[str] = None,
         thinking_budget: Optional[int] = None,
         cached_content: Optional[str] = None,
+        max_output_tokens: Optional[int] = None,
     ) -> str:
         if not system_prompt:
             raise LLMError("system_prompt is required — see module docstring")
 
         config_kwargs: dict = dict(
             temperature=temperature if temperature is not None else self.temperature,
-            max_output_tokens=self.max_tokens,
+            max_output_tokens=max_output_tokens or self.max_tokens,
             seed=_DETERMINISTIC_SEED,  # reproducibility — see constant's comment
         )
         if cached_content:

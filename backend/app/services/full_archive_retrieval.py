@@ -54,6 +54,7 @@ from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import InterviewSession, Message, RawSegment, TranscriptChunk
 from app.services import (
+    core_compression,
     entity_store,
     prefilter,
     response_assembler,
@@ -1479,6 +1480,9 @@ async def _read_archive_for_ranges(
             # Latency lever, NOT a determinism one — see the setting's comment.
             thinking_budget=settings.ARCHIVE_READ_THINKING_BUDGET or None,
             cached_content=cached_content,
+            # The id-list output grows with the archive; thinking counts
+            # inside the cap. 2000 truncated mid-JSON at 188 ids (live).
+            max_output_tokens=settings.ARCHIVE_READ_MAX_TOKENS,
         )
 
     try:
@@ -1863,6 +1867,21 @@ async def select_units(
     # well-formed response) drops here rather than resolving blind.
     by_id = {u.unit_id: u for u in f_units}
     selected = [by_id[uid] for uid in dict.fromkeys(unit_ids) if uid in by_id]
+
+    # Conversation-sizing (core_compression.py): code-gated on playable
+    # duration; under the threshold this is a no-op and the flow below is
+    # byte-identical. Over it, the isolated call narrows the served core
+    # and its remainder becomes the offer candidate — which then passes
+    # through the SAME validation as any offer (real units, not shown, no
+    # overlap with the answer).
+    selected, compressed_fu, was_compressed = await core_compression.maybe_compress(
+        question, selected, recording_language
+    )
+    if was_compressed:
+        unit_ids = [u.unit_id for u in selected]
+        if compressed_fu is not None:
+            raw_follow_up = compressed_fu
+
     clips = resolve_units_to_clips(unit_ids, f_units)
     follow_up = _validate_follow_up(raw_follow_up, by_id, selected, shown_keys)
     # `about` has TWO readers, split by whether anything plays: with units it

@@ -105,6 +105,15 @@ class Settings(BaseSettings):
     # The per-request budget check self-selects per producer.
     PREFILTER: str = "on"
     PREFILTER_CHAR_BUDGET: int = 300_000
+    # Conversation-sizing an oversized core (core_compression.py,
+    # 2026-08-29): when a selection's playable duration exceeds the
+    # threshold, ONE isolated bounded LLM call narrows it to roughly the
+    # target and routes the rest into the offer. 0 disables. Code-gated —
+    # under the threshold the flow is byte-identical (the main-prompt
+    # recalibration attempt failed its gate; wording cannot be fenced by
+    # scale, code can).
+    CORE_COMPRESSION_THRESHOLD_SEC: int = 150
+    CORE_COMPRESSION_TARGET_SEC: int = 90
 
     # AWS (retained for the base project's Terraform/EC2 GPU deploy path —
     # NOT used for object storage in this project; see R2_* below)
@@ -191,6 +200,13 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "claude-sonnet-4-6"
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 2000
+    # The archive read emits an id list that GROWS with archive size (a
+    # broad question on a 3,400-unit archive legitimately selects 180+
+    # ids ≈ 1,500 output tokens) and Gemini counts THINKING inside
+    # max_output_tokens — at 2000 the reply truncated mid-JSON, parsed
+    # to [], and served "אין לי סיפור" (live, 2026-08-29, YOSI). The
+    # pinned-cache thinking path made it deterministic per process.
+    ARCHIVE_READ_MAX_TOKENS: int = 8192
 
     # Model for the video_clips_v2 archive-read call ONLY (Prompt 15's single
     # whole-archive reasoning call). Every OTHER llm_service caller is a short
