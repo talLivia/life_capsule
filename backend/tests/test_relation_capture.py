@@ -373,3 +373,29 @@ def test_the_confirmed_flag_survives_the_state_round_trip():
     e = ExtractedEntity(name="x", type="place", type_confirmed=True)
     assert ExtractedEntity.from_dict(e.as_dict()).type_confirmed is True
     assert ExtractedEntity.from_dict(ExtractedEntity(name="x").as_dict()).type_confirmed is False
+
+
+async def test_a_second_segment_restating_a_relation_does_not_duplicate_it(
+    db_session, archive
+):
+    """Cross-segment uniqueness (live finding 2026-08-28: the same
+    parent edge stored 6x, once per recording that mentioned it — 170
+    auto-accepting imports turned a latent gap into visible tree damage).
+    The first recording to establish a relation owns it."""
+    user, segment = archive
+    rel = ExtractedRelation(from_name="יהודית", to_name=ex.SELF, relation_type="parent")
+    await _write(db_session, user, segment, ["יהודית"], [rel])
+
+    second = RawSegment(
+        interview_session_id=segment.interview_session_id,
+        question_asked="עוד", question_index=1, status="ready",
+    )
+    db_session.add(second)
+    await db_session.flush()
+    wrote = await _write(db_session, user, second, ["יהודית"], [rel])
+
+    rows = (await db_session.execute(select(EntityRelation))).scalars().all()
+    assert len(rows) == 1  # restated, not duplicated
+    assert wrote == 0
+    # and the ORIGINAL segment keeps ownership of the edge
+    assert rows[0].source_segment_id == segment.id

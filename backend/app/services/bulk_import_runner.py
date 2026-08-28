@@ -112,11 +112,14 @@ async def run_batch(batch_id: str) -> None:
             return
         producer = await db.get(User, batch.producer_id)
         plan = list(batch.mapping or [])
-        # One interview session per batch, completed-marked so the /record
-        # flow's single-active-session logic is never disturbed.
-        session = InterviewSession(user_id=producer.id, status="completed")
-        db.add(session)
-        await db.commit()
+        # Imports land in the producer's REGULAR active session — the same
+        # one manual /record uploads use. The original per-batch completed
+        # session caused two live bugs (invisible counts, invisible takes)
+        # because session-scoped queries throughout the app never expected
+        # recordings to live anywhere else (2026-08-28/29).
+        from app.api.v1.interview import _get_or_create_session
+
+        session = await _get_or_create_session(db, producer)
         session_id = session.id
 
     sem = asyncio.Semaphore(WORKER_CONCURRENCY)
@@ -168,9 +171,9 @@ async def retry_file(batch_id: str, filename: str) -> bool:
         except Exception as e:
             logger.warning(f"retry cleanup of segment {seg_id} failed (continuing): {e}")
     async with AsyncSessionLocal() as db:
-        session = InterviewSession(user_id=producer.id, status="completed")
-        db.add(session)
-        await db.commit()
+        from app.api.v1.interview import _get_or_create_session
+
+        session = await _get_or_create_session(db, producer)
         session_id = session.id
     try:
         await _ingest_one(batch, producer, session_id, entry)

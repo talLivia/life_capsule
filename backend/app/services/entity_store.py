@@ -230,6 +230,25 @@ async def write_segment_relations(
             )
             continue
 
+        # CROSS-SEGMENT UNIQUENESS (live finding 2026-08-28: the same
+        # parent edge written 6x, once per recording that mentioned it —
+        # this path was only ever tested per segment). The FIRST recording
+        # to establish a relation owns it; later recordings re-stating it
+        # add nothing. The delete above only clears THIS segment's own
+        # edges, so re-analysis stays idempotent and other segments' edges
+        # survive.
+        already = (
+            await db.execute(
+                select(EntityRelation).where(
+                    EntityRelation.from_entity_id == source.id,
+                    EntityRelation.to_entity_id == target.id,
+                    EntityRelation.relation_type == rel.relation_type,
+                )
+            )
+        ).scalars().first()
+        if already is not None:
+            continue
+
         db.add(
             EntityRelation(
                 from_entity_id=source.id,
@@ -238,6 +257,7 @@ async def write_segment_relations(
                 source_segment_id=segment_id,
             )
         )
+        await db.flush()
         written += 1
 
     await db.flush()
