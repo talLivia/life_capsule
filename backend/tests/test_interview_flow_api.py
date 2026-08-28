@@ -317,3 +317,21 @@ async def test_gate_endpoint_rejects_an_unknown_gate(v2, client, auth_headers):
         headers=auth_headers,
     )
     assert resp.status_code == 400
+
+
+async def test_recordings_from_other_sessions_count(v2, db_session, producer):
+    """USER-scoped take counting (live bug 2026-08-28): recordings living in
+    a COMPLETED session — any prior interview pass, or a bulk import's own
+    sessions — must still show as answered. Session scoping left /record
+    empty after a 164-file import."""
+    user, active = producer
+    first = (await _flow(db_session, producer))["categories"][0]
+    qid = next(s2["id"] for s2 in first["steps"] if s2["kind"] == "question")
+
+    done = InterviewSession(user_id=user.id, status="completed")
+    db_session.add(done)
+    await db_session.flush()
+    await _record(db_session, done, qid)  # recording in the OTHER session
+
+    cat = (await _flow(db_session, producer))["categories"][0]
+    assert cat["done_count"] == 1  # visible despite living in a completed session

@@ -51,17 +51,28 @@ from app.services import gate_answers
 
 
 async def _recordings_by_question(
-    db: AsyncSession, interview_session_id: str
+    db: AsyncSession, user_id: str
 ) -> Dict[str, int]:
-    """How many takes exist per question in this session.
+    """How many takes exist per question across ALL the producer's sessions.
+
+    USER-scoped, not session-scoped — the same ownership model the archive
+    and chat use. Session scoping was a latent bug: any session rollover
+    (finishing an interview pass, or a bulk import's own completed
+    sessions) made previously answered questions show unanswered — found
+    live when a 164-file import left /record empty (2026-08-28).
 
     Counted rather than boolean because a question legitimately holds several
     takes, and the panel shows that.
     """
     rows = (
         await db.execute(
-            select(RawSegment.question_id).where(
-                RawSegment.interview_session_id == interview_session_id,
+            select(RawSegment.question_id)
+            .join(
+                InterviewSession,
+                RawSegment.interview_session_id == InterviewSession.id,
+            )
+            .where(
+                InterviewSession.user_id == user_id,
                 RawSegment.question_id.isnot(None),
             )
         )
@@ -140,7 +151,7 @@ async def get_flow(
     each for no benefit.
     """
     answers = await gate_answers.get_answers(db, session.id)
-    takes = await _recordings_by_question(db, session.id)
+    takes = await _recordings_by_question(db, user.id)
 
     categories = [
         build_category_view(cat, answers, takes)

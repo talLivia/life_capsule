@@ -382,12 +382,24 @@ async def test_recordings_carry_their_stored_title_as_is(db_session, archive):
     assert period["recordings"][0]["title"] == "כותרת שנכתבה בשמירה"
 
 
-async def test_every_period_carries_its_summary_sentence(db_session, archive):
-    """Wiring only — the store/staleness rules live in test_period_insights."""
+async def test_every_period_carries_its_summary_sentence(db_session, archive, monkeypatch):
+    """Wiring only — the store/staleness rules live in test_period_insights.
+    Deferred contract (2026-08-28): the read serves the STORE; the refresh
+    is a scheduled task, so the sentence appears from the second view."""
     user, session = archive
     _, question_id = _live_ids(1)[0]
     await _record(db_session, session, question_id)
 
+    pending = []
+    monkeypatch.setattr(timeline, "_schedule_refresh", pending.append)
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    factory = async_sessionmaker(db_session.bind, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(timeline, "AsyncSessionLocal", factory)
+
+    first = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]
+    assert first["summary"] is None
+    while pending:
+        await pending.pop(0)
     period = (await timeline.build_timeline(db_session, user.id, "he"))["periods"][0]
     assert period["summary"] == "משפט סיכום אחד."
 

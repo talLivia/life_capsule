@@ -2040,3 +2040,64 @@ async def test_warm_debounce_skips_while_siblings_in_flight(segment, db_session,
     sibling.status = "ready"
     await db_session.commit()
     assert not await ag._another_segment_in_flight(test_user.id, segment.id)
+
+
+# ── auto path accepts extracted relation proposals (live bug 2026-08-28:
+# blanket-silence auto answers discarded every relation - 164 imports,
+# 149 entities, zero tree edges) ─────────────────────────────────────────
+
+
+def _relation_state(segment_id):
+    return {
+        "segment_id": segment_id,
+        "group_id": "g1",
+        "names_to_check": [],
+        "proposed_relations": [
+            {"from_name": "אני", "to_name": "מרים", "relation_type": "spouse"},
+        ],
+    }
+
+
+async def test_auto_toggle_accepts_proposed_relations(segment, test_user, db_session):
+    """The GENERAL path: auto_extraction toggle on a normal recording (no
+    batch id) must keep extracted relations, not silently drop them."""
+    test_user.auto_extraction = True
+    await db_session.commit()
+
+    def boom(payload):  # pragma: no cover
+        raise AssertionError("interrupt fired in auto mode")
+
+    real = ag.interrupt
+    ag.interrupt = boom
+    try:
+        result = await ag.human_confirm_node(_relation_state(segment.id))
+    finally:
+        ag.interrupt = real
+    kept = result.get("proposed_relations")
+    assert kept and kept[0]["to_name"] == "מרים"  # accepted, not discarded
+
+
+async def test_batch_id_accepts_proposed_relations_toggle_off(
+    segment, test_user, db_session
+):
+    test_user.auto_extraction = False
+    segment.import_batch_id = "batch-r"
+    await db_session.commit()
+    real = ag.interrupt
+    ag.interrupt = lambda payload: (_ for _ in ()).throw(AssertionError("interrupt"))
+    try:
+        result = await ag.human_confirm_node(_relation_state(segment.id))
+    finally:
+        ag.interrupt = real
+    assert result.get("proposed_relations")
+
+
+async def test_manual_silence_still_drops_relations(segment, test_user, db_session):
+    assert not test_user.auto_extraction and segment.import_batch_id is None
+    real = ag.interrupt
+    ag.interrupt = lambda payload: {}  # producer answered nothing
+    try:
+        result = await ag.human_confirm_node(_relation_state(segment.id))
+    finally:
+        ag.interrupt = real
+    assert not result.get("proposed_relations")  # unchanged manual behaviour

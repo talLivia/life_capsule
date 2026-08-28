@@ -1322,7 +1322,21 @@ async def human_confirm_node(state: AnalysisState) -> dict:
             "question(s) resolved as extracted)"
         )
 
-    answer = {} if auto_accept else interrupt(
+    # The auto answer is NOT blanket silence. Relations are PROPOSALS the
+    # pipeline extracted, and manual-mode silence means "not stored" — so
+    # an empty auto answer silently discarded every extracted relationship
+    # (found live: 164 imports, 149 entities, ZERO tree edges). §10's
+    # "accept whatever extraction produced" means accepting proposals:
+    # relations are ticked; identity keeps its safe someone-new default;
+    # year/parentage/side stay silent because they REQUEST missing
+    # information rather than propose facts.
+    auto_answer = {
+        "relations": {
+            str(i): True
+            for i in range(len(state.get("proposed_relations") or []))
+        }
+    }
+    answer = auto_answer if auto_accept else interrupt(
         {
             **payload,
             # NOT a question, and deliberately not part of `payload`: every

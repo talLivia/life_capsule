@@ -80,7 +80,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import interview_config
 from app.models import Entity, EntityMention, InterviewSession, RawSegment
+import asyncio
+
+from app.database import AsyncSessionLocal
 from app.services import period_insights
+
+
+def _schedule_refresh(coro) -> None:
+    """Fire-and-forget by default; tests monkeypatch this to await inline so
+    the refresh outcome is deterministic."""
+    asyncio.create_task(coro)
 
 logger = logging.getLogger(__name__)
 
@@ -192,17 +201,29 @@ async def build_timeline(
         )
         period_segments.append(segments)
 
-    # One sentence per period, from the store unless the recordings behind it
-    # changed. Attached last so a summary failure can never cost the page.
-    summaries = await period_insights.refresh_period_summaries(
-        db,
-        producer_id,
-        language,
-        [
-            (p["category"], p["category_label"], segments)
-            for p, segments in zip(periods, period_segments)
-        ],
-    )
+    # One sentence per period, SERVED FROM THE STORE — never regenerated
+    # in-request. A 164-recording bulk import staled every period at once
+    # and the read-time refresh (16 sequential LLM calls) blew the client's
+    # 30s timeout (live, 2026-08-28). The refresh now runs fire-and-forget
+    # with its own session; this load shows the previous sentences (or none)
+    # and the next load is fresh. Same watermark gating, same total LLM
+    # spend — only WHEN it is paid changed.
+    summaries = await period_insights.stored_summaries(db, producer_id)
+    period_args = [
+        (p["category"], p["category_label"], segments)
+        for p, segments in zip(periods, period_segments)
+    ]
+
+    async def _refresh_in_background() -> None:
+        try:
+            async with AsyncSessionLocal() as bg_db:
+                await period_insights.refresh_period_summaries(
+                    bg_db, producer_id, language, period_args
+                )
+        except Exception as e:  # a failed refresh just means stale sentences
+            logger.warning(f"background period-summary refresh failed: {e}")
+
+    _schedule_refresh(_refresh_in_background())
     for period in periods:
         period["summary"] = summaries.get(period["category"])
 

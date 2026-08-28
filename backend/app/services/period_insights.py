@@ -75,6 +75,21 @@ def _build_summary_prompt(
     return system, user
 
 
+async def stored_summaries(db: AsyncSession, producer_id: str) -> Dict[str, Optional[str]]:
+    """The summaries as last generated — a pure read, no staleness check and
+    no LLM. The timeline serves these and refreshes in the background."""
+    rows = (
+        (
+            await db.execute(
+                select(PeriodSummary).where(PeriodSummary.producer_id == producer_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {row.category: row.summary for row in rows}
+
+
 async def refresh_period_summaries(
     db: AsyncSession,
     producer_id: str,

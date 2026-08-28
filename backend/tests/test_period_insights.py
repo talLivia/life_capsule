@@ -16,6 +16,31 @@ from app.models import InterviewSession, PeriodSummary, RawSegment, User
 from app.services import period_insights, timeline
 
 
+@pytest.fixture(autouse=True)
+def _inline_refresh(monkeypatch, test_engine):
+    """The timeline now serves STORED summaries and refreshes in a
+    fire-and-forget task (2026-08-28). For deterministic tests the seam is
+    patched to await inline against the test engine, so a load performs its
+    refresh before returning — i.e. the OLD timing, with the NEW one-load
+    lag captured explicitly where a test cares."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(timeline, "AsyncSessionLocal", factory)
+
+    monkeypatch.setattr(timeline, "_schedule_refresh", lambda coro: _pending.append(coro))
+    yield
+    _pending.clear()
+
+
+_pending = []
+
+
+async def _drain():
+    while _pending:
+        await _pending.pop(0)
+
+
 @pytest.fixture
 async def archive(db_session):
     user = User(
@@ -61,11 +86,14 @@ async def test_a_summary_is_generated_once_then_served_from_the_store(
     monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
 
     first = await timeline.build_timeline(db_session, user.id, "he")
+    # Deferred contract (2026-08-28): the load itself never blocks on the
+    # LLM — the first view has no sentence yet, the refresh runs after.
+    assert first["periods"][0]["summary"] is None
+    await _drain()
     second = await timeline.build_timeline(db_session, user.id, "he")
-
-    assert first["periods"][0]["summary"] == "ילדות על שפת הכנרת."
+    await _drain()
     assert second["periods"][0]["summary"] == "ילדות על שפת הכנרת."
-    # The whole point of the store: the second view costs zero LLM calls.
+    # The whole point of the store: later views cost zero LLM calls.
     assert len(_summary_calls(mock)) == 1
 
 
@@ -76,9 +104,10 @@ async def test_a_new_recording_makes_the_summary_stale(db_session, archive, monk
     monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
 
     await timeline.build_timeline(db_session, user.id, "he")
+    await _drain()
     await _record(db_session, session, _first_question_id())
     await timeline.build_timeline(db_session, user.id, "he")
-
+    await _drain()
     assert len(_summary_calls(mock)) == 2
 
 
@@ -92,10 +121,11 @@ async def test_a_deleted_recording_makes_the_summary_stale(db_session, archive, 
     monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
 
     await timeline.build_timeline(db_session, user.id, "he")
+    await _drain()
     await db_session.delete(drop)
     await db_session.flush()
     await timeline.build_timeline(db_session, user.id, "he")
-
+    await _drain()
     assert keep is not None
     assert len(_summary_calls(mock)) == 2
 
@@ -107,8 +137,9 @@ async def test_a_language_change_is_staleness(db_session, archive, monkeypatch):
     monkeypatch.setattr(period_insights.llm_service, "generate_response", mock)
 
     await timeline.build_timeline(db_session, user.id, "he")
+    await _drain()
     await timeline.build_timeline(db_session, user.id, "en")
-
+    await _drain()
     assert len(_summary_calls(mock)) == 2
 
 
@@ -122,15 +153,19 @@ async def test_a_failure_serves_the_stale_sentence_and_retries_next_read(
     good = AsyncMock(return_value="הסיפור הישן.")
     monkeypatch.setattr(period_insights.llm_service, "generate_response", good)
     await timeline.build_timeline(db_session, user.id, "he")
+    await _drain()
 
     await _record(db_session, session, _first_question_id())
     down = AsyncMock(side_effect=RuntimeError("model down"))
     monkeypatch.setattr(period_insights.llm_service, "generate_response", down)
     stale = await timeline.build_timeline(db_session, user.id, "he")
+    await _drain()  # the deferred refresh fails; stored sentence survives
     assert stale["periods"][0]["summary"] == "הסיפור הישן."
 
     recovered = AsyncMock(return_value="הסיפור המעודכן.")
     monkeypatch.setattr(period_insights.llm_service, "generate_response", recovered)
+    await timeline.build_timeline(db_session, user.id, "he")
+    await _drain()  # retried and succeeded; the NEXT view shows it
     fresh = await timeline.build_timeline(db_session, user.id, "he")
     assert fresh["periods"][0]["summary"] == "הסיפור המעודכן."
 
