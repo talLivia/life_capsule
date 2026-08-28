@@ -31,7 +31,11 @@ def _to_asyncpg_url(url: str) -> tuple[str, dict]:
 _db_url, _asyncpg_connect_args = _to_asyncpg_url(
     settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
 )
-_engine_kwargs = {"echo": settings.DEBUG, "pool_pre_ping": True}
+# pool_recycle keeps pooled-but-idle connections younger than the
+# provider's idle reaper; pool_pre_ping guards checkout. Neither
+# protects a connection HELD across slow work - nodes must not do that
+# (transcribe_node / create_transcript_chunks_node, 2026-08-28).
+_engine_kwargs = {"echo": settings.DEBUG, "pool_pre_ping": True, "pool_recycle": 240}
 if not _db_url.startswith("sqlite"):
     _engine_kwargs.update(pool_size=10, max_overflow=20)
 if _asyncpg_connect_args:

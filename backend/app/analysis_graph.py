@@ -393,6 +393,8 @@ async def transcribe_node(state: AnalysisState) -> dict:
         segment, user = await _load_segment_and_user(db, segment_id)
         if segment is None:
             return {"error": "segment not found"}
+        video_key = segment.video_key
+        recording_language = user.recording_language
         if segment.transcript:
             # Already transcribed (e.g. Prompt 4's ingest-time transcription
             # already ran) — don't burn a second Whisper pass on the same
@@ -404,22 +406,29 @@ async def transcribe_node(state: AnalysisState) -> dict:
             # backfilling chunks for already-transcribed segments is out of
             # this prompt's stated scope (data model + ingestion only).
             return {"transcript": segment.transcript}
-        if not segment.video_key:
-            return {"error": "segment has no video_key"}
+    if not video_key:
+        return {"error": "segment has no video_key"}
 
-        try:
-            video_bytes = await storage_service.download_file(segment.video_key)
-            result = await stt_service.transcribe_with_timestamps(
-                video_bytes, language=user.recording_language
-            )
-        except Exception as e:
-            logger.error(f"transcribe_node failed for segment {segment_id}: {e}")
-            return {"error": f"transcription failed: {e}"}
+    # Sessionless on purpose: STT on a real recording takes minutes, and a
+    # Neon connection held across it gets reaped (same failure family as
+    # the chunks node — found in the 166-file live batch).
+    try:
+        video_bytes = await storage_service.download_file(video_key)
+        result = await stt_service.transcribe_with_timestamps(
+            video_bytes, language=recording_language
+        )
+    except Exception as e:
+        logger.error(f"transcribe_node failed for segment {segment_id}: {e}")
+        return {"error": f"transcription failed: {e}"}
 
-        transcript = result["text"]
+    transcript = result["text"]
+    async with AsyncSessionLocal() as db:
+        segment, _user = await _load_segment_and_user(db, segment_id)
+        if segment is None:
+            return {"error": "segment not found"}
         segment.transcript = transcript
         await db.commit()
-        return {"transcript": transcript, "phrases": result["phrases"]}
+    return {"transcript": transcript, "phrases": result["phrases"]}
 
 
 async def create_transcript_chunks_node(state: AnalysisState) -> dict:
@@ -447,6 +456,50 @@ async def create_transcript_chunks_node(state: AnalysisState) -> dict:
 
     texts = [p["text"] for p in phrases]
 
+    # NO DB SESSION during the slow per-phrase API work. This loop makes an
+    # embedding call + an LLM call PER PHRASE — many minutes for a real
+    # multi-minute recording — and holding a checked-out Neon connection
+    # through it is exactly how the 166-file live batch failed ("connection
+    # is closed" at the INSERT: Neon reaps idle connections, and
+    # pool_pre_ping only guards checkout, never a held connection).
+    # Compute everything first; the session below is only the fast
+    # delete+insert+commit.
+    prepared = []
+    for i, phrase in enumerate(phrases):
+        window_start = max(0, i - _CHUNK_CONTEXT_WINDOW)
+        window_end = min(len(texts), i + _CHUNK_CONTEXT_WINDOW + 1)
+        context_text = " ".join(t for t in texts[window_start:window_end] if t).strip()
+
+        embedding: Optional[List[float]] = None
+        if context_text:
+            try:
+                embedding = await embeddings.embed_text(context_text)
+            except Exception as e:
+                # Fail-soft, same pattern as embed_transcript_node: a
+                # missing chunk embedding just means Prompt 12's
+                # semantic-similarity signal has nothing to compare for
+                # this one chunk, not a reason to fail the whole segment.
+                logger.warning(
+                    f"create_transcript_chunks_node embedding failed for "
+                    f"segment {segment_id} chunk {i}: {e}"
+                )
+
+        topic_tags: List[str] = []
+        if phrase["text"]:
+            try:
+                raw = await llm_service.generate_response(
+                    messages=[{"role": "user", "content": phrase["text"]}],
+                    system_prompt=_EXTRACT_TOPICS_SYSTEM_PROMPT,
+                    temperature=0,  # structured extraction — deterministic
+                )
+                topic_tags = _parse_json_array(raw)
+            except Exception as e:
+                logger.warning(
+                    f"create_transcript_chunks_node topic tagging failed for "
+                    f"segment {segment_id} chunk {i}: {e}"
+                )
+        prepared.append((i, phrase, embedding, topic_tags))
+
     async with AsyncSessionLocal() as db:
         segment, _user = await _load_segment_and_user(db, segment_id)
         if segment is None:
@@ -459,40 +512,7 @@ async def create_transcript_chunks_node(state: AnalysisState) -> dict:
         )
 
         chunks: List[TranscriptChunk] = []
-        for i, phrase in enumerate(phrases):
-            window_start = max(0, i - _CHUNK_CONTEXT_WINDOW)
-            window_end = min(len(texts), i + _CHUNK_CONTEXT_WINDOW + 1)
-            context_text = " ".join(t for t in texts[window_start:window_end] if t).strip()
-
-            embedding: Optional[List[float]] = None
-            if context_text:
-                try:
-                    embedding = await embeddings.embed_text(context_text)
-                except Exception as e:
-                    # Fail-soft, same pattern as embed_transcript_node: a
-                    # missing chunk embedding just means Prompt 12's
-                    # semantic-similarity signal has nothing to compare for
-                    # this one chunk, not a reason to fail the whole segment.
-                    logger.warning(
-                        f"create_transcript_chunks_node embedding failed for "
-                        f"segment {segment_id} chunk {i}: {e}"
-                    )
-
-            topic_tags: List[str] = []
-            if phrase["text"]:
-                try:
-                    raw = await llm_service.generate_response(
-                        messages=[{"role": "user", "content": phrase["text"]}],
-                        system_prompt=_EXTRACT_TOPICS_SYSTEM_PROMPT,
-                        temperature=0,  # structured extraction — deterministic
-                    )
-                    topic_tags = _parse_json_array(raw)
-                except Exception as e:
-                    logger.warning(
-                        f"create_transcript_chunks_node topic tagging failed for "
-                        f"segment {segment_id} chunk {i}: {e}"
-                    )
-
+        for i, phrase, embedding, topic_tags in prepared:
             chunk = TranscriptChunk(
                 raw_segment_id=segment_id,
                 start_sec=phrase["start_sec"],
