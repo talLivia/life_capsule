@@ -307,8 +307,12 @@ async def start_batch(
     from app.services import bulk_import_runner
 
     batch = await _owned_batch(batch_id, user, db)
-    if batch.state != "validated":
-        raise HTTPException(status_code=409, detail=f"Batch is {batch.state}, not validated")
+    # The DERIVED truth gates start, not the legacy event-state: staging a
+    # file after the mapping used to reset state and permanently disable
+    # start (live bug, 2026-08-28 — YOSI's 166-row batch stuck "staging"
+    # with a fully matched table). Only a running/finished batch refuses.
+    if batch.state not in ("staging", "validated"):
+        raise HTTPException(status_code=409, detail=f"Batch is {batch.state}")
     lang = user.recording_language or "he"
     if batch.mapping_rows:
         # Compile the effective plan NOW: importable rows minus exclusions

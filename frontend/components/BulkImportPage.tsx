@@ -338,7 +338,7 @@ export default function BulkImportPage({ isGuest }: { isGuest: boolean }) {
         <h2 className="font-bold text-ink">Step 4 — start</h2>
         <button
           className="btn-primary w-fit"
-          disabled={isGuest || batch?.state !== 'validated' || importable === 0}
+          disabled={isGuest || running || importable === 0}
           onClick={start}
         >
           {running ? 'Importing…' : `Start import (${importable} file(s))`}

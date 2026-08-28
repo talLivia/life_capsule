@@ -372,3 +372,21 @@ def test_whisper_phrases_are_plain_python_floats():
     out = STTService._segments_to_phrases([Seg()])
     assert type(out[0]["start_sec"]) is float and type(out[0]["end_sec"]) is float
     assert type(out[0]["words"][0]["start_sec"]) is float
+
+
+@pytest.mark.asyncio
+async def test_start_works_after_files_staged_post_mapping(client, auth_headers, runner_env):
+    """Regression (live bug 2026-08-28): staging a file AFTER the mapping
+    reset state to `staging` and the old `validated`-only gate then
+    permanently disabled start. The DERIVED importable rows gate now."""
+    bid = await _validated_batch(client, auth_headers, ["a.mp4"])
+    # stage another file after validation -> legacy state falls back to staging
+    r = await client.put(
+        f"/api/v1/bulk-import/batches/{bid}/files/late.mp4",
+        headers=auth_headers,
+        files={"file": ("late.mp4", b"x", "video/mp4")},
+    )
+    assert r.json()["state"] == "staging"
+    r = await client.post(f"/api/v1/bulk-import/batches/{bid}/start", headers=auth_headers)
+    assert r.status_code == 200 and r.json()["state"] == "running"
+    assert [e["filename"] for e in r.json()["mapping"]] == ["a.mp4"]
