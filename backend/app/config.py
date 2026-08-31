@@ -105,13 +105,18 @@ class Settings(BaseSettings):
     # The per-request budget check self-selects per producer.
     PREFILTER: str = "on"
     PREFILTER_CHAR_BUDGET: int = 300_000
-    # Conversation-sizing an oversized core (core_compression.py,
-    # 2026-08-29): when a selection's playable duration exceeds the
-    # threshold, ONE isolated bounded LLM call narrows it to roughly the
-    # target and routes the rest into the offer. 0 disables. Code-gated —
-    # under the threshold the flow is byte-identical (the main-prompt
-    # recalibration attempt failed its gate; wording cannot be fenced by
-    # scale, code can).
+    # Conversation-sizing an oversized core (core_compression.py). When a
+    # selection's playable duration exceeds the threshold, ONE isolated
+    # bounded LLM call splits it under the three-rule design of 2026-08-30
+    # (category match + unit-scoped close-family linkage, both enforced in
+    # code; see the module docstring). 0 disables. Code-gated — under the
+    # threshold the flow is byte-identical. CORE_COMPRESSION_TARGET_SEC
+    # returned 2026-08-31 as a CODE-ENFORCED clip-span budget (not the old
+    # soft prompt hint): after the rules run, served units are truncated at
+    # a unit boundary once the playable span (intra-run pauses included)
+    # exceeds the target, and the cut remainder leads the offer. Live
+    # evidence forced this: the rules alone passed a same-category
+    # 188-unit/601s core through untouched.
     CORE_COMPRESSION_THRESHOLD_SEC: int = 150
     CORE_COMPRESSION_TARGET_SEC: int = 90
 

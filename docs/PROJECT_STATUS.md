@@ -11,6 +11,29 @@ updated as work lands.
 
 ---
 
+**Core compression redesigned: three-rule split + code-enforced size
+budget — 2026-08-31.** The 2026-08-29 soft duration target failed live
+(YOSI family: 188-unit/3:52 answer served; the "roughly 90s" instruction
+is ignored when the input holds long narratives). Redesign, isolated in
+core_compression.py: RULE 1 category match (unit annotations from
+question_id; model declares the matching category, code enforces), RULE 2
+passage expansion untouched, RULE 3 unit-scoped close-family tags
+(first-degree entity_relations edges only — grandparents excluded by
+design). Live finding that forced the budget: the rules alone are inert
+when the whole selection shares one category (family = childhood ×3,
+including roots/childhood_q05 — no category rule can separate them), and
+188u/601s shipped untouched. So CORE_COMPRESSION_TARGET_SEC=90 is now a
+CODE-enforced clip-span budget (pauses counted as played, truncate at
+unit boundaries, crossing unit plays whole, cut units lead the offer).
+Live after: family 188u/488s → 15u/86s speech (101s clip); army/career
+under threshold untouched; canary 3/3 PASS; suite 948 green. Related
+production finding, NOT yet fixed: LLM_CALL_TIMEOUT_SECONDS=30 becomes
+X-Server-Timeout on the archive read — 504s at 29-30s were killing ~1 in
+3 reads on the 112K-token archive on 2026-08-30; needs a per-call
+override.
+
+---
+
 # NEXT UP: move entities from Graphiti/Neo4j into Postgres
 
 **COMPLETE.** Plan settled 2026-07-28, all five chunks landed 2026-07-28/29,

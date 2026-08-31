@@ -1875,7 +1875,20 @@ async def select_units(
     # through the SAME validation as any offer (real units, not shown, no
     # overlap with the answer).
     selected, compressed_fu, was_compressed = await core_compression.maybe_compress(
-        question, selected, recording_language
+        question, selected, recording_language,
+        # RULE 1 data: each recording's interview category (question_id is
+        # "<category>_<n>"; imports/legacy rows without one map to None and
+        # are exempt from the category rule). RULE 3 data comes from
+        # group_id (close-family lookup happens only above the threshold).
+        categories={
+            a.segment.id: (
+                a.segment.question_id.rsplit("_", 1)[0]
+                if a.segment.question_id
+                else None
+            )
+            for a in f_archive
+        },
+        group_id=group_id,
     )
     if was_compressed:
         unit_ids = [u.unit_id for u in selected]
