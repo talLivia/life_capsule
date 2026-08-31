@@ -89,9 +89,38 @@ async def test_non_fresh_conversation_never_looks_up(monkeypatch, cache_db):
     )
     assert emb is None and hit is None
     emb, hit = await ac.try_lookup(
-        "q", "p1", VERSION, [_u("u1")], {}, set(), [("user", "prev turn")]
+        "q", "p1", VERSION, [_u("u1")], {}, set(),
+        [{"role": "user", "content": "שאלה קודמת"}],
     )
     assert emb is None and hit is None
+    # an assistant answer in history is real context even if the current
+    # question trails it
+    emb, hit = await ac.try_lookup(
+        "q", "p1", VERSION, [_u("u1")], {}, set(),
+        [
+            {"role": "user", "content": "קודמת"},
+            {"role": "assistant", "content": "תשובה"},
+            {"role": "user", "content": "q"},
+        ],
+    )
+    assert emb is None and hit is None
+
+
+@pytest.mark.asyncio
+async def test_own_persisted_message_still_counts_as_fresh(
+    monkeypatch, cache_db
+):
+    """The real WS shape (live find, 2026-08-31): the handler persists the
+    user's question BEFORE the engine runs, so the current question is the
+    one and only history turn. That is THIS turn — the gate must open."""
+    units = [_u("u1")]
+    _fix_embeddings(monkeypatch, {"ספר לי על המשפחה שלך": [1.0]})
+    await ac.store("ספר לי על המשפחה שלך", [1.0], "p1", VERSION, units, None)
+    emb, hit = await ac.try_lookup(
+        "ספר לי על המשפחה שלך", "p1", VERSION, units, {}, set(),
+        [{"role": "user", "content": "ספר לי על המשפחה שלך"}],
+    )
+    assert hit is not None and [u.unit_id for u in hit.units] == ["u1"]
 
 
 # ── the same-name-ambiguity bypass (highest-risk corner) ────────────────────
@@ -139,7 +168,7 @@ async def test_store_then_semantic_hit_preserves_units_and_offer(
     await ac.store(
         "ספר לי על המשפחה שלך", [1.0], "p1", VERSION,
         [units[0], units[2]],
-        {"question": "רוצה עוד?", "unit_keys": ["s1:10.0"]},
+        {"question": "רוצה עוד?", "unit_keys": ["s1:10.00"]},  # canonical :.2f
         source="prewarm",
     )
     emb, hit = await ac.try_lookup(
@@ -338,3 +367,25 @@ async def test_prewarm_inert_when_off_and_never_raises(monkeypatch):
 
     monkeypatch.setattr(ac, "AsyncSessionLocal", db_boom)
     await ac.prewarm("p1")  # swallowed, logged
+
+
+
+@pytest.mark.asyncio
+async def test_key_format_matches_canonical_unit_key(monkeypatch, cache_db):
+    """Regression for the live 2026-08-31 offer-drop: keys stored by the
+    cache must byte-match full_archive_retrieval._unit_key (":.2f"), so a
+    follow-up stored via _unit_key resolves on a later hit."""
+    from app.services.full_archive_retrieval import _unit_key
+
+    u1 = _u("u1", "s1", 10.0)  # raw repr "10.0" != canonical "10.00"
+    u2 = _u("u2", "s1", 66.9)
+    _fix_embeddings(monkeypatch, {"שאלה": [1.0]})
+    await ac.store(
+        "שאלה", [1.0], "p1", VERSION, [u1],
+        {"question": "עוד?", "unit_keys": [_unit_key(u2.segment_id, u2.start_sec)]},
+    )
+    emb, hit = await ac.try_lookup("שאלה", "p1", VERSION, [u1, u2], {}, set(), [])
+    assert hit is not None
+    assert [u.unit_id for u in hit.units] == ["u1"]
+    assert hit.raw_follow_up == {"question": "עוד?", "unit_ids": ["u2"]}
+    assert ac.unit_key(u1) == _unit_key(u1.segment_id, u1.start_sec)

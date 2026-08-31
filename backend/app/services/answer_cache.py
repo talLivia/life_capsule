@@ -76,6 +76,13 @@ CANONICAL_QUESTIONS_HE = [
 _HEBREW_PREFIXES = "ובלמשהכ"
 
 
+def unit_key(u) -> str:
+    """MUST byte-match full_archive_retrieval._unit_key (":.2f" on start_sec).
+    The live bug this pins: raw float repr ("10.0") vs the canonical "10.00"
+    silently failed follow-up resolution on cache hits (2026-08-31)."""
+    return f"{u.segment_id}:{u.start_sec:.2f}"
+
+
 @dataclass
 class LookupHit:
     units: List  # resolved UtteranceUnits, stored order
@@ -110,8 +117,27 @@ def question_names_ambiguous_person(question: str, name_tags: Dict) -> bool:
         return True
 
 
-def _fresh_conversation(shown_keys, turns) -> bool:
-    return not shown_keys and not turns
+def _fresh_conversation(shown_keys, turns, question: str) -> bool:
+    """Fresh = no shown units and no PRIOR conversation. The WS handler
+    persists the user's message BEFORE the engine runs, so on the real
+    serving path the just-asked question is always the trailing turn —
+    that is this turn, not history (found live 2026-08-31: the gate never
+    opened over WS while passing in-process). A trailing user turn whose
+    content equals the current question is stripped; anything else — an
+    assistant answer, a different user message — is real context."""
+    if shown_keys:
+        return False
+    t = list(turns or [])
+    try:
+        if (
+            t
+            and t[-1].get("role") == "user"
+            and (t[-1].get("content") or "").strip() == question.strip()
+        ):
+            t = t[:-1]
+    except AttributeError:
+        return False  # unknown turn shape → safe direction
+    return not t
 
 
 async def try_lookup(
@@ -131,7 +157,7 @@ async def try_lookup(
     """
     if settings.ANSWER_CACHE != "on":
         return None, None
-    if version is None or not _fresh_conversation(shown_keys, turns):
+    if version is None or not _fresh_conversation(shown_keys, turns, question):
         return None, None
     if question_names_ambiguous_person(question, name_tags):
         logger.info("answer cache BYPASS (same-name-ambiguous question)")
@@ -167,7 +193,7 @@ async def try_lookup(
 
         # Resolve stored keys against the CURRENT units — every key must
         # resolve or the entry is stale in a way the fingerprint missed.
-        by_key = {f"{u.segment_id}:{u.start_sec}": u for u in units}
+        by_key = {unit_key(u): u for u in units}
         resolved = [by_key.get(k) for k in (best.unit_keys or [])]
         if not resolved or any(u is None for u in resolved):
             logger.warning(
@@ -211,7 +237,7 @@ async def try_lookup(
 
 def _resolve_entry(entry, units) -> Optional[LookupHit]:
     """Resolve a stored entry against the CURRENT units; None = stale."""
-    by_key = {f"{u.segment_id}:{u.start_sec}": u for u in units}
+    by_key = {unit_key(u): u for u in units}
     resolved = [by_key.get(k) for k in (entry.unit_keys or [])]
     if not resolved or any(u is None for u in resolved):
         return None
@@ -338,7 +364,7 @@ async def store(
         return
     try:
         vh = version_hash(version)
-        keys = [f"{u.segment_id}:{u.start_sec}" for u in served_units]
+        keys = [unit_key(u) for u in served_units]
         async with AsyncSessionLocal() as db:
             # One entry per exact question text per version (re-warm updates
             # rather than accumulating duplicates).
