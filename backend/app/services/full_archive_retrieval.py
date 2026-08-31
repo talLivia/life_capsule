@@ -2117,7 +2117,27 @@ async def assemble_video_clip_response_v2(
     cache_key = video_clip_assembler._clip_cache_key(group_id, clips)
     cached_url = await cache_service.get(cache_key)
     if cached_url:
-        return VideoClipResult(video_url=cached_url, photo_categories=photo_categories)
+        # The cached-URL return must carry the SAME contract as the
+        # assembled one — found live 2026-08-31 the moment Redis actually
+        # ran locally: this early return dropped the spoken text, the
+        # follow-up offer AND shown_units, so a clip-cache hit served a
+        # video with an empty chat bubble, no offer, and — worst — nothing
+        # persisted for the next turn's shown-state memory. Pre-existing
+        # since the clip cache was added; the answer cache made repeat
+        # answers common enough to surface it.
+        return VideoClipResult(
+            video_url=cached_url,
+            photo_categories=photo_categories,
+            follow_up=selection.follow_up,
+            shown_units=[
+                {
+                    "key": _unit_key(u.segment_id, u.start_sec),
+                    "unit_id": u.unit_id,
+                    "text": u.text,
+                }
+                for u in selection.selected_units
+            ],
+        )
 
     video_url = await video_clip_assembler._assemble_and_upload_clip(clips, group_id, session_id)
     if video_url is None:

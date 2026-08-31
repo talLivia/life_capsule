@@ -1953,3 +1953,60 @@ def test_message_mode_transcript_carries_no_marks(monkeypatch):
     assert "[ALREADY SHOWN]" not in ar._format_annotated_transcript(
         archive, units, set(), {}
     )
+
+
+@pytest.mark.asyncio
+async def test_clip_cache_hit_keeps_text_offer_and_shown_units(monkeypatch):
+    """Regression (live find, 2026-08-31, first time Redis actually ran
+    locally): the cached-URL early return dropped follow_up and shown_units,
+    serving a video with an empty chat bubble, no offer, and nothing
+    persisted for next-turn shown-state memory. The cached return must carry
+    the SAME contract as the assembled one."""
+    from types import SimpleNamespace
+
+    import app.services.full_archive_retrieval as far
+
+    unit = SimpleNamespace(
+        unit_id="u1", segment_id="seg-1", index=0,
+        start_sec=1.0, end_sec=6.0, text="טקסט אמיתי",
+    )
+    selection = far.UnitSelection(
+        clips=[
+            far.ExpandedClip(
+                raw_segment_id="seg-1", start_sec=1.0, end_sec=6.0,
+                source_chunk_id="archive-read:seg-1",
+            )
+        ],
+        selected_units=[unit],
+        follow_up={"question": "רוצה עוד?", "unit_ids": ["u2"]},
+    )
+
+    async def fake_select_units(*a, **k):
+        return selection
+
+    async def fake_photo_categories(_ids):
+        return ["childhood"]
+
+    async def fake_cache_get(_key):
+        return "http://cached/clip.mp4"
+
+    monkeypatch.setattr(far, "select_units", fake_select_units)
+    monkeypatch.setattr(
+        far.video_clip_assembler, "photo_categories_for_segments",
+        fake_photo_categories,
+    )
+    monkeypatch.setattr(far.cache_service, "get", fake_cache_get)
+
+    async def boom(*a, **k):  # pragma: no cover - cached path must not assemble
+        raise AssertionError("assembled despite cache hit")
+
+    monkeypatch.setattr(
+        far.video_clip_assembler, "_assemble_and_upload_clip", boom
+    )
+
+    result = await far.assemble_video_clip_response_v2("שאלה", "g1", "he", "sess")
+    assert result.video_url == "http://cached/clip.mp4"
+    assert result.follow_up == {"question": "רוצה עוד?", "unit_ids": ["u2"]}
+    assert result.shown_units == [
+        {"key": "seg-1:1.00", "unit_id": "u1", "text": "טקסט אמיתי"}
+    ]
