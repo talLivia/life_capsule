@@ -899,3 +899,38 @@ class MediaAsset(Base):
         ),
         Index("ix_media_assets_producer_category", "producer_id", "category"),
     )
+
+
+class AnswerCacheEntry(Base):
+    """Semantic answer cache (2026-08-31, answer_cache.py): one previously
+    served select_units outcome. Keyed by producer + archive-version
+    fingerprint (the same tuple the gemini context cache keys on — any
+    ingest/delete moves it and orphans the entry) + the question's embedding
+    (cosine-matched at lookup, threshold in config). `unit_keys` are
+    `segment_id:start_sec` keys, the ONLY unit identity allowed to persist
+    (unit ids renumber per ingest); every key must resolve against the live
+    archive at hit time or the entry is ignored. session_id NULL = a global
+    fresh-conversation entry (pre-warm or live first turns); non-NULL = a
+    speculative follow-up prefetch valid only inside that conversation."""
+
+    __tablename__ = "answer_cache_entries"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    producer_id = Column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    session_id = Column(String, nullable=True)
+    version_hash = Column(String(32), nullable=False)
+    question_text = Column(Text, nullable=False)
+    question_embedding = Column(JSON, nullable=False)
+    unit_keys = Column(JSON, nullable=False)
+    follow_up = Column(JSON, nullable=True)
+    source = Column(String, nullable=False, default="live")
+    hit_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_hit_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_answer_cache_producer_version", "producer_id", "version_hash"),
+        Index("ix_answer_cache_session", "session_id"),
+    )

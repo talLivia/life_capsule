@@ -13,6 +13,8 @@ from typing import Dict, Optional
 
 from fastapi import WebSocket
 
+from app.config import settings
+
 from app.services import gpu_client
 from app.services.storage import storage_service
 from app.telemetry import span
@@ -165,6 +167,62 @@ from app.services.pending_prompt import (  # noqa: E402
     _match_pending_prompt,
 )
 from app.services import pending_prompt  # noqa: E402
+
+
+async def _speculative_prefetch(
+    session_id: str, group_id: str, recording_language: str, question: str
+) -> None:
+    """Milestone-2 background task: the moment an answer ships with a
+    follow-up offer, run the offered question through the FULL engine with
+    this session's own context and park the result as a session-scoped
+    answer-cache entry. If the listener accepts the offer (button, typed or
+    spoken "כן" — all of which send the byte-identical offered question),
+    that turn consumes the entry instead of paying the archive read.
+    Fire-and-forget: never blocks a response, never raises, stores nothing
+    on clarify/failure/empty."""
+    try:
+        from app.services import answer_cache, embeddings
+        from app.services import full_archive_retrieval as far
+
+        if settings.ANSWER_CACHE != "on":
+            return
+        sel = await far.select_units(
+            question, group_id, recording_language, session_id
+        )
+        if sel.read_failed or sel.clarify or not sel.selected_units:
+            return
+        version = (
+            far._ARCHIVE_CACHE[group_id].version
+            if group_id in far._ARCHIVE_CACHE
+            else None
+        )
+        fu_store = None
+        if sel.follow_up and sel.follow_up.get("unit_ids"):
+            by_id = {u.unit_id: u for u in sel.selected_units}
+            # follow-up ids point OUTSIDE the answer; resolve via the bundle
+            _a, _e, units, _t = await far._archive_bundle(group_id)
+            all_by_id = {u.unit_id: u for u in units}
+            fu_units = [
+                all_by_id[i] for i in sel.follow_up["unit_ids"] if i in all_by_id
+            ]
+            fu_store = {
+                "question": sel.follow_up.get("question"),
+                "unit_keys": [
+                    far._unit_key(u.segment_id, u.start_sec) for u in fu_units
+                ],
+            }
+        await answer_cache.store(
+            question,
+            await embeddings.embed_text(question),
+            group_id,
+            version,
+            sel.selected_units,
+            fu_store,
+            source="speculative",
+            session_id=session_id,
+        )
+    except Exception as e:
+        logger.warning(f"speculative prefetch failed (ignored): {e}")
 
 
 class ConnectionManager:
@@ -1001,6 +1059,12 @@ class ConnectionManager:
                 )
                 if armed:
                     data["pending_prompt"] = armed
+                    asyncio.create_task(
+                        _speculative_prefetch(
+                            session_id, group_id, recording_language,
+                            result.follow_up["question"],
+                        )
+                    )
                 return
 
             latency = (datetime.now(timezone.utc) - started_at).total_seconds()
@@ -1053,6 +1117,14 @@ class ConnectionManager:
             armed = pending_prompt.pending_from_result(result.follow_up, None, text)
             if armed:
                 data["pending_prompt"] = armed
+                # Milestone-2 speculative prefetch: warm the offered question
+                # in the background so accepting the offer skips the read.
+                asyncio.create_task(
+                    _speculative_prefetch(
+                        session_id, group_id, recording_language,
+                        result.follow_up["question"],
+                    )
+                )
 
         except Exception as e:
             logger.error(

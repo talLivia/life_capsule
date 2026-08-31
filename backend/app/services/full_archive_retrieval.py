@@ -54,6 +54,7 @@ from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import InterviewSession, Message, RawSegment, TranscriptChunk
 from app.services import (
+    answer_cache,
     core_compression,
     entity_store,
     prefilter,
@@ -1768,6 +1769,35 @@ async def select_units(
 
     shown_keys, per_turn_units = shown
 
+    # Semantic answer cache (answer_cache.py): with the toggle off this is
+    # a provable no-op (no embedding call, no DB read — pinned by test).
+    # A hit reconstructs the EXACT downstream contract a fresh read builds:
+    # clips from resolve_units_to_clips, the offer through the same
+    # _validate_follow_up gate. ac_embedding doubles as the store gate —
+    # non-None exactly when this turn is cacheable.
+    ac_version = _ARCHIVE_CACHE[group_id].version if group_id in _ARCHIVE_CACHE else None
+    # Speculative follow-up prefetch (milestone 2): exact-match, session-
+    # scoped, one-shot — computed WITH this session's context the moment the
+    # offer shipped, so it may serve into a turn that has shown-state. Its
+    # offer still passes _validate_follow_up against CURRENT shown keys.
+    ac_hit = await answer_cache.take_speculative(
+        question, group_id, session_id, ac_version, units
+    )
+    ac_embedding = None
+    if ac_hit is None:
+        ac_embedding, ac_hit = await answer_cache.try_lookup(
+            question, group_id, ac_version, units, name_tags, shown_keys, turns
+        )
+    if ac_hit is not None:
+        hit_by_id = {u.unit_id: u for u in units}
+        return UnitSelection(
+            clips=resolve_units_to_clips([u.unit_id for u in ac_hit.units], units),
+            selected_units=ac_hit.units,
+            follow_up=_validate_follow_up(
+                ac_hit.raw_follow_up, hit_by_id, ac_hit.units, shown_keys
+            ),
+        )
+
     # Recording pre-filter (PREFILTER_PLAN): None = no filtering, and the
     # f_* views below are the originals — byte-identical rendering. Active
     # only when the archive exceeds the budget; unit ids/keys are global
@@ -1916,6 +1946,24 @@ async def select_units(
             no_story_text = _no_story_line(
                 raw_about, entity_map, units, shown_keys, question
             )
+    # Store a cacheable fresh-conversation answer (answer_cache.py).
+    # ac_embedding is non-None exactly when the lookup gates passed and
+    # missed; clarify/failed paths returned earlier, empty answers are
+    # skipped inside store(). The offer is stored as unit KEYS (ids
+    # renumber per ingest; keys are the persistable identity).
+    if ac_embedding is not None and clips:
+        fu_store = None
+        if follow_up and follow_up.get("unit_ids"):
+            fu_units = [by_id[i] for i in follow_up["unit_ids"] if i in by_id]
+            fu_store = {
+                "question": follow_up.get("question"),
+                "unit_keys": [
+                    _unit_key(u.segment_id, u.start_sec) for u in fu_units
+                ],
+            }
+        await answer_cache.store(
+            question, ac_embedding, group_id, ac_version, selected, fu_store
+        )
     return UnitSelection(
         clips=clips,
         selected_units=selected,

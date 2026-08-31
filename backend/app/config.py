@@ -125,6 +125,15 @@ class Settings(BaseSettings):
     # fail-opened into serving a 763s clip (live, 2026-08-31, forced-prefilter
     # experiment). Same per-call override pattern as ARCHIVE_READ_MAX_TOKENS.
     CORE_COMPRESSION_MAX_TOKENS: int = 8192
+    # Semantic answer cache (answer_cache.py, 2026-08-31): serve a cached
+    # select_units outcome for fresh-conversation questions semantically
+    # close to one already answered/pre-warmed. Default OFF and inert —
+    # no DB read, no embedding call, byte-identical flow. Threshold is
+    # deliberately conservative: err toward a full read over a
+    # wrong-but-similar answer (same-name-ambiguous questions bypass the
+    # cache entirely regardless of threshold).
+    ANSWER_CACHE: str = "off"
+    ANSWER_CACHE_THRESHOLD: float = 0.95
 
     # AWS (retained for the base project's Terraform/EC2 GPU deploy path —
     # NOT used for object storage in this project; see R2_* below)

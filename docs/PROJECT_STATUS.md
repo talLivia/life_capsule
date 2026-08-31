@@ -11,6 +11,21 @@ updated as work lands.
 
 ---
 
+**Semantic answer cache SHIPPED (toggle off) — 2026-08-31.** The latency
+investigation's conclusion built: select_units outcomes cached by
+(producer, archive-version fingerprint, question embedding) at cosine
+>= 0.95, fresh-conversations only, same-name-ambiguous questions bypass
+entirely; speculative follow-up prefetch (session-scoped, exact-match,
+one-shot) warms the offered question the moment an offer ships; ingest
+pre-warm behind the bulk debounce covers 5 canonical first-turn
+questions. ANSWER_CACHE=off by default and inert (pinned); migration
+0032 applied live. Evidence that forced it: interleaved A/B proved
+prompt size a non-lever (34.8K filtered vs 111.8K full: equal reads),
+thinking_level=minimal measured catastrophically slower, and the read
+floor is ~12-15s with 30-80s Google-side swings.
+
+---
+
 **Core compression redesigned: three-rule split + code-enforced size
 budget — 2026-08-31.** The 2026-08-29 soft duration target failed live
 (YOSI family: 188-unit/3:52 answer served; the "roughly 90s" instruction
