@@ -55,7 +55,19 @@ from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import AnswerCacheEntry
 from app.services import embeddings
+from app.services.core_compression import COMPRESSION_VERSION
 from app.services.gemini_cache import version_hash
+
+#: A cached answer embodies the whole production pipeline's behaviour, not
+#: just the archive bytes - so the hash that scopes entries folds in the
+#: compression version. Bumping COMPRESSION_VERSION auto-orphans every
+#: stored answer (they were valid, but no longer match what a fresh read
+#: would produce). Module attribute so tests can monkeypatch it.
+_PIPELINE_SALT = COMPRESSION_VERSION
+
+
+def _vh(version: tuple) -> str:
+    return version_hash(tuple(version) + (_PIPELINE_SALT,))
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +180,7 @@ async def try_lookup(
         logger.warning(f"answer cache embedding failed (full read): {e}")
         return None, None
     try:
-        vh = version_hash(version)
+        vh = _vh(version)
         async with AsyncSessionLocal() as db:
             rows = (
                 (
@@ -313,7 +325,7 @@ async def take_speculative(
     if settings.ANSWER_CACHE != "on" or version is None:
         return None
     try:
-        vh = version_hash(version)
+        vh = _vh(version)
         async with AsyncSessionLocal() as db:
             row = (
                 (
@@ -363,7 +375,7 @@ async def store(
     if embedding is None or version is None or not served_units:
         return
     try:
-        vh = version_hash(version)
+        vh = _vh(version)
         keys = [unit_key(u) for u in served_units]
         async with AsyncSessionLocal() as db:
             # One entry per exact question text per version (re-warm updates

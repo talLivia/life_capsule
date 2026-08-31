@@ -19,9 +19,27 @@ settings.GEMINI_CONTEXT_CACHE = "off"  # measurement isolation
 
 from sqlalchemy import text
 from app.database import AsyncSessionLocal
+from app.services import core_compression as cc
 from app.services import full_archive_retrieval as ar
 
 BOUND = 60  # "one conversational turn" ceiling; 188 was the failure
+
+# Diversity criterion (2026-08-31.2): when compression fires on a core that
+# spans >=2 recordings, the SERVED core must still span >=2 - the archive-
+# order tail-cut regression served one recording whole and cut the rest.
+_pre = {"recs": None, "fired": False}
+_orig_mc = cc.maybe_compress
+
+
+async def _spy_mc(question, units, language, categories=None, group_id=None):
+    _pre["recs"] = len({u.segment_id for u in units})
+    out = await _orig_mc(question, units, language, categories, group_id)
+    _pre["fired"] = out[2]
+    return out
+
+
+cc.maybe_compress = _spy_mc
+ar.core_compression.maybe_compress = _spy_mc
 
 
 async def main() -> int:
@@ -30,7 +48,7 @@ async def main() -> int:
     args = ap.parse_args()
     async with AsyncSessionLocal() as db:
         uid = (await db.execute(text("SELECT id FROM users WHERE username ILIKE '%yosi%'"))).scalar()
-    cores, fus = [], []
+    cores, fus, diversity_flags = [], [], []
     for n in range(args.runs):
         sel = await ar.select_units("ספר לי על המשפחה שלך", uid, "he", str(uuid.uuid4()))
         if sel.read_failed:
@@ -39,8 +57,20 @@ async def main() -> int:
         fu = sel.follow_up or {}
         cores.append(len(sel.selected_units))
         fus.append(len(fu.get("unit_ids", [])))
-        print(f"  run {n+1}: core={cores[-1]} units, offer={fus[-1]} units", flush=True)
-    ok = all(c <= BOUND for c in cores) and sum(1 for f in fus if f) >= args.runs - 1
+        served_recs = len({u.segment_id for u in sel.selected_units})
+        div_ok = (not _pre["fired"]) or (_pre["recs"] or 0) < 2 or served_recs >= 2
+        diversity_flags.append(div_ok)
+        print(
+            f"  run {n+1}: core={cores[-1]} units/{served_recs} recs "
+            f"(pre {_pre['recs']} recs, compressed={_pre['fired']}), "
+            f"offer={fus[-1]} units, diversity={'ok' if div_ok else 'FAIL'}",
+            flush=True,
+        )
+    ok = (
+        all(c <= BOUND for c in cores)
+        and sum(1 for f in fus if f) >= args.runs - 1
+        and all(diversity_flags)
+    )
     print(f"cores={cores} offers={fus}")
     print("CANARY", "PASS" if ok else "FAIL",
           f"(bound {BOUND}, offer in {sum(1 for f in fus if f)}/{args.runs})")

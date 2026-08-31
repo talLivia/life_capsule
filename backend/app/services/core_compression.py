@@ -74,6 +74,15 @@ logger = logging.getLogger(__name__)
 #: et al. are excluded on purpose.
 CLOSE_FAMILY_RELATION_TYPES = ("parent", "sibling", "spouse", "child")
 
+#: Version salt for everything downstream that CACHES this pipeline's output
+#: (answer_cache folds it into its version hash). Bump on ANY behavioural
+#: change to compression so stored answers from the old behaviour orphan
+#: automatically - no manual purge. 2026-08-31.2: diversity-aware budget
+#: fill + model-stitch-order preservation (the archive-order tail-cut served
+#: one recording whole and cut every other selected recording; live case:
+#: family -> 90s of parents'-romance, father+mother dropped).
+COMPRESSION_VERSION = "2026-08-31.2-diversity-fill"
+
 _SYSTEM_PROMPT = """\
 You split an OVERSIZED answer from a person's life-story video archive into
 the part to play NOW and the part to OFFER next.
@@ -178,6 +187,73 @@ async def _close_family_names(group_id: str) -> Set[str]:
     except Exception as e:  # pragma: no cover - exercised via live runs
         logger.warning(f"close-family lookup failed (RULE 3 inert): {e}")
         return set()
+
+
+def _added_span(u, prev) -> float:
+    """Playable seconds unit `u` adds after `prev` (the last taken unit of
+    the SAME recording): contiguous units play through the pause between
+    them, mirroring resolve_units_to_clips."""
+    contiguous = (
+        prev is not None
+        and u.segment_id == prev.segment_id
+        and getattr(u, "index", None) is not None
+        and getattr(prev, "index", None) is not None
+        and u.index == prev.index + 1
+    )
+    return (u.end_sec - prev.end_sec) if contiguous else (u.end_sec - u.start_sec)
+
+
+def _fill_budget(kept: List, budget: float) -> set:
+    """Unit ids that survive the budget, keeping every selected recording
+    represented. R = distinct recordings in `kept` (model order):
+
+    R == 1  -> the original prefix walk, identical outcome.
+    R  > 1  -> pass 1 gives each recording (in order of first appearance)
+               up to ~budget/R of playable span from its own units in model
+               order; pass 2 spends any remainder across the not-yet-taken
+               units in model order. Crossing units play whole in both
+               passes; each recording's first unit is always taken, so the
+               result is never empty and never single-recording when the
+               input was not."""
+    recs = list(dict.fromkeys(u.segment_id for u in kept))
+    if len(recs) <= 1:
+        span, prev = 0.0, None
+        out = set()
+        for u in kept:
+            if span >= budget:
+                break
+            span += _added_span(u, prev)
+            prev = u
+            out.add(u.unit_id)
+        return out
+
+    share = budget / len(recs)
+    by_rec = {}
+    for u in kept:
+        by_rec.setdefault(u.segment_id, []).append(u)
+    taken = set()
+    prev_in_rec = {}
+    rec_span = {r: 0.0 for r in recs}
+    total = 0.0
+    for r in recs:  # pass 1: fair share per recording
+        for u in by_rec[r]:
+            if rec_span[r] >= share:
+                break
+            a = _added_span(u, prev_in_rec.get(r))
+            rec_span[r] += a
+            total += a
+            prev_in_rec[r] = u
+            taken.add(u.unit_id)
+    for u in kept:  # pass 2: remainder, model order
+        if total >= budget:
+            break
+        if u.unit_id in taken:
+            continue
+        a = _added_span(u, prev_in_rec.get(u.segment_id))
+        total += a
+        prev_in_rec[u.segment_id] = u
+        taken.add(u.unit_id)
+    return taken
 
 
 def _parse(raw: str) -> Optional[dict]:
@@ -290,40 +366,33 @@ async def maybe_compress(
         for u in units
         if u.unit_id in kept_ids and not _eligible(u.unit_id)
     ]
-    kept = [u for u in units if u.unit_id in kept_ids and _eligible(u.unit_id)]
+    # MODEL STITCH ORDER, not archive order (2026-08-31.2): the reply's own
+    # id order is the composed answer. The old archive-order rebuild meant
+    # the budget cut below kept whichever recording was ingested EARLIEST
+    # and dropped every other selected recording (live: 90s of the parents'-
+    # romance recording served whole; father and mother cut entirely).
+    ordered_ids = [
+        i for i in dict.fromkeys(parsed.get("unit_ids") or []) if i in by_id
+    ]
+    kept = [by_id[i] for i in ordered_ids if _eligible(i)]
     if not kept:
         logger.warning("core compression kept nothing (serving full core)")
         return units, None, False
 
-    # SIZE BUDGET — see module docstring. Span accounting mirrors
-    # resolve_units_to_clips: a unit contiguous with the previous one (same
-    # segment, adjacent global index) plays from the previous unit's end, so
-    # the pause between them counts; a new run starts at its own start. The
-    # crossing unit is kept whole (never an orphaned cut two words short),
-    # and the first unit is always kept, so this can never empty the core.
+    # SIZE BUDGET — diversity-aware fill (2026-08-31.2, _fill_budget). When
+    # the kept set spans R > 1 recordings, each recording is guaranteed a
+    # fair share (~budget/R) of playable span before any recording gets
+    # more, so a broad answer touches every selected recording instead of
+    # serving the first one whole. Single-recording selections take the
+    # identical prefix walk as before. Crossing units play whole; every
+    # represented recording's first unit survives, so this can never empty
+    # the core.
     budget = settings.CORE_COMPRESSION_TARGET_SEC
     truncated: List[str] = []
     if budget:
-        span = 0.0
-        cut_at = len(kept)
-        prev = None
-        for i, u in enumerate(kept):
-            if span >= budget:
-                cut_at = i
-                break
-            contiguous = (
-                prev is not None
-                and u.segment_id == prev.segment_id
-                and getattr(u, "index", None) is not None
-                and getattr(prev, "index", None) is not None
-                and u.index == prev.index + 1
-            )
-            span += (u.end_sec - prev.end_sec) if contiguous else (
-                u.end_sec - u.start_sec
-            )
-            prev = u
-        truncated = [u.unit_id for u in kept[cut_at:]]
-        kept = kept[:cut_at]
+        survivors = _fill_budget(kept, float(budget))
+        truncated = [u.unit_id for u in kept if u.unit_id not in survivors]
+        kept = [u for u in kept if u.unit_id in survivors]
     kept_final = {u.unit_id for u in kept}
 
     raw_fu = parsed.get("follow_up") or None

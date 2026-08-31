@@ -91,3 +91,19 @@ def _no_real_gemini_caches(monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "GEMINI_CONTEXT_CACHE", "off")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_redis(monkeypatch):
+    """Tests must never touch a real Redis (2026-08-31: the moment a local
+    Redis actually existed, the clip-URL cache leaked ACROSS suite runs —
+    test_video_clip_e2e served the PREVIOUS run's tmp_path clip via the 24h
+    cached URL and failed on exists()). Blank REDIS_URL takes cache_service's
+    deliberate-off path at app startup; resetting the global instance covers
+    tests that use it without restarting the app."""
+    from app.config import settings
+    from app.services.cache import cache_service
+
+    monkeypatch.setattr(settings, "REDIS_URL", "")
+    monkeypatch.setattr(cache_service, "redis", None)
+    monkeypatch.setattr(cache_service, "disabled", True)

@@ -389,3 +389,18 @@ async def test_key_format_matches_canonical_unit_key(monkeypatch, cache_db):
     assert [u.unit_id for u in hit.units] == ["u1"]
     assert hit.raw_follow_up == {"question": "עוד?", "unit_ids": ["u2"]}
     assert ac.unit_key(u1) == _unit_key(u1.segment_id, u1.start_sec)
+
+
+
+@pytest.mark.asyncio
+async def test_compression_version_salt_orphans_old_entries(monkeypatch, cache_db):
+    """Bumping COMPRESSION_VERSION must auto-orphan every stored answer -
+    the ship-without-manual-purge mechanism for behaviour changes."""
+    units = [_u("u1")]
+    _fix_embeddings(monkeypatch, {"שאלה": [1.0]})
+    await ac.store("שאלה", [1.0], "p1", VERSION, units, None)
+    emb, hit = await ac.try_lookup("שאלה", "p1", VERSION, units, {}, set(), [])
+    assert hit is not None  # same salt: serves
+    monkeypatch.setattr(ac, "_PIPELINE_SALT", "next-version")
+    emb, hit = await ac.try_lookup("שאלה", "p1", VERSION, units, {}, set(), [])
+    assert hit is None  # new pipeline version: old entry invisible

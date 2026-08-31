@@ -71,7 +71,7 @@ async def test_compresses_to_subset_and_offers_remainder(monkeypatch):
     units = _big()
     out, fu, compressed = await cc.maybe_compress("q", units, "he")
     assert compressed
-    assert [u.unit_id for u in out] == ["u0", "u2", "u5"]  # archive order kept
+    assert [u.unit_id for u in out] == ["u2", "u0", "u5"]  # MODEL stitch order (2026-08-31.2)
     assert fu == {"question": "עוד?", "unit_ids": ["u7", "u8"]}
 
 
@@ -221,7 +221,7 @@ async def test_no_annotations_means_no_category_demotion(monkeypatch):
     reply = '{"category": "childhood", "unit_ids": ["u2", "u0", "u5"], "follow_up": {"question": "עוד?", "unit_ids": ["u7"]}}'
     monkeypatch.setattr(cc.llm_service, "generate_response", AsyncMock(return_value=reply))
     out, fu, compressed = await cc.maybe_compress("q", _big(), "he")
-    assert compressed and [u.unit_id for u in out] == ["u0", "u2", "u5"]
+    assert compressed and [u.unit_id for u in out] == ["u2", "u0", "u5"]  # model order
     assert fu["unit_ids"] == ["u7"]
 
 
@@ -389,3 +389,108 @@ async def test_truncated_mid_json_reply_still_fails_open(monkeypatch):
         "q", units, "he", {"s": "childhood"}, "g1"
     )
     assert out is units and fu is None and compressed is False
+
+
+
+# ── diversity-aware budget fill (2026-08-31.2) ──────────────────────────────
+
+
+def _keep_ids(monkeypatch, ids, question="עוד?"):
+    id_list = ", ".join('"' + i + '"' for i in ids)
+    reply = (
+        '{"category": "childhood", "unit_ids": [' + id_list + '],'
+        ' "follow_up": {"question": "' + question + '", "unit_ids": []}}'
+    )
+    monkeypatch.setattr(
+        cc.llm_service, "generate_response", AsyncMock(return_value=reply)
+    )
+
+
+_THREE_CATS = {"rec-a": "childhood", "rec-b": "childhood", "rec-c": "childhood"}
+
+
+@pytest.mark.asyncio
+async def test_multi_recording_core_represents_every_recording(monkeypatch):
+    """The live failure: 3 selected recordings, archive-order tail-cut kept
+    the first whole and dropped the other two. Now each gets ~budget/R."""
+    units = (
+        [_iu("a" + str(i), "rec-a", i, i * 10, i * 10 + 10) for i in range(10)]
+        + [_iu("b" + str(i), "rec-b", 100 + i, i * 10, i * 10 + 10) for i in range(10)]
+        + [_iu("c" + str(i), "rec-c", 200 + i, i * 10, i * 10 + 10) for i in range(10)]
+    )
+    _keep_ids(monkeypatch, [u.unit_id for u in units])
+    _no_db(monkeypatch)
+    out, fu, compressed = await cc.maybe_compress("q", units, "he", _THREE_CATS, "g1")
+    assert compressed
+    per = {}
+    for u in out:
+        per.setdefault(u.segment_id, []).append(u)
+    assert set(per) == {"rec-a", "rec-b", "rec-c"}
+    assert [len(v) for v in per.values()] == [3, 3, 3]  # ~30s each
+    assert fu is not None and len(fu["unit_ids"]) == 21  # cut tails lead offer
+
+
+@pytest.mark.asyncio
+async def test_single_recording_identical_to_old_prefix_walk(monkeypatch):
+    units = [_iu("u" + str(i), "s", i * 2, 0, 10) for i in range(30)]  # 300s
+    _keep_ids(monkeypatch, [u.unit_id for u in units])
+    _no_db(monkeypatch)
+    out, fu, _ = await cc.maybe_compress("q", units, "he", {"s": "childhood"}, "g1")
+    assert [u.unit_id for u in out] == ["u" + str(i) for i in range(9)]
+    assert fu["unit_ids"] == ["u" + str(i) for i in range(9, 30)]
+
+
+@pytest.mark.asyncio
+async def test_budget_smaller_than_recording_count(monkeypatch):
+    """share < one unit: each recording still contributes its first unit -
+    never empty, never single-recording when the input was not."""
+    units = [
+        _iu("a1", "rec-a", 1, 0, 40), _iu("b1", "rec-b", 10, 0, 40),
+        _iu("c1", "rec-c", 20, 0, 40), _iu("c2", "rec-c", 21, 40, 80),
+    ]
+    _keep_ids(monkeypatch, ["a1", "b1", "c1", "c2"])
+    _no_db(monkeypatch)
+    monkeypatch.setattr(settings, "CORE_COMPRESSION_THRESHOLD_SEC", 100)
+    out, fu, _ = await cc.maybe_compress("q", units, "he", _THREE_CATS, "g1")
+    assert [u.unit_id for u in out] == ["a1", "b1", "c1"]
+    assert fu["unit_ids"] == ["c2"]
+
+
+@pytest.mark.asyncio
+async def test_model_stitch_order_survives_fill(monkeypatch):
+    """The model's reply order (rec-b first) is the composed answer; the
+    old code silently flattened it to archive order."""
+    units = [
+        _iu("a1", "rec-a", 1, 0, 30), _iu("a2", "rec-a", 2, 30, 60),
+        _iu("a3", "rec-a", 3, 60, 90),
+        _iu("b1", "rec-b", 10, 0, 30), _iu("b2", "rec-b", 11, 30, 60),
+        _iu("b3", "rec-b", 12, 60, 90),
+    ]
+    _keep_ids(monkeypatch, ["b1", "b2", "b3", "a1", "a2", "a3"])  # rec-b leads
+    _no_db(monkeypatch)
+    monkeypatch.setattr(settings, "CORE_COMPRESSION_THRESHOLD_SEC", 100)
+    out, fu, _ = await cc.maybe_compress(
+        "q", units, "he", {"rec-a": "childhood", "rec-b": "childhood"}, "g1"
+    )
+    # share 45s -> b1+b2 (crossing plays whole), a1+a2; b3/a3 cut; the
+    # model's rec-b-first order survives (old code flattened to archive order)
+    assert [u.unit_id for u in out] == ["b1", "b2", "a1", "a2"]
+    assert fu["unit_ids"] == ["b3", "a3"]
+
+
+@pytest.mark.asyncio
+async def test_pass2_remainder_extends_when_one_recording_is_short(monkeypatch):
+    units = [
+        _iu("a1", "rec-a", 1, 0, 20),  # rec-a has only 20s
+        _iu("b1", "rec-b", 10, 0, 30), _iu("b2", "rec-b", 11, 30, 60),
+        _iu("b3", "rec-b", 12, 60, 90), _iu("b4", "rec-b", 13, 90, 200),
+    ]
+    _keep_ids(monkeypatch, ["a1", "b1", "b2", "b3", "b4"])
+    _no_db(monkeypatch)
+    out, fu, _ = await cc.maybe_compress(
+        "q", units, "he", {"rec-a": "childhood", "rec-b": "childhood"}, "g1"
+    )
+    # pass1: a1 (20s) + b1,b2 (60s; share 45 -> crossing b2 whole) = 80s
+    # pass2: remainder -> b3 (crossing, whole); b4 cut
+    assert [u.unit_id for u in out] == ["a1", "b1", "b2", "b3"]
+    assert fu["unit_ids"] == ["b4"]
