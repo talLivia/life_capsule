@@ -326,3 +326,36 @@ async def test_non_503_errors_never_retry(monkeypatch, no_backoff):
         )
     assert len(calls) == 1
     assert no_backoff == []
+
+
+@pytest.mark.asyncio
+async def test_gemini_per_call_timeout_override(monkeypatch):
+    """The archive read passes timeout= (seconds); it must land in the
+    request config as HttpOptions milliseconds — the per-call override of
+    the client-wide 30s guard (2026-08-31: that guard, doubling as
+    X-Server-Timeout, was 504-killing every 30s+ whole-archive read)."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "test-key")
+    service = LLMService()
+
+    captured = {}
+
+    class _FakeResp:
+        text = "ok"
+        usage_metadata = None
+
+    async def fake_generate_content(*, model, contents, config):
+        captured["config"] = config
+        return _FakeResp()
+
+    monkeypatch.setattr(service.client.aio.models, "generate_content", fake_generate_content)
+
+    await service.generate_response(
+        [{"role": "user", "content": "q"}], system_prompt="s", timeout=90
+    )
+    assert captured["config"].http_options.timeout == 90_000
+
+    await service.generate_response([{"role": "user", "content": "q"}], system_prompt="s")
+    assert getattr(captured["config"], "http_options", None) is None

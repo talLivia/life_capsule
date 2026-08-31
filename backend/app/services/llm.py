@@ -262,8 +262,15 @@ class LLMService:
         thinking_budget: Optional[int] = None,
         cached_content: Optional[str] = None,
         max_output_tokens: Optional[int] = None,
+        timeout: Optional[int] = None,
     ) -> str:
-        """`temperature` overrides settings.LLM_TEMPERATURE for this call only
+        """`timeout` (Gemini only, seconds) overrides the client-wide
+        LLM_CALL_TIMEOUT_SECONDS for THIS call — the archive read runs far
+        past the 30s guard that every short classifier call keeps (the
+        client timeout becomes X-Server-Timeout, so Gemini itself 504s at
+        the deadline; measured killing 9-30s+ archive reads on 2026-08-31).
+
+        `temperature` overrides settings.LLM_TEMPERATURE for this call only
         — e.g. Prompt 6's topic classifier wants temperature=0 (deterministic)
         regardless of the app-wide default used for conversational replies.
 
@@ -297,7 +304,7 @@ class LLMService:
         if self.provider == "gemini":
             return await self._generate_gemini(
                 messages, system_prompt, temperature, model, thinking_budget,
-                cached_content, max_output_tokens,
+                cached_content, max_output_tokens, timeout,
             )
         raise LLMError(f"Unsupported LLM provider: {self.provider}")
 
@@ -393,6 +400,7 @@ class LLMService:
         thinking_budget: Optional[int] = None,
         cached_content: Optional[str] = None,
         max_output_tokens: Optional[int] = None,
+        timeout: Optional[int] = None,
     ) -> str:
         if not system_prompt:
             raise LLMError("system_prompt is required — see module docstring")
@@ -402,6 +410,12 @@ class LLMService:
             max_output_tokens=max_output_tokens or self.max_tokens,
             seed=_DETERMINISTIC_SEED,  # reproducibility — see constant's comment
         )
+        if timeout:
+            # Per-request override of the client-wide 30s guard; HttpOptions
+            # timeout is milliseconds and doubles as X-Server-Timeout.
+            config_kwargs["http_options"] = genai_types.HttpOptions(
+                timeout=timeout * 1000
+            )
         if cached_content:
             # The cache already holds the system instruction; sending both is
             # an API error. The caller keeps system_prompt for the uncached

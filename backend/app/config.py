@@ -212,6 +212,13 @@ class Settings(BaseSettings):
     # to [], and served "אין לי סיפור" (live, 2026-08-29, YOSI). The
     # pinned-cache thinking path made it deterministic per process.
     ARCHIVE_READ_MAX_TOKENS: int = 8192
+    # Per-call deadline for the archive read ONLY (2026-08-31). The global
+    # LLM_CALL_TIMEOUT_SECONDS=30 was written for short classifier calls and
+    # becomes X-Server-Timeout on Gemini — the 112K-token whole-archive read
+    # runs 9-30s+ and was being killed at exactly 30s (504 DEADLINE_EXCEEDED,
+    # 3/3 consecutive live family turns failed on 2026-08-31 morning, cached
+    # call AND uncached retry both). Every other call keeps the 30s guard.
+    ARCHIVE_READ_TIMEOUT_SECONDS: int = 90
 
     # Model for the video_clips_v2 archive-read call ONLY (Prompt 15's single
     # whole-archive reasoning call). Every OTHER llm_service caller is a short

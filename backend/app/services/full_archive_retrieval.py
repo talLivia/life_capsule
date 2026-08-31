@@ -1483,6 +1483,9 @@ async def _read_archive_for_ranges(
             # The id-list output grows with the archive; thinking counts
             # inside the cap. 2000 truncated mid-JSON at 188 ids (live).
             max_output_tokens=settings.ARCHIVE_READ_MAX_TOKENS,
+            # The whole-archive read outlives the 30s guard meant for short
+            # classifier calls — see ARCHIVE_READ_TIMEOUT_SECONDS.
+            timeout=settings.ARCHIVE_READ_TIMEOUT_SECONDS or None,
         )
 
     try:
