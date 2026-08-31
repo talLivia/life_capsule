@@ -247,6 +247,10 @@ async def maybe_compress(
             messages=[{"role": "user", "content": user_msg}],
             system_prompt=_SYSTEM_PROMPT,
             temperature=0,
+            # The reply echoes kept + offer id lists and thinking counts
+            # inside the cap — 2000 truncated mid-JSON at 240 units (live,
+            # 2026-08-31) and the fail-open served the full 763s core.
+            max_output_tokens=settings.CORE_COMPRESSION_MAX_TOKENS,
         )
         parsed = _parse(raw)
     except Exception as e:

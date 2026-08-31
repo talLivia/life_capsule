@@ -119,6 +119,12 @@ class Settings(BaseSettings):
     # 188-unit/601s core through untouched.
     CORE_COMPRESSION_THRESHOLD_SEC: int = 150
     CORE_COMPRESSION_TARGET_SEC: int = 90
+    # The compression reply echoes a kept-list AND an offer-list of unit ids,
+    # and flash-lite counts thinking inside max_output_tokens — under the
+    # global LLM_MAX_TOKENS=2000 a 240-unit selection truncated mid-JSON and
+    # fail-opened into serving a 763s clip (live, 2026-08-31, forced-prefilter
+    # experiment). Same per-call override pattern as ARCHIVE_READ_MAX_TOKENS.
+    CORE_COMPRESSION_MAX_TOKENS: int = 8192
 
     # AWS (retained for the base project's Terraform/EC2 GPU deploy path —
     # NOT used for object storage in this project; see R2_* below)

@@ -346,3 +346,46 @@ async def test_zero_budget_disables_truncation(monkeypatch):
         "q", units, "he", {"s": "childhood"}, "g1"
     )
     assert compressed and len(out) == 10
+
+
+# ── output-cap headroom (2026-08-31, the 240-unit truncation) ───────────────
+
+
+@pytest.mark.asyncio
+async def test_compression_call_gets_its_own_output_cap(monkeypatch):
+    """The 240-unit live failure: under the global 2000-token cap the reply
+    (kept-list + offer-list + thinking) truncated mid-JSON and fail-open
+    served a 763s core. The call must carry CORE_COMPRESSION_MAX_TOKENS."""
+    seen = {}
+
+    async def fake(messages, system_prompt=None, **kw):
+        seen.update(kw)
+        ids = ", ".join(f'"u{i}"' for i in range(0, 60))
+        return '{"category": "childhood", "unit_ids": [' + ids + ']}'
+
+    monkeypatch.setattr(cc.llm_service, "generate_response", fake)
+    _no_db(monkeypatch)
+    units = [_cu(f"u{i}", "s", 10) for i in range(240)]  # 2400s, way over
+    out, fu, compressed = await cc.maybe_compress(
+        "q", units, "he", {"s": "childhood"}, "g1"
+    )
+    assert compressed
+    assert seen.get("max_output_tokens") == settings.CORE_COMPRESSION_MAX_TOKENS
+    assert settings.CORE_COMPRESSION_MAX_TOKENS >= 8192
+
+
+@pytest.mark.asyncio
+async def test_truncated_mid_json_reply_still_fails_open(monkeypatch):
+    """The safety net stays: a reply cut mid-JSON (the exact live shape —
+    an unterminated id array) parses to nothing and serves the ORIGINAL
+    selection rather than an error or an empty answer."""
+    truncated = '{"category": "childhood", "unit_ids": ["u1", "u2", "u3", "u4'
+    monkeypatch.setattr(
+        cc.llm_service, "generate_response", AsyncMock(return_value=truncated)
+    )
+    _no_db(monkeypatch)
+    units = [_cu(f"u{i}", "s", 10) for i in range(240)]
+    out, fu, compressed = await cc.maybe_compress(
+        "q", units, "he", {"s": "childhood"}, "g1"
+    )
+    assert out is units and fu is None and compressed is False
