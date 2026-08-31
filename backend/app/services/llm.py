@@ -411,10 +411,19 @@ class LLMService:
             seed=_DETERMINISTIC_SEED,  # reproducibility — see constant's comment
         )
         if timeout:
-            # Per-request override of the client-wide 30s guard; HttpOptions
-            # timeout is milliseconds and doubles as X-Server-Timeout.
+            # Per-request override of the client-wide 30s guard. The explicit
+            # X-Server-Timeout header is REQUIRED, not belt-and-braces
+            # (google-genai 2.12.1, proven locally 2026-08-31): the SDK's
+            # populate_server_timeout_header MUTATES the client's shared
+            # headers dict on every no-override call, permanently baking
+            # 'X-Server-Timeout: 30' into it; per-request options merge with
+            # existing headers winning by presence, so a bare timeout raises
+            # only the httpx side while Gemini still kills the call at 30s
+            # (504 DEADLINE_EXCEEDED) - exactly what three consecutive live
+            # family turns did. An explicit header wins the merge.
             config_kwargs["http_options"] = genai_types.HttpOptions(
-                timeout=timeout * 1000
+                timeout=timeout * 1000,
+                headers={"X-Server-Timeout": str(timeout)},
             )
         if cached_content:
             # The cache already holds the system instruction; sending both is

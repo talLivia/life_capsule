@@ -356,6 +356,45 @@ async def test_gemini_per_call_timeout_override(monkeypatch):
         [{"role": "user", "content": "q"}], system_prompt="s", timeout=90
     )
     assert captured["config"].http_options.timeout == 90_000
+    # The explicit header is REQUIRED (google-genai 2.12.1): the SDK bakes
+    # 'X-Server-Timeout: 30' into the client's shared headers on every
+    # no-override call, and per-request headers are the only thing that
+    # outranks it in the merge. Without this, the server still 504s at 30s.
+    assert captured["config"].http_options.headers["X-Server-Timeout"] == "90"
 
     await service.generate_response([{"role": "user", "content": "q"}], system_prompt="s")
     assert getattr(captured["config"], "http_options", None) is None
+
+
+def test_gemini_server_timeout_header_survives_client_pollution():
+    """End-to-end through the REAL SDK request builder: after a no-override
+    call pollutes the client's shared headers with X-Server-Timeout: 30,
+    the archive read's per-request options must still put 90 on the wire."""
+    from google.genai import types as genai_types
+
+    from app.config import settings
+
+    service = LLMService.__new__(LLMService)  # skip __init__; build client only
+    import google.genai as genai
+
+    client = genai.Client(
+        api_key="test-key",
+        http_options=genai_types.HttpOptions(timeout=LLM_CALL_TIMEOUT_SECONDS * 1000),
+    )
+    api = client._api_client
+    # pollute, exactly as any classifier call does
+    api._build_request("post", "models/m:generateContent", {"contents": []}, None)
+    assert (api._http_options.headers or {}).get("X-Server-Timeout") == "30"
+    # bare timeout is NOT enough - the polluted header wins the merge
+    bare = api._build_request(
+        "post", "models/m:generateContent", {"contents": []},
+        genai_types.HttpOptions(timeout=90_000),
+    )
+    assert bare.headers.get("X-Server-Timeout") == "30"
+    # the shipped shape: explicit header outranks the pollution
+    fixed = api._build_request(
+        "post", "models/m:generateContent", {"contents": []},
+        genai_types.HttpOptions(timeout=90_000, headers={"X-Server-Timeout": "90"}),
+    )
+    assert fixed.headers.get("X-Server-Timeout") == "90"
+    assert fixed.timeout == 90.0
