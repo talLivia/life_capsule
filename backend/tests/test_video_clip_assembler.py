@@ -274,3 +274,153 @@ async def test_photo_categories_skip_what_cannot_be_resolved(
         ["seg-none", "seg-bogus", "seg-missing"]
     ) == []
     assert await vca.photo_categories_for_segments([]) == []
+
+
+# ── concurrent assembly (2026-09-03) ────────────────────────────────────────
+
+
+async def test_parallel_trims_preserve_clip_order_and_output(monkeypatch):
+    """Equivalence with the sequential version: same trims requested, same
+    concat input ORDER (clip order, not completion order), same final URL —
+    even when later clips finish first."""
+    clips = [
+        vca.ExpandedClip(raw_segment_id="seg-a", start_sec=1.0, end_sec=3.0, source_chunk_id="c1"),
+        vca.ExpandedClip(raw_segment_id="seg-b", start_sec=5.0, end_sec=9.0, source_chunk_id="c2"),
+        vca.ExpandedClip(raw_segment_id="seg-a", start_sec=20.0, end_sec=22.0, source_chunk_id="c3"),
+    ]
+    segments = {
+        "seg-a": RawSegment(id="seg-a", video_key="videos/a.mp4", interview_session_id="x", question_asked="q", question_index=0),
+        "seg-b": RawSegment(id="seg-b", video_key="videos/b.mp4", interview_session_id="x", question_asked="q", question_index=1),
+    }
+    monkeypatch.setattr(vca, "_fetch_segment_videos", AsyncMock(return_value=segments))
+    monkeypatch.setattr(vca.storage_service, "download_file", AsyncMock(return_value=b"src"))
+    monkeypatch.setattr(vca.storage_service, "upload_file", AsyncMock(return_value="key"))
+    monkeypatch.setattr(vca.storage_service, "serving_url", AsyncMock(return_value="https://cdn/final.mp4"))
+
+    import asyncio as aio
+
+    async def fake_trim(source_path, start_sec, end_sec, output_path):
+        # FIRST clip finishes LAST — order must still be clip order
+        await aio.sleep(0.15 if start_sec == 1.0 else 0.01)
+        output_path.write_bytes(f"trim-{start_sec}".encode())
+
+    concat_inputs = []
+
+    async def fake_concat(clip_paths, output_path):
+        concat_inputs.append([p.name for p in clip_paths])
+        output_path.write_bytes(b"final")
+
+    monkeypatch.setattr(vca, "_trim_clip", fake_trim)
+    monkeypatch.setattr(vca, "_concat_clips", fake_concat)
+
+    url = await vca._assemble_and_upload_clip(clips, "g", "s")
+    assert url == "https://cdn/final.mp4"
+    # trim_0/1/2 in CLIP order despite reversed completion order
+    assert concat_inputs == [["trim_0.mp4", "trim_1.mp4", "trim_2.mp4"]]
+
+
+async def test_trims_actually_run_concurrently(monkeypatch):
+    """Not accidentally serialized: with 3 trims of 0.15s each, wall time
+    must be ~one trim, not three, and observed overlap must reach 3."""
+    clips = [
+        vca.ExpandedClip(raw_segment_id=f"seg-{i}", start_sec=1.0, end_sec=2.0, source_chunk_id=f"c{i}")
+        for i in range(3)
+    ]
+    segments = {
+        f"seg-{i}": RawSegment(id=f"seg-{i}", video_key=f"videos/{i}.mp4", interview_session_id="x", question_asked="q", question_index=i)
+        for i in range(3)
+    }
+    monkeypatch.setattr(vca, "_fetch_segment_videos", AsyncMock(return_value=segments))
+    monkeypatch.setattr(vca.storage_service, "download_file", AsyncMock(return_value=b"src"))
+    monkeypatch.setattr(vca.storage_service, "upload_file", AsyncMock(return_value="key"))
+    monkeypatch.setattr(vca.storage_service, "serving_url", AsyncMock(return_value="u"))
+    monkeypatch.setattr(vca, "_concat_clips", AsyncMock(side_effect=lambda ps, o: o.write_bytes(b"f")))
+
+    import asyncio as aio
+    import time as _time
+
+    state = {"active": 0, "max_active": 0}
+
+    async def fake_trim(source_path, start_sec, end_sec, output_path):
+        state["active"] += 1
+        state["max_active"] = max(state["max_active"], state["active"])
+        await aio.sleep(0.15)
+        state["active"] -= 1
+        output_path.write_bytes(b"t")
+
+    monkeypatch.setattr(vca, "_trim_clip", fake_trim)
+    t0 = _time.perf_counter()
+    url = await vca._assemble_and_upload_clip(clips, "g", "s")
+    wall = _time.perf_counter() - t0
+    assert url == "u"
+    assert state["max_active"] == 3, f"only {state['max_active']} trims overlapped"
+    assert wall < 0.40, f"3x0.15s trims took {wall:.2f}s — still serialized?"
+
+
+async def test_one_failed_trim_excludes_only_that_clip(monkeypatch):
+    """Per-clip fail-soft under concurrency: the failing trim logs and is
+    excluded; the surviving clips still concat IN ORDER; nothing raises."""
+    clips = [
+        vca.ExpandedClip(raw_segment_id="seg-a", start_sec=1.0, end_sec=3.0, source_chunk_id="c1"),
+        vca.ExpandedClip(raw_segment_id="seg-b", start_sec=5.0, end_sec=9.0, source_chunk_id="c2"),
+        vca.ExpandedClip(raw_segment_id="seg-c", start_sec=7.0, end_sec=8.0, source_chunk_id="c3"),
+    ]
+    segments = {
+        s: RawSegment(id=s, video_key=f"videos/{s}.mp4", interview_session_id="x", question_asked="q", question_index=0)
+        for s in ("seg-a", "seg-b", "seg-c")
+    }
+    monkeypatch.setattr(vca, "_fetch_segment_videos", AsyncMock(return_value=segments))
+    monkeypatch.setattr(vca.storage_service, "download_file", AsyncMock(return_value=b"src"))
+    monkeypatch.setattr(vca.storage_service, "upload_file", AsyncMock(return_value="key"))
+    monkeypatch.setattr(vca.storage_service, "serving_url", AsyncMock(return_value="u"))
+
+    async def fake_trim(source_path, start_sec, end_sec, output_path):
+        if start_sec == 5.0:  # the middle clip fails
+            raise RuntimeError("ffmpeg trim failed: boom")
+        output_path.write_bytes(b"t")
+
+    concat_inputs = []
+
+    async def fake_concat(clip_paths, output_path):
+        concat_inputs.append([p.name for p in clip_paths])
+        output_path.write_bytes(b"f")
+
+    monkeypatch.setattr(vca, "_trim_clip", fake_trim)
+    monkeypatch.setattr(vca, "_concat_clips", fake_concat)
+
+    url = await vca._assemble_and_upload_clip(clips, "g", "s")
+    assert url == "u"
+    assert concat_inputs == [["trim_0.mp4", "trim_2.mp4"]]  # middle excluded, order kept
+
+
+async def test_one_failed_download_excludes_only_that_segments_clips(monkeypatch):
+    clips = [
+        vca.ExpandedClip(raw_segment_id="seg-a", start_sec=1.0, end_sec=3.0, source_chunk_id="c1"),
+        vca.ExpandedClip(raw_segment_id="seg-b", start_sec=5.0, end_sec=9.0, source_chunk_id="c2"),
+    ]
+    segments = {
+        s: RawSegment(id=s, video_key=f"videos/{s}.mp4", interview_session_id="x", question_asked="q", question_index=0)
+        for s in ("seg-a", "seg-b")
+    }
+    monkeypatch.setattr(vca, "_fetch_segment_videos", AsyncMock(return_value=segments))
+
+    async def fake_download(key):
+        if "seg-b" in key:
+            raise RuntimeError("storage down")
+        return b"src"
+
+    monkeypatch.setattr(vca.storage_service, "download_file", fake_download)
+    monkeypatch.setattr(vca.storage_service, "upload_file", AsyncMock(return_value="key"))
+    monkeypatch.setattr(vca.storage_service, "serving_url", AsyncMock(return_value="u"))
+    trims = []
+
+    async def fake_trim(source_path, start_sec, end_sec, output_path):
+        trims.append(start_sec)
+        output_path.write_bytes(b"t")
+
+    monkeypatch.setattr(vca, "_trim_clip", fake_trim)
+    monkeypatch.setattr(vca, "_concat_clips", AsyncMock())
+
+    url = await vca._assemble_and_upload_clip(clips, "g", "s")
+    assert url == "u"          # seg-a's clip survived (single clip, no concat)
+    assert trims == [1.0]      # seg-b's clip never trimmed

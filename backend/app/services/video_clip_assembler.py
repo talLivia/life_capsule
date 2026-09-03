@@ -206,31 +206,68 @@ async def _assemble_and_upload_clip(
     )
 
     work_dir = Path(tempfile.mkdtemp(dir=TMPDIR, prefix="video-clip-assembly-"))
-    trimmed_paths: List[Path] = []
     # A single source segment can now contribute MULTIPLE non-contiguous
     # pieces (relevance-per-sub-topic splitting) — download its video once
     # and reuse the local copy for every piece trimmed from it, rather than
     # re-downloading the same file per piece.
     source_paths_by_segment: Dict[str, Path] = {}
     try:
-        for i, clip in enumerate(expanded):
+        # CONCURRENT assembly (2026-09-03). The trims are independent
+        # re-encodes of different byte ranges — running them sequentially
+        # made a broad multi-recording answer's assembly time the sum of
+        # its clip durations (measured: ~25s of a 40.9s live turn was this
+        # loop). Downloads are gathered per unique segment, then every trim
+        # runs at once (each is subprocess.run on its own thread via
+        # asyncio.to_thread — the Windows-safe pattern this module already
+        # uses). Order and the per-clip fail-soft contract are unchanged:
+        # results are collected in the original clip order, and a single
+        # clip's failure logs a warning and excludes THAT clip only.
+
+        async def _download(segment) -> None:
+            video_bytes = await storage_service.download_file(segment.video_key)
+            source_path = work_dir / f"source_{segment.id}.mp4"
+            source_path.write_bytes(video_bytes)
+            source_paths_by_segment[segment.id] = source_path
+
+        unique_segments = []
+        seen_ids = set()
+        for clip in expanded:
             segment = segments_by_id.get(clip.raw_segment_id)
             if segment is None or not segment.video_key:
-                logger.warning(f"No source video for segment {clip.raw_segment_id}; skipping clip")
+                if clip.raw_segment_id not in seen_ids:
+                    logger.warning(
+                        f"No source video for segment {clip.raw_segment_id}; skipping clip"
+                    )
+                    seen_ids.add(clip.raw_segment_id)
                 continue
+            if segment.id not in seen_ids:
+                seen_ids.add(segment.id)
+                unique_segments.append(segment)
+        dl_results = await asyncio.gather(
+            *(_download(seg) for seg in unique_segments), return_exceptions=True
+        )
+        for seg, res in zip(unique_segments, dl_results):
+            if isinstance(res, BaseException):
+                logger.warning(f"Failed to download source for segment {seg.id}: {res}")
+
+        async def _trim_one(i: int, clip) -> Optional[Path]:
+            source_path = source_paths_by_segment.get(clip.raw_segment_id)
+            if source_path is None:
+                return None  # download failed/skipped — already logged
             try:
-                source_path = source_paths_by_segment.get(clip.raw_segment_id)
-                if source_path is None:
-                    video_bytes = await storage_service.download_file(segment.video_key)
-                    source_path = work_dir / f"source_{clip.raw_segment_id}.mp4"
-                    source_path.write_bytes(video_bytes)
-                    source_paths_by_segment[clip.raw_segment_id] = source_path
                 trimmed_path = work_dir / f"trim_{i}.mp4"
                 await _trim_clip(source_path, clip.start_sec, clip.end_sec, trimmed_path)
-                trimmed_paths.append(trimmed_path)
+                return trimmed_path
             except Exception as e:
-                logger.warning(f"Failed to trim clip from segment {clip.raw_segment_id}: {e}")
-                continue
+                logger.warning(
+                    f"Failed to trim clip from segment {clip.raw_segment_id}: {e}"
+                )
+                return None
+
+        results = await asyncio.gather(
+            *(_trim_one(i, clip) for i, clip in enumerate(expanded))
+        )
+        trimmed_paths: List[Path] = [p for p in results if p is not None]
 
         if not trimmed_paths:
             return None
