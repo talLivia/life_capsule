@@ -952,6 +952,13 @@ class ConnectionManager:
                     )
                     return
 
+            # Per-request answer-cache bypass ("!!" prefix, answer_cache.py):
+            # a self-service fresh-read test from the chat box. Stripped
+            # BEFORE persistence so history and prompts never carry it.
+            from app.services import answer_cache
+
+            text, bypass_answer_cache = answer_cache.parse_bypass(text)
+
             await self._persist_message(session_id, "user", text)
             await self._ensure_conversation_title(session_id, text)
             await self.send_message(
@@ -971,6 +978,7 @@ class ConnectionManager:
                     group_id=group_id,
                     recording_language=recording_language,
                     session_id=session_id,
+                    bypass_answer_cache=bypass_answer_cache,
                 )
 
             # Two people share a name and the question did not say which.
@@ -1081,7 +1089,14 @@ class ConnectionManager:
                 "assistant",
                 spoken_text or result.video_url,
                 latency=latency,
-                metadata={"shown_units": result.shown_units} if result.shown_units else None,
+                metadata=(
+                    {
+                        "shown_units": result.shown_units,
+                        "answer_source": result.answer_source,
+                    }
+                    if result.shown_units
+                    else None
+                ),
                 video_url=result.video_url,
             )
             await self.send_message(
@@ -1089,6 +1104,9 @@ class ConnectionManager:
                 {
                     "type": "video_clip_response",
                     "video_url": result.video_url,
+                    # Debug visibility: "cache" / "speculative" / "fresh".
+                    # Chat UI ignores unknown fields; visible in WS frames.
+                    "answer_source": result.answer_source,
                     # What the clip actually says, so the chat shows the words
                     # alongside the video instead of a bare player.
                     "text": spoken_text,

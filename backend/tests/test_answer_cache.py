@@ -404,3 +404,51 @@ async def test_compression_version_salt_orphans_old_entries(monkeypatch, cache_d
     monkeypatch.setattr(ac, "_PIPELINE_SALT", "next-version")
     emb, hit = await ac.try_lookup("שאלה", "p1", VERSION, units, {}, set(), [])
     assert hit is None  # new pipeline version: old entry invisible
+
+
+# ---- per-request bypass (!! prefix, 2026-09-03) ---------------------------
+
+
+def test_parse_bypass():
+    assert ac.parse_bypass("!!" + "שאלה") == ("שאלה", True)
+    assert ac.parse_bypass("  !! " + "שאלה") == ("שאלה", True)
+    assert ac.parse_bypass("שאלה") == ("שאלה", False)
+    # single bang mid-question or alone is NOT a marker
+    assert ac.parse_bypass("!שאלה") == ("!שאלה", False)
+    assert ac.parse_bypass("") == ("", False)
+
+
+@pytest.mark.asyncio
+async def test_bypass_skips_lookup_and_store(monkeypatch, cache_db):
+    """bypass=True: no embedding call, no DB read, and no store afterwards
+    (embedding stays None), even with a matching entry present."""
+    units = [_u("u1")]
+    _fix_embeddings(monkeypatch, {"שאלה": [1.0]})
+    await ac.store("שאלה", [1.0], "p1", VERSION, units, None)
+
+    async def boom(*a, **k):  # pragma: no cover
+        raise AssertionError("embedded despite bypass")
+
+    monkeypatch.setattr(ac.embeddings, "embed_text", boom)
+    emb, hit = await ac.try_lookup(
+        "שאלה", "p1", VERSION, units, {}, set(), [], bypass=True
+    )
+    assert emb is None and hit is None  # None embedding => store() is a no-op
+
+
+@pytest.mark.asyncio
+async def test_bypass_skips_speculative_take(monkeypatch, cache_db):
+    units = [_u("u1")]
+    await ac.store(
+        "שאלה", [9.0], "p1", VERSION, units, None,
+        source="speculative", session_id="sess-1",
+    )
+    hit = await ac.take_speculative(
+        "שאלה", "p1", "sess-1", VERSION, units, bypass=True
+    )
+    assert hit is None
+    # NOT consumed — a later real accept still gets it
+    hit = await ac.take_speculative(
+        "שאלה", "p1", "sess-1", VERSION, units
+    )
+    assert hit is not None

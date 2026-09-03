@@ -207,7 +207,7 @@ async def test_ws_video_clip_question_returns_plausible_clip(monkeypatch, tmp_pa
     from app.services import full_archive_retrieval
     from app.services.video_clip_assembler import ExpandedClip
 
-    async def fake_select_units(question, group_id, recording_language, session_id):
+    async def fake_select_units(question, group_id, recording_language, session_id, **kwargs):
         return full_archive_retrieval.UnitSelection(
             clips=[
                 ExpandedClip(
@@ -287,7 +287,7 @@ async def test_ws_video_clip_no_story_when_nothing_is_selected(monkeypatch, tmp_
 
     from app.services import full_archive_retrieval
 
-    async def fake_select_units(question, group_id, recording_language, session_id):
+    async def fake_select_units(question, group_id, recording_language, session_id, **kwargs):
         return full_archive_retrieval.UnitSelection(clips=[], selected_units=[])
 
     monkeypatch.setattr(full_archive_retrieval, "select_units", fake_select_units)

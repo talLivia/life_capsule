@@ -358,7 +358,7 @@ async def test_video_clip_inner_always_dispatches_to_the_v2_assembler(monkeypatc
 
     called = {"v2": 0}
 
-    async def fake_v2(question, group_id, recording_language, session_id):
+    async def fake_v2(question, group_id, recording_language, session_id, **kwargs):
         called["v2"] += 1
         return VideoClipResult(video_url="http://x/v2.mp4")
 
@@ -622,7 +622,7 @@ async def test_an_avatar_turn_runs_the_shared_engine_and_persists_shown_units(mo
     )
     selection = far.UnitSelection(clips=[], selected_units=[unit])
 
-    async def fake_select(question, group_id, recording_language, session_id):
+    async def fake_select(question, group_id, recording_language, session_id, **kwargs):
         return selection
 
     async def no_names(segment_ids, group_id):
@@ -663,7 +663,7 @@ async def test_an_avatar_clarify_speaks_the_fixed_line_and_sends_options(monkeyp
     clarify = {"question": "לאיזה אמנון התכוונת?", "options": ["אמנון", "אמנון נחום"]}
     selection = far.UnitSelection(clips=[], selected_units=[], clarify=clarify)
 
-    async def fake_select(question, group_id, recording_language, session_id):
+    async def fake_select(question, group_id, recording_language, session_id, **kwargs):
         return selection
 
     monkeypatch.setattr(far, "select_units", fake_select)
@@ -698,7 +698,7 @@ async def test_an_engine_outage_speaks_the_transient_line_not_no_story(monkeypat
     from app.services import full_archive_retrieval as far
     from app.services.response_assembler import TRANSIENT_FAILURE_FALLBACK
 
-    async def boom(question, group_id, recording_language, session_id):
+    async def boom(question, group_id, recording_language, session_id, **kwargs):
         raise RuntimeError("engine down")
 
     monkeypatch.setattr(far, "select_units", boom)
@@ -731,7 +731,7 @@ async def test_a_no_story_reply_is_persisted_like_any_other_turn(monkeypatch):
     from app.services import full_archive_retrieval
     from app.services.video_clip_assembler import VideoClipResult
 
-    async def fake_v2(question, group_id, recording_language, session_id):
+    async def fake_v2(question, group_id, recording_language, session_id, **kwargs):
         return VideoClipResult(
             video_url=None, no_story=True, fallback_text="אין לי סיפור על זה"
         )
@@ -772,7 +772,7 @@ async def test_a_failed_read_is_sent_as_its_own_message_type(monkeypatch):
     from app.services.response_assembler import TRANSIENT_FAILURE_FALLBACK
     from app.services.video_clip_assembler import VideoClipResult
 
-    async def fake_v2(question, group_id, recording_language, session_id):
+    async def fake_v2(question, group_id, recording_language, session_id, **kwargs):
         return VideoClipResult(
             video_url=None,
             no_story=True,
@@ -883,7 +883,7 @@ async def test_a_follow_up_turn_arms_the_prompt_and_sends_the_chat_event(monkeyp
         follow_up={"question": "רוצה לשמוע על הצבא?", "unit_ids": ["u9"]},
     )
 
-    async def fake_select(question, group_id, recording_language, session_id):
+    async def fake_select(question, group_id, recording_language, session_id, **kwargs):
         return selection
 
     async def no_names(segment_ids, group_id):
@@ -922,7 +922,7 @@ async def test_a_spoken_yes_asks_the_follow_up_question_itself(monkeypatch):
 
     asked = []
 
-    async def fake_select(question, group_id, recording_language, session_id):
+    async def fake_select(question, group_id, recording_language, session_id, **kwargs):
         asked.append(question)
         return far.UnitSelection(clips=[], selected_units=[])
 
@@ -955,7 +955,7 @@ async def test_a_spoken_no_speaks_the_fixed_ack_without_the_engine(monkeypatch):
     from app.services import full_archive_retrieval as far
     from app.services import spoken_answer as sa_mod
 
-    async def must_not_run(question, group_id, recording_language, session_id):
+    async def must_not_run(question, group_id, recording_language, session_id, **kwargs):
         raise AssertionError("a declined offer must never reach the engine")
 
     monkeypatch.setattr(far, "select_units", must_not_run)
@@ -986,7 +986,7 @@ async def test_an_unrelated_reply_clears_the_prompt_and_routes_fresh(monkeypatch
 
     asked = []
 
-    async def fake_select(question, group_id, recording_language, session_id):
+    async def fake_select(question, group_id, recording_language, session_id, **kwargs):
         asked.append(question)
         return far.UnitSelection(clips=[], selected_units=[])
 
@@ -1022,7 +1022,7 @@ async def test_a_spoken_clarify_name_reasks_like_the_button(monkeypatch):
 
     asked = []
 
-    async def fake_select(question, group_id, recording_language, session_id):
+    async def fake_select(question, group_id, recording_language, session_id, **kwargs):
         asked.append(question)
         return far.UnitSelection(clips=[], selected_units=[])
 
@@ -1056,7 +1056,7 @@ async def test_classifier_accept_asks_the_offered_question(monkeypatch):
 
     asked = []
 
-    async def fake_select(question, group_id, recording_language, session_id):
+    async def fake_select(question, group_id, recording_language, session_id, **kwargs):
         asked.append(question)
         return far.UnitSelection(clips=[], selected_units=[])
 
@@ -1092,7 +1092,7 @@ async def test_classifier_decline_speaks_the_ack_without_the_engine(monkeypatch)
     from app.services import full_archive_retrieval as far
     from app.services import spoken_answer as sa_mod
 
-    async def must_not_run(question, group_id, recording_language, session_id):
+    async def must_not_run(question, group_id, recording_language, session_id, **kwargs):
         raise AssertionError("a declined offer must never reach the engine")
 
     async def fake_classify(offered_question, utterance):
@@ -1125,7 +1125,7 @@ async def test_a_bare_yes_never_pays_for_the_classifier(monkeypatch):
 
     asked = []
 
-    async def fake_select(question, group_id, recording_language, session_id):
+    async def fake_select(question, group_id, recording_language, session_id, **kwargs):
         asked.append(question)
         return far.UnitSelection(clips=[], selected_units=[])
 
@@ -1159,7 +1159,7 @@ async def test_clarify_prompts_never_consult_the_classifier(monkeypatch):
 
     asked = []
 
-    async def fake_select(question, group_id, recording_language, session_id):
+    async def fake_select(question, group_id, recording_language, session_id, **kwargs):
         asked.append(question)
         return far.UnitSelection(clips=[], selected_units=[])
 
@@ -1252,7 +1252,7 @@ async def test_v2_without_pending_is_inert(monkeypatch):
 
     asked = []
 
-    async def fake_v2(question, group_id, recording_language, session_id):
+    async def fake_v2(question, group_id, recording_language, session_id, **kwargs):
         asked.append(question)
         return _v2_result(shown_units=[{"key": "k", "unit_id": "u1", "text": "טקסט"}])
 
@@ -1296,7 +1296,7 @@ async def test_v2_follow_up_arms_and_spoken_yes_asks_it(monkeypatch):
         ]
     )
 
-    async def fake_v2(question, group_id, recording_language, session_id):
+    async def fake_v2(question, group_id, recording_language, session_id, **kwargs):
         asked.append(question)
         return next(results)
 
@@ -1332,7 +1332,7 @@ async def test_v2_spoken_no_sends_text_ack_without_the_engine(monkeypatch):
     from app.services import full_archive_retrieval as far
     from app.services.spoken_answer import FOLLOW_UP_DECLINE_ACK
 
-    async def must_not_run(question, group_id, recording_language, session_id):
+    async def must_not_run(question, group_id, recording_language, session_id, **kwargs):
         raise AssertionError("a declined offer must never reach the engine")
 
     monkeypatch.setattr(far, "assemble_video_clip_response_v2", must_not_run)
@@ -1374,7 +1374,7 @@ async def test_v2_clarify_arms_and_spoken_name_reasks(monkeypatch):
         ]
     )
 
-    async def fake_v2(question, group_id, recording_language, session_id):
+    async def fake_v2(question, group_id, recording_language, session_id, **kwargs):
         asked.append(question)
         return next(results)
 
@@ -1408,7 +1408,7 @@ async def test_v2_clarify_arms_and_spoken_name_reasks(monkeypatch):
 async def test_v2_response_event_strips_follow_up_unit_ids(monkeypatch):
     from app.services import full_archive_retrieval as far
 
-    async def fake_v2(question, group_id, recording_language, session_id):
+    async def fake_v2(question, group_id, recording_language, session_id, **kwargs):
         return _v2_result(
             shown_units=[{"key": "k", "unit_id": "u1", "text": "טקסט"}],
             follow_up={"question": "רוצה לשמוע על הצבא?", "unit_ids": ["u9", "u10"]},
@@ -1435,7 +1435,7 @@ async def test_v2_response_event_strips_follow_up_unit_ids(monkeypatch):
 async def test_v2_no_story_event_strips_follow_up_unit_ids(monkeypatch):
     from app.services import full_archive_retrieval as far
 
-    async def fake_v2(question, group_id, recording_language, session_id):
+    async def fake_v2(question, group_id, recording_language, session_id, **kwargs):
         return _v2_result(
             video_url=None,
             no_story=True,

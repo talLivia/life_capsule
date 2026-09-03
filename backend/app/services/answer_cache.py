@@ -87,6 +87,23 @@ CANONICAL_QUESTIONS_HE = [
 # prefix letter, no Hebrew letter on either side.
 _HEBREW_PREFIXES = "ובלמשהכ"
 
+#: Per-request bypass marker (2026-09-03): a question typed with this prefix
+#: skips the answer cache for THAT turn only — no semantic lookup, no
+#: speculative entry, and no store (a test turn must not overwrite the
+#: cached answer). Self-service testing: type "!!" before the question in
+#: the chat box; the marker is stripped before persistence so history,
+#: prompts and the stored conversation stay clean. Typed input only — STT
+#: never produces it, so voice turns always use the cache.
+BYPASS_PREFIX = "!!"
+
+
+def parse_bypass(text: str) -> tuple:
+    """(clean_text, bypass). Strips the marker when present."""
+    stripped = (text or "").lstrip()
+    if stripped.startswith(BYPASS_PREFIX):
+        return stripped[len(BYPASS_PREFIX):].lstrip(), True
+    return text, False
+
 
 def unit_key(u) -> str:
     """MUST byte-match full_archive_retrieval._unit_key (":.2f" on start_sec).
@@ -160,6 +177,7 @@ async def try_lookup(
     name_tags: Dict,
     shown_keys,
     turns,
+    bypass: bool = False,
 ) -> Tuple[Optional[List[float]], Optional[LookupHit]]:
     """(embedding_used, hit). (None, None) whenever the cache may not answer.
 
@@ -168,6 +186,9 @@ async def try_lookup(
     run either (toggle off / not fresh / ambiguous-name guard / no version).
     """
     if settings.ANSWER_CACHE != "on":
+        return None, None
+    if bypass:
+        logger.info("answer cache BYPASSED for this turn (!! prefix)")
         return None, None
     if version is None or not _fresh_conversation(shown_keys, turns, question):
         return None, None
@@ -310,6 +331,7 @@ async def take_speculative(
     session_id: str,
     version: Optional[tuple],
     units: List,
+    bypass: bool = False,
 ) -> Optional[LookupHit]:
     """Serve-and-CONSUME a speculative follow-up prefetch (milestone 2).
 
@@ -322,7 +344,7 @@ async def take_speculative(
     offered question) + session + version — no similarity, no threshold,
     no cross-session reuse, and the entry is deleted on first use (or on
     any mismatch staleness)."""
-    if settings.ANSWER_CACHE != "on" or version is None:
+    if settings.ANSWER_CACHE != "on" or version is None or bypass:
         return None
     try:
         vh = _vh(version)

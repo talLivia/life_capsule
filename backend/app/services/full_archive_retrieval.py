@@ -1737,10 +1737,19 @@ class UnitSelection:
     # The archive read did not happen — an API failure, not an answer. Callers
     # MUST NOT present this as "nothing in the archive answers that".
     read_failed: bool = False
+    # Where the selection came from: "fresh" (archive read), "cache"
+    # (semantic answer-cache hit), or "speculative" (consumed prefetch).
+    # Debug visibility only — carried into the WS event, the message
+    # metadata and the logs so cache-vs-fresh is never a guess.
+    answer_source: str = "fresh"
 
 
 async def select_units(
-    question: str, group_id: str, recording_language: str, session_id: str
+    question: str,
+    group_id: str,
+    recording_language: str,
+    session_id: str,
+    bypass_answer_cache: bool = False,
 ) -> UnitSelection:
     # These three reads are INDEPENDENT — the archive bundle keys off the
     # producer, the other two off the session — and none of them feeds any of
@@ -1781,12 +1790,15 @@ async def select_units(
     # offer shipped, so it may serve into a turn that has shown-state. Its
     # offer still passes _validate_follow_up against CURRENT shown keys.
     ac_hit = await answer_cache.take_speculative(
-        question, group_id, session_id, ac_version, units
+        question, group_id, session_id, ac_version, units,
+        bypass=bypass_answer_cache,
     )
+    hit_source = "speculative" if ac_hit is not None else "cache"
     ac_embedding = None
     if ac_hit is None:
         ac_embedding, ac_hit = await answer_cache.try_lookup(
-            question, group_id, ac_version, units, name_tags, shown_keys, turns
+            question, group_id, ac_version, units, name_tags, shown_keys, turns,
+            bypass=bypass_answer_cache,
         )
     if ac_hit is not None:
         hit_by_id = {u.unit_id: u for u in units}
@@ -1796,6 +1808,7 @@ async def select_units(
             follow_up=_validate_follow_up(
                 ac_hit.raw_follow_up, hit_by_id, ac_hit.units, shown_keys
             ),
+            answer_source=hit_source,
         )
 
     # Recording pre-filter (PREFILTER_PLAN): None = no filtering, and the
@@ -2067,14 +2080,21 @@ def _validate_follow_up(
 
 
 async def assemble_video_clip_response_v2(
-    question: str, group_id: str, recording_language: str, session_id: str
+    question: str,
+    group_id: str,
+    recording_language: str,
+    session_id: str,
+    bypass_answer_cache: bool = False,
 ) -> VideoClipResult:
     """The v2 parallel to video_clip_assembler.assemble_video_clip_response.
     Identical return contract (a clip URL or NO_STORY_FALLBACK) so the WS
     handler and frontend treat both modes the same; only the range decision
     (read_and_validate_ranges) differs. Assembly, caching, and storage are
     the EXACT same code the v1 path uses."""
-    selection = await select_units(question, group_id, recording_language, session_id)
+    selection = await select_units(
+        question, group_id, recording_language, session_id,
+        bypass_answer_cache=bypass_answer_cache,
+    )
     clips = selection.clips
     # Before the no-story branch, and that ordering is the whole point: a
     # clarification is an empty selection, so falling through would tell the
@@ -2128,6 +2148,7 @@ async def assemble_video_clip_response_v2(
         return VideoClipResult(
             video_url=cached_url,
             photo_categories=photo_categories,
+            answer_source=selection.answer_source,
             follow_up=selection.follow_up,
             shown_units=[
                 {
@@ -2153,6 +2174,7 @@ async def assemble_video_clip_response_v2(
         video_url=video_url,
         follow_up=selection.follow_up,
         photo_categories=photo_categories,
+        answer_source=selection.answer_source,
         shown_units=[
             {
                 "key": _unit_key(u.segment_id, u.start_sec),

@@ -99,6 +99,9 @@ class VideoClipResult:
     # tells a family member their relative has no story about something the
     # archive may cover in full.
     read_failed: bool = False
+    # Where the unit selection came from ("fresh" / "cache" /
+    # "speculative") — see UnitSelection.answer_source.
+    answer_source: str = "fresh"
     # The life-period categories of the recordings this answer's footage came
     # from, deduped, first-appearance order — /talk shows each category's
     # photo gallery under the clip (MEDIA_GALLERY.md §9.4). A LOOKUP through
