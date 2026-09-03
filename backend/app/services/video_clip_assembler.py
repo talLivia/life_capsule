@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -50,6 +51,21 @@ CACHE_TTL_SECONDS = 24 * 60 * 60  # see module docstring's "Caching" section
 # LLM_CALL_TIMEOUT_SECONDS). A single clip trim/concat is always a short
 # piece of video (a handful of utterance units), so this is generous.
 FFMPEG_TIMEOUT_SECONDS = 60
+
+# Smart-cut (2026-09-03): a long trim used to re-encode EVERY frame at
+# ~6.6x realtime (measured: a 74s answer clip cost 11.2s), yet the only
+# frames that NEED re-encoding are the partial GOPs at the cut points -
+# everything between the first keyframe after the head cut and the last
+# keyframe before the tail cut can be stream-copied bit-for-bit (also
+# skipping a generation loss for ~95% of the footage). Audio is deliberately
+# NOT spliced: it is re-encoded continuously in ONE pass over the whole
+# range (audio encoding is ~free) and muxed onto the concatenated video, so
+# there is no audible seam at the video splice points. The result is
+# VERIFIED (duration + full decode) and ANY doubt falls back to the plain
+# full re-encode - this optimization must never ship a broken clip.
+SMART_CUT_MIN_CLIP_SECONDS = 20.0  # below this the full re-encode is already fast
+_SMART_CUT_MIN_MIDDLE_SECONDS = 8.0  # smaller copied middle isn't worth 6 ffmpeg calls
+_KEYFRAME_SCAN_WINDOW_SECONDS = 35.0  # > any sane GOP (measured 10s on bulk imports)
 
 
 @dataclass
@@ -113,6 +129,213 @@ def _run_ffmpeg(cmd: List[str]) -> "subprocess.CompletedProcess[bytes]":
 
 
 async def _trim_clip(source_path: Path, start_sec: float, end_sec: float, output_path: Path) -> None:
+    """Frame-accurate trim. Long clips take the smart-cut path (re-encode
+    only the partial GOPs at the cut points, stream-copy the middle,
+    continuous audio; verified, fail-soft); short clips and every failure
+    shape take the full re-encode below — the always-correct baseline."""
+    duration = end_sec - start_sec
+    if duration >= SMART_CUT_MIN_CLIP_SECONDS:
+        try:
+            if await _smart_trim(source_path, start_sec, end_sec, output_path):
+                return
+        except Exception as e:
+            logger.warning(f"smart-cut failed ({e}); falling back to full re-encode")
+    await _full_reencode_trim(source_path, start_sec, end_sec, output_path)
+
+
+def _probe_json(args: List[str]) -> dict:
+    import json as _json
+
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-of", "json", *args],
+        capture_output=True, timeout=FFMPEG_TIMEOUT_SECONDS,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr.decode(errors='replace')}")
+    return _json.loads(result.stdout.decode() or "{}")
+
+
+def _keyframes_in(source_path: Path, lo: float, hi: float) -> List[float]:
+    data = _probe_json(
+        [
+            "-select_streams", "v:0", "-skip_frame", "nokey",
+            "-show_entries", "frame=pts_time",
+            "-read_intervals", f"{max(0.0, lo):.3f}%{hi:.3f}",
+            str(source_path),
+        ]
+    )
+    out = []
+    for f in data.get("frames", []):
+        try:
+            out.append(float(f["pts_time"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return sorted(out)
+
+
+def _clip_duration(path: Path) -> float:
+    data = _probe_json(["-show_entries", "format=duration", str(path)])
+    return float(data.get("format", {}).get("duration", 0.0))
+
+
+#: The ONE decode-check message the verifier tolerates: at each concat seam
+#: the container offsets can round a frame's DTS by a tick, and the null
+#: muxer reports "non monotonically increasing dts ... A >= B". Measured on
+#: every smart-cut output (values equal or off by one tick — sub-frame,
+#: inaudible, invisible; rc stays 0 and players handle it). The tolerance is
+#: BOUNDED: only this exact pattern, only |A-B| <= 2 ticks, only a seam's
+#: worth of lines — a corrupt frame, missing reference or bad NAL prints
+#: different text and still fails verification.
+_SEAM_DTS_RE = re.compile(
+    rb"non monotonically increasing dts to muxer in stream \d+: (\d+) >= (\d+)"
+)
+
+
+def _decode_stderr_is_benign(stderr: bytes) -> bool:
+    lines = [ln for ln in stderr.strip().splitlines() if ln.strip()]
+    if len(lines) > 6:
+        return False
+    for ln in lines:
+        m = _SEAM_DTS_RE.search(ln)
+        if not m or abs(int(m.group(1)) - int(m.group(2))) > 2:
+            return False
+    return True
+
+
+def _verify_clip(path: Path, expected_duration: float) -> bool:
+    """The gate that makes smart-cut shippable: duration within tolerance
+    AND a full decode that is clean apart from the bounded seam-rounding
+    pattern above. A GOP-snapped cut or a glitchy splice shows up here; on
+    any failure the caller falls back to the full re-encode, so a wrong
+    smart-cut can cost time but never correctness."""
+    try:
+        if abs(_clip_duration(path) - expected_duration) > 0.5:
+            return False
+        result = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"],
+            capture_output=True, timeout=FFMPEG_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            return False
+        return not result.stderr.strip() or _decode_stderr_is_benign(result.stderr)
+    except Exception:
+        return False
+
+
+async def _smart_trim(
+    source_path: Path, start_sec: float, end_sec: float, output_path: Path
+) -> bool:
+    """True = output_path holds a VERIFIED frame-accurate trim. False/raise =
+    caller must run the full re-encode (output_path untouched or ignored)."""
+    # Source video params — the re-encoded ends must match the copied middle
+    # closely enough for one MP4 track. h264 only; anything else falls back.
+    data = _probe_json(
+        [
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name,profile,pix_fmt,width,height",
+            str(source_path),
+        ]
+    )
+    streams = data.get("streams") or []
+    if not streams or streams[0].get("codec_name") != "h264":
+        return False
+    src = streams[0]
+
+    head_kfs = _keyframes_in(
+        source_path, start_sec, start_sec + _KEYFRAME_SCAN_WINDOW_SECONDS
+    )
+    kf1 = next((k for k in head_kfs if k > start_sec + 0.05), None)
+    tail_kfs = _keyframes_in(
+        source_path, end_sec - _KEYFRAME_SCAN_WINDOW_SECONDS, end_sec
+    )
+    kf2 = next((k for k in reversed(tail_kfs) if k < end_sec - 0.05), None)
+    if kf1 is None or kf2 is None or (kf2 - kf1) < _SMART_CUT_MIN_MIDDLE_SECONDS:
+        return False  # no worthwhile copyable middle — full re-encode is fine
+
+    work = output_path.parent
+    stem = output_path.stem
+    head = work / f"{stem}_sc_head.mp4"
+    middle = work / f"{stem}_sc_mid.mp4"
+    tail = work / f"{stem}_sc_tail.mp4"
+    video_only = work / f"{stem}_sc_video.mp4"
+    audio = work / f"{stem}_sc_audio.m4a"
+    pieces = [head, middle, tail, video_only, audio]
+
+    profile = (src.get("profile") or "").lower()
+    # -bf 0: no B-frames in the re-encoded END pieces, so their DTS ends
+    # exactly at the seam instead of leading it — the concat joins then
+    # carry at most sub-frame rounding, not reordering overlap.
+    encode_args = ["-an", "-c:v", "libx264", "-preset", "veryfast", "-bf", "0"]
+    if src.get("pix_fmt"):
+        encode_args += ["-pix_fmt", src["pix_fmt"]]
+    if profile in ("baseline", "main", "high"):
+        encode_args += ["-profile:v", profile]
+    # Uniform container timescale across all three pieces for the concat.
+    scale_args = ["-video_track_timescale", "90000"]
+
+    async def _run(cmd: List[str]) -> None:
+        result = await asyncio.to_thread(_run_ffmpeg, cmd)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"smart-cut step failed: {result.stderr.decode(errors='replace')[:300]}"
+            )
+
+    try:
+        # Head partial GOP: start → first keyframe after start (re-encode).
+        await _run(
+            ["ffmpeg", "-y", "-ss", f"{start_sec:.3f}", "-to", f"{kf1:.6f}",
+             "-i", str(source_path), *encode_args, *scale_args, str(head)]
+        )
+        # Middle: keyframe → keyframe, bit-for-bit copy (starts AT a
+        # keyframe, so every copied frame is decodable). PRECISION MATTERS:
+        # a seek timestamp even a microsecond BEFORE the keyframe lands the
+        # copy on the PREVIOUS keyframe (measured: a 30fps source with a
+        # keyframe at 8.333333s, cut with "8.333", copied from 0.0 and
+        # inflated the clip by 8.3s — caught by _verify_clip). The +1ms
+        # epsilon keeps the seek at-or-after kf1; the -1ms end keeps the
+        # middle's last packet strictly before kf2, whose frame the
+        # re-encoded tail provides.
+        await _run(
+            ["ffmpeg", "-y", "-ss", f"{kf1 + 0.001:.6f}", "-to", f"{kf2 - 0.001:.6f}",
+             "-i", str(source_path), "-an", "-c:v", "copy",
+             "-avoid_negative_ts", "make_zero", *scale_args, str(middle)]
+        )
+        # Tail partial GOP: last keyframe before end → end (re-encode).
+        await _run(
+            ["ffmpeg", "-y", "-ss", f"{kf2:.6f}", "-to", f"{end_sec:.3f}",
+             "-i", str(source_path), *encode_args, *scale_args, str(tail)]
+        )
+        await _concat_clips([head, middle, tail], video_only)
+        # ONE continuous audio pass over the whole range — no audio splices.
+        await _run(
+            ["ffmpeg", "-y", "-ss", f"{start_sec:.3f}", "-to", f"{end_sec:.3f}",
+             "-i", str(source_path), "-vn", "-c:a", "aac", str(audio)]
+        )
+        await _run(
+            ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio),
+             "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", str(output_path)]
+        )
+        expected = end_sec - start_sec
+        if not await asyncio.to_thread(_verify_clip, output_path, expected):
+            logger.warning(
+                f"smart-cut verification failed for {source_path.name} "
+                f"({start_sec:.1f}-{end_sec:.1f}); using full re-encode"
+            )
+            return False
+        logger.info(
+            f"smart-cut: {expected:.0f}s clip, copied middle {kf2 - kf1:.0f}s, "
+            f"re-encoded {(kf1 - start_sec) + (end_sec - kf2):.1f}s"
+        )
+        return True
+    finally:
+        for piece in pieces:
+            try:
+                piece.unlink()
+            except OSError:
+                pass
+
+
+async def _full_reencode_trim(source_path: Path, start_sec: float, end_sec: float, output_path: Path) -> None:
     """Re-encodes (not stream-copy) for frame-accurate cut points — a
     stream-copy trim only snaps to keyframes, which could be off by a
     second or more depending on the source's GOP structure, undermining

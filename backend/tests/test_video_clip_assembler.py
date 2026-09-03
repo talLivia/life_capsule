@@ -424,3 +424,159 @@ async def test_one_failed_download_excludes_only_that_segments_clips(monkeypatch
     url = await vca._assemble_and_upload_clip(clips, "g", "s")
     assert url == "u"          # seg-a's clip survived (single clip, no concat)
     assert trims == [1.0]      # seg-b's clip never trimmed
+
+
+# ---- smart-cut (2026-09-03): real-ffmpeg validation -----------------------
+
+
+import shutil
+import subprocess as _sp
+
+ffmpeg_available = shutil.which("ffmpeg") is not None
+needs_ffmpeg = pytest.mark.skipif(not ffmpeg_available, reason="ffmpeg not on PATH")
+
+
+def _make_source(path, seconds=45, size="320x240", fps=25, gop_sec=10):
+    """Synthetic talking-head-ish source with a KNOWN keyframe interval —
+    gop_sec=10 matches the measured GOP of the bulk-imported live sources,
+    the exact shape that makes stream-copy-only cuts wrong by up to 10s."""
+    _sp.run(
+        [
+            "ffmpeg", "-y", "-v", "error",
+            "-f", "lavfi", "-i", f"testsrc2=size={size}:rate={fps}:duration={seconds}",
+            "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+            "-c:v", "libx264", "-preset", "veryfast",
+            "-force_key_frames", f"expr:gte(t,n_forced*{gop_sec})",
+            "-c:a", "aac", "-shortest", str(path),
+        ],
+        check=True,
+    )
+
+
+def _duration(path):
+    out = _sp.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True, check=True,
+    )
+    return float(out.stdout.strip())
+
+
+def _decodes_clean(path):
+    """Same standard the app's verifier holds: rc 0 and stderr empty or
+    only the bounded sub-frame seam-rounding pattern."""
+    r = _sp.run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"],
+                capture_output=True)
+    if r.returncode != 0:
+        return False
+    return not r.stderr.strip() or vca._decode_stderr_is_benign(r.stderr)
+
+
+@needs_ffmpeg
+async def test_smart_cut_app_native_source_precise_and_clean(tmp_path):
+    """App-native-shaped source: smart path must engage, hit the word-
+    timestamp cut points (no GOP snapping — with a 10s GOP a snapped cut
+    would be off by up to 8.5s), and decode with zero errors."""
+    src = tmp_path / "src.mp4"
+    _make_source(src, seconds=45, size="320x240", fps=25, gop_sec=10)
+    out = tmp_path / "out.mp4"
+    used = await vca._smart_trim(src, 1.5, 41.2, out)
+    assert used is True, "smart path did not engage on an eligible clip"
+    dur = _duration(out)
+    assert abs(dur - 39.7) < 0.35, f"cut not word-timestamp precise: {dur:.2f}s vs 39.70s"
+    assert _decodes_clean(out)
+
+
+@needs_ffmpeg
+async def test_smart_cut_bulk_import_shaped_source(tmp_path):
+    """The heterogeneous case: different resolution/fps (bulk-imported
+    files are 1080p-class where app recordings are small). Downscaled here
+    for test speed but distinct params exercise the matching path."""
+    src = tmp_path / "bulk.mp4"
+    _make_source(src, seconds=40, size="640x480", fps=30, gop_sec=10)
+    out = tmp_path / "out.mp4"
+    used = await vca._smart_trim(src, 2.2, 36.9, out)
+    assert used is True
+    dur = _duration(out)
+    assert abs(dur - 34.7) < 0.35, f"got {dur:.2f}s, want 34.70s"
+    assert _decodes_clean(out)
+
+
+@needs_ffmpeg
+async def test_smart_cut_equivalent_to_full_reencode(tmp_path):
+    """Equivalence at the boundaries: smart-cut and the full re-encode of
+    the same range agree on duration to within one frame."""
+    src = tmp_path / "src.mp4"
+    _make_source(src, seconds=45, gop_sec=10)
+    smart, full = tmp_path / "smart.mp4", tmp_path / "full.mp4"
+    assert await vca._smart_trim(src, 1.5, 41.2, smart) is True
+    await vca._full_reencode_trim(src, 1.5, 41.2, full)
+    assert abs(_duration(smart) - _duration(full)) < 0.05  # one frame @25fps
+    assert _decodes_clean(smart) and _decodes_clean(full)
+
+
+@needs_ffmpeg
+async def test_failed_verification_falls_back_to_full_reencode(tmp_path, monkeypatch):
+    """Deliberately fail verification: _trim_clip must still produce a
+    correct clip via the full re-encode — the optimization can cost time,
+    never correctness."""
+    src = tmp_path / "src.mp4"
+    _make_source(src, seconds=45, gop_sec=10)
+    monkeypatch.setattr(vca, "_verify_clip", lambda path, expected: False)
+    full_calls = []
+    real_full = vca._full_reencode_trim
+
+    async def spy_full(*a, **k):
+        full_calls.append(a)
+        return await real_full(*a, **k)
+
+    monkeypatch.setattr(vca, "_full_reencode_trim", spy_full)
+    out = tmp_path / "out.mp4"
+    await vca._trim_clip(src, 1.5, 41.2, out)
+    assert len(full_calls) == 1, "fallback did not run after failed verification"
+    assert abs(_duration(out) - 39.7) < 0.35
+    assert _decodes_clean(out)
+
+
+@needs_ffmpeg
+async def test_smart_cut_exception_falls_back(tmp_path, monkeypatch):
+    src = tmp_path / "src.mp4"
+    _make_source(src, seconds=45, gop_sec=10)
+
+    async def boom(*a, **k):
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(vca, "_smart_trim", boom)
+    out = tmp_path / "out.mp4"
+    await vca._trim_clip(src, 1.5, 41.2, out)  # must not raise
+    assert abs(_duration(out) - 39.7) < 0.35 and _decodes_clean(out)
+
+
+async def test_short_clip_skips_smart_path_entirely(tmp_path, monkeypatch):
+    """Below SMART_CUT_MIN_CLIP_SECONDS nothing smart runs — the hot path
+    for ordinary short answers is byte-identical to before."""
+    async def boom(*a, **k):  # pragma: no cover - reaching it IS the failure
+        raise AssertionError("smart path ran for a short clip")
+
+    monkeypatch.setattr(vca, "_smart_trim", boom)
+    called = []
+
+    async def fake_full(*a, **k):
+        called.append(a)
+
+    monkeypatch.setattr(vca, "_full_reencode_trim", fake_full)
+    await vca._trim_clip(tmp_path / "s.mp4", 1.0, 11.0, tmp_path / "o.mp4")
+    assert len(called) == 1
+
+
+@needs_ffmpeg
+async def test_non_h264_source_falls_back(tmp_path):
+    src = tmp_path / "src_mpeg4.mp4"
+    _sp.run(
+        ["ffmpeg", "-y", "-v", "error",
+         "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=30",
+         "-c:v", "mpeg4", str(src)],
+        check=True,
+    )
+    out = tmp_path / "out.mp4"
+    assert await vca._smart_trim(src, 1.0, 28.0, out) is False
